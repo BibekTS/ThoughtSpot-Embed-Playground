@@ -19,7 +19,7 @@
 
 const STORAGE_KEY = 'tsp_state_v1';
 
-const SECTIONS = new Set(['search', 'spotter', 'liveboard', 'liveboard-custom', 'ai-highlights', 'viz', 'fullapp', 'ai-insights', 'spotter-chat']);
+const SECTIONS = new Set(['search', 'spotter', 'liveboard', 'liveboard-custom', 'ai-highlights', 'viz', 'fullapp', 'ai-insights', 'spotter-chat', 'drillthrough']);
 const AUTH_TYPES = new Set(['None', 'TrustedAuthTokenCookieless', 'TrustedAuthToken']);
 const MAX_STR = 4000;
 const MAX_ARR = 500;
@@ -89,6 +89,22 @@ export function defaultState() {
       tag: 'Personal',                // scoping tag applied to every copy + used to re-discover them
       activeCopyId: '',               // '' = the Standard board (tab #1); else a copy's liveboardId
       copies: {},                     // { [sourceLiveboardId]: [{ id, title }] }
+    },
+    // Drill-through demo — summary Liveboard → detail rows. A funnel/bar click carries its
+    // attributes into a detail Liveboard (drillLiveboardId); a column-scoped context-menu action
+    // on measureColumn opens a host-rendered panel of event-grain rows fetched from detailModelId
+    // via POST searchdata. Off by default; configured in the Drill-through inspector panel.
+    drill: {
+      enabled: false,
+      summaryModelId: '',             // model behind the SUMMARY liveboard — scopes the action (modelColumnNames)
+      measureColumn: '',              // the ONE column the "View detail" action attaches to, e.g. 'Meeting count'
+      actionLabel: 'View detail',     // label of that context-menu action
+      detailModelId: '',              // event-grain model queried for the detail rows
+      detailColumns: [],              // columns to request/show, in order
+      scopeColumn: '',                // attribute carried from a point click, e.g. 'Stage'
+      drillLiveboardId: '',           // detail Liveboard opened on a point click ('' = stay, panel only)
+      linkTemplate: '',               // per-row deep link, e.g. https://app.salesloft.com/app/meetings/{Meeting Id}
+      pageSize: 100,                  // record_size per searchdata page
     },
     styles: { variables: {}, rules: {}, cssUrl: '', strings: {}, stringIDs: {}, exposeIds: false }, // cssUrl → customizations.style.customCSSUrl; strings/stringIDs/exposeIds → customizations.content (Beta)
     // trusted-auth claims (NON-secret) — the token-claims playground
@@ -332,6 +348,26 @@ function sanitize(raw) {
     };
   }
 
+  if (has('drill') && raw.drill && typeof raw.drill === 'object') {
+    const d = raw.drill;
+    // Every field here can arrive from the attacker-controllable #s= hash and ends up in a
+    // credentialed REST body, an SDK ViewConfig, or (linkTemplate) a navigation. Cap lengths and
+    // coerce types; linkTemplate is NOT validated as a URL here because it carries {placeholders}
+    // before substitution — the http(s) scheme check happens at the navigation sink in app.js.
+    out.drill = {
+      enabled: bool(d.enabled),
+      summaryModelId: str(d.summaryModelId, 128),
+      measureColumn: str(d.measureColumn, 256),
+      actionLabel: str(d.actionLabel, 64) || 'View detail',
+      detailModelId: str(d.detailModelId, 128),
+      detailColumns: strArr(d.detailColumns).slice(0, 50).map(c => str(c, 256)),
+      scopeColumn: str(d.scopeColumn, 256),
+      drillLiveboardId: str(d.drillLiveboardId, 128),
+      linkTemplate: str(d.linkTemplate, 1024),
+      pageSize: Math.min(1000, Math.max(1, Math.round(num(d.pageSize, 100)))),
+    };
+  }
+
   if (has('styles')) out.styles = {
     variables: cleanMap(raw.styles?.variables, v => str(v, 512)),
     rules: cleanMap(raw.styles?.rules, decls => cleanMap(decls, v => str(v, 512))),
@@ -381,6 +417,7 @@ function mergeKnown(base, loaded) {
   out.exportOpts = { ...base.exportOpts, ...(loaded.exportOpts || {}) };
   out.dateBtn = { ...base.dateBtn, ...(loaded.dateBtn || {}) };
   out.personalLb = { ...base.personalLb, ...(loaded.personalLb || {}) };
+  out.drill = { ...base.drill, ...(loaded.drill || {}) };
   return out;
 }
 

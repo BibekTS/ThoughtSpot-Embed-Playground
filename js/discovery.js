@@ -562,6 +562,46 @@ export async function aiSearchData(host, { queryString, worksheetId, recordSize 
   }
 }
 
+/**
+ * One page of POST /api/rest/2.0/searchdata against an event-grain model — the detail half of the
+ * drill-through demo. Differs from aiSearchData in two ways that matter:
+ *   • it goes through apiRest(), so it works under cookieless trusted auth (which CORS-blocks a
+ *     direct browser→TS call). The relay forwards the CALLER'S bearer, so RLS still applies.
+ *   • it takes a record_offset, so the caller can page past the 1,000-row response cap.
+ * `totalRows` comes from available_data_row_count — the full matching count, not the page size.
+ *
+ * @param {string} host
+ * @param {{ queryString: string, modelId: string, offset?: number, size?: number }} opts
+ * @returns {Promise<{ok:true, columns:string[], rows:any[], totalRows:number, returned:number} | {ok:false, error:string, status?:number}>}
+ */
+export async function searchDataPage(host, { queryString, modelId, offset = 0, size = 100 } = {}) {
+  try {
+    const resp = await apiRest(host, '/api/rest/2.0/searchdata', {
+      method: 'POST',
+      body: {
+        query_string: queryString,
+        logical_table_identifier: modelId,
+        data_format: 'COMPACT',
+        record_size: size,
+        record_offset: offset,
+      },
+    });
+    if (!resp.ok) return { ok: false, error: await restError(resp), status: resp.status };
+    const data = await resp.json();
+    const content = (data?.contents || [])[0] || {};
+    const rows = content.data_rows || [];
+    return {
+      ok: true,
+      columns: content.column_names || [],
+      rows,
+      totalRows: content.available_data_row_count ?? rows.length,
+      returned: content.returned_data_row_count ?? rows.length,
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 /** Distinct column values for a liveboard column (for filter helpers). */
 export async function discoverColumnValues(host, liveboardId, column) {
   try {

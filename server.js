@@ -563,6 +563,7 @@ const REST_RELAY_ALLOW = new Set([
   '/api/rest/2.0/auth/session/user',
   '/api/rest/2.0/auth/session/token', // introspect the CALLER'S own session token (never mints one)
   '/api/rest/2.0/schedules/create', // webhook composer → create a real Liveboard schedule (caller's token)
+  '/api/rest/2.0/searchdata', // drill-through detail rows — READ-ONLY, and the caller's own token means RLS still applies
 ]);
 app.post('/api/ts-rest', rateLimiter({ windowMs: 60_000, max: 120 }), async (req, res) => {
   try {

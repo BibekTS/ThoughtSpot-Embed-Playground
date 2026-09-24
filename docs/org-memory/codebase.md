@@ -280,3 +280,25 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `ba27a041aaf037086be5c0f17b215494bb6ca4dc` at f927b9c). But byte-identity is wrong for any line
   carrying a cross-reference: `# see step 3's commit rule` pointed into SKILL.md while `qa-verifier.md`
   has its own step 3 (`npm run boot-check`) — a reader of the agent file alone resolves it wrongly.
+- 2026-09-23 (S22): three SDK shapes for the drill-through demo, MCP-verified against the **pinned
+  1.49.0** (all three available at that version — do not re-derive them from memory):
+  `CustomAction.dataModelIds = { modelIds?: string[], modelColumnNames?: string[] }`, allowed on
+  `VIZ`/`ANSWER`/`SPOTTER` targets only, with column entries formatted **`'<modelGuid>::<columnName>'`**
+  — that `::` join is the whole mechanism behind "this action shows on one column and nowhere else"
+  (needs SDK 1.43.0+ / 10.14.0.cl+, same gate as `customActions` itself).
+  `EmbedEvent.VizPointClick` delivers `payload.data.clickedPoint.selectedAttributes[]` **and**
+  `.selectedMeasures[]`, each `{ value, column: { name } }` — the measures half is what makes a
+  KPI-vs-row-count reconciliation possible from a click alone.
+  `HostEvent.GetFilters` **returns a promise directly** and takes no callback argument (unlike most
+  HostEvents) — `await embed.trigger(HostEvent.GetFilters)`; items come back as
+  `{ column, operator, values, applicable_viz, linking }`, i.e. `column`, not `columnName`, so they
+  need mapping before they can be passed as runtime filters.
+- 2026-09-23 (S22): `POST /api/rest/2.0/searchdata` was already called (`aiSearchData`) but through the
+  **direct** `api()` path, so it was CORS-blocked under cookieless trusted auth and silently
+  unusable there. Any new REST call the app makes should default to `apiRest()` (auto-relays when a
+  bearer is set) **and** be added to `REST_RELAY_ALLOW` in `server.js` — the two must change together
+  or the call works in browser-session auth and fails in trusted auth, which is the mode most demos run.
+- 2026-09-23 (S22): COMPACT `data_rows` are **arrays aligned to `column_names`**, not objects — any
+  new row renderer needs a name→value mapping step before it can do placeholder substitution or
+  column lookup. `available_data_row_count` is the full match count (not the page size), which is what
+  makes `record_offset` paging and a row-count reconciliation badge possible from one response.

@@ -1586,3 +1586,57 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
 .smcp-input { flex: 1 1 320px; height: 38px; }
 .smcp-send, .smcp-reset { height: 38px; flex: 0 0 auto; white-space: nowrap; }
 .smcp-send { min-width: 64px; }
+
+/* ── Drill-through demo: host-rendered detail panel (below the embed, above #bottom) ── */
+.dt-panel {
+  flex: 0 0 auto; max-height: 42%; display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface); border-top: 1px solid var(--border);
+}
+.dt-head {
+  display: flex; align-items: center; gap: 12px; flex: 0 0 auto;
+  padding: 8px 14px; background: var(--accent-soft); border-bottom: 1px solid var(--border);
+  font-size: 12.5px; color: var(--text-primary);
+}
+.dt-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.dt-title strong { color: var(--accent); }
+.dt-scope { color: var(--text-primary); }
+.dt-badge {
+  margin-left: auto; flex: 0 0 auto; padding: 3px 10px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-primary);
+}
+.dt-badge--mismatch { background: var(--warn-soft); border-color: #ead9a8; color: var(--warn); font-weight: 600; }
+.dt-close {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px;
+  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+  font-size: 12px; font-family: inherit; cursor: pointer; line-height: 1;
+}
+.dt-close:hover { background: var(--surface-3); color: var(--text-primary); }
+.dt-error { padding: 8px 14px; background: var(--danger-soft); color: var(--danger); font-size: 12.5px; }
+.dt-table-wrap { flex: 1; min-height: 0; overflow: auto; }
+.dt-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.dt-table th, .dt-table td {
+  padding: 6px 12px; text-align: left; white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+.dt-table th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--surface-2); color: var(--text-secondary); font-weight: 600;
+}
+.dt-table tbody tr:hover { background: var(--surface-2); }
+.dt-linkcell { text-align: right; }
+.dt-link { color: var(--accent); text-decoration: none; }
+.dt-link:hover { text-decoration: underline; }
+.dt-link-bad { color: var(--text-muted); cursor: help; }
+.dt-foot {
+  display: flex; align-items: center; gap: 12px; flex: 0 0 auto;
+  padding: 7px 14px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-muted);
+}
+.dt-more {
+  margin-left: auto; height: 26px; padding: 0 12px; border-radius: 7px;
+  background: var(--accent); border: none; color: #fff;
+  font-size: 12px; font-family: inherit; cursor: pointer;
+}
+.dt-more:hover:not(:disabled) { filter: brightness(1.05); }
+.dt-more:disabled { opacity: .6; cursor: default; }

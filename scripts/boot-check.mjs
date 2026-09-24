@@ -15,6 +15,9 @@
  *     inert text in the auth chips and the Event Log — it must never execute
  *   ✓ URL-action scheme probe (BACKLOG S13): a `javascript:` urlTemplate from a #s= hash must be
  *     refused at window.open, while a plain https template still opens with placeholders resolved
+ *   ✓ Drill-through probe (BACKLOG S22): the column-scoped action reaches the generated code as
+ *     '<modelGuid>::<column>', a clicked point scopes the searchdata query, Load more advances
+ *     record_offset, the KPI/row-count badge reconciles, and a javascript: link template is refused
  *
  * Chrome resolution: $CHROME_PATH, then the standard macOS / Linux install locations
  * (GitHub's ubuntu runners ship google-chrome). Requires devDependency puppeteer-core.
@@ -301,6 +304,103 @@ async function runAnswerPreconfirmProbe(browser) {
 //   Positive control (mandatory): dispatch a plain https action with a {{placeholder}} → it MUST
 //     open the substituted, encodeURIComponent'd URL. Without it, a broken registry rebuild or a
 //     no-op dispatcher would make the negative assertion vacuously true.
+// Drill-through probe (S22): the demo section's two host-side moves must hold end to end.
+// searchdata is stubbed in-page so this runs with no ThoughtSpot instance — what's under test is
+// OUR wiring, not TS: the column-scoped action reaches the generated code as
+// '<modelGuid>::<column>', the clicked point scopes the detail query, record_offset actually
+// advances on "Load more", the KPI/row-count badge reconciles (and shouts when it doesn't), and a
+// javascript: link template is refused at the anchor rather than rendered.
+async function runDrillthroughProbe(browser) {
+  const drill = {
+    enabled: true, summaryModelId: 'model-a', measureColumn: 'Meeting count', actionLabel: 'View meetings',
+    detailModelId: 'model-b', detailColumns: ['Meeting Id', 'User Name', 'Booked at'], scopeColumn: 'Stage',
+    drillLiveboardId: 'lb-detail', linkTemplate: 'https://example.invalid/m/{Meeting Id}', pageSize: 2,
+  };
+  const hash = Buffer.from(JSON.stringify({ section: 'drillthrough', liveboardId: 'lb-summary', drill }), 'utf8').toString('base64url');
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    await sleep(900);
+
+    const railOk = await probe.evaluate(() =>
+      [...document.querySelectorAll('#embed-list li')].some((li) => li.textContent.includes('Drill-through')));
+    const panelOk = await probe.evaluate(() =>
+      [...document.querySelectorAll('.acc')].some((a) => a.textContent.includes('Drill-through')));
+
+    const code = await probe.evaluate(async () => {
+      document.querySelector('[data-tab="code"]')?.click();
+      await new Promise((r) => setTimeout(r, 400));
+      return document.getElementById('code-view')?.textContent || document.getElementById('bottom')?.textContent || '';
+    });
+    const codeOk = code.includes("modelColumnNames: ['model-a::Meeting count']")
+      && code.includes('CustomActionsPosition.CONTEXTMENU') && code.includes('CustomActionTarget.VIZ')
+      && code.includes('EmbedEvent.VizPointClick') && code.includes('HostEvent.GetFilters')
+      && code.includes('record_offset: offset');
+
+    // Drive the REAL dispatcher; only the network is faked.
+    const run = await probe.evaluate(async () => {
+      const cols = ['Meeting Id', 'User Name', 'Booked at'];
+      const pages = [
+        { column_names: cols, data_rows: [['m1', 'Lakshman', '2026-01-02'], ['m2', 'Lakshman', '2026-01-03']], available_data_row_count: 3, returned_data_row_count: 2 },
+        { column_names: cols, data_rows: [['m3', 'Lakshman', '2026-01-04']], available_data_row_count: 3, returned_data_row_count: 1 },
+      ];
+      let call = 0; const bodies = [];
+      const real = window.fetch;
+      window.fetch = async (url, opts) => {
+        if (String(url).includes('searchdata')) {
+          bodies.push(JSON.parse(opts.body));
+          return new Response(JSON.stringify({ contents: [pages[Math.min(call++, 1)]] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return real(url, opts);
+      };
+      const click = (measure) => window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: { clickedPoint: {
+          selectedAttributes: [{ column: { name: 'Stage' }, value: 'Prospecting' }, { column: { name: 'User Name' }, value: 'Lakshman' }],
+          selectedMeasures: [{ column: { name: 'Meeting count' }, value: measure }],
+        } },
+      });
+      await click(3);
+      await new Promise((r) => setTimeout(r, 300));
+      const p1 = document.getElementById('dt-panel');
+      const first = { rows: p1?.querySelectorAll('.dt-table tbody tr').length, more: !!p1?.querySelector('.dt-more') };
+      p1?.querySelector('.dt-more')?.click();
+      await new Promise((r) => setTimeout(r, 300));
+      const p2 = document.getElementById('dt-panel');
+      const after = {
+        rows: p2?.querySelectorAll('.dt-table tbody tr').length, more: !!p2?.querySelector('.dt-more'),
+        href: p2?.querySelector('.dt-link')?.getAttribute('href'),
+        badge: p2?.querySelector('.dt-badge')?.textContent, mismatch: !!p2?.querySelector('.dt-badge--mismatch'),
+      };
+      // A KPI that disagrees with the row count must be flagged, not quietly shown.
+      await click(99);
+      await new Promise((r) => setTimeout(r, 300));
+      const mismatchShown = !!document.querySelector('.dt-badge--mismatch');
+      // A javascript: link template must never become a live anchor.
+      const st = await import('./js/state.js');
+      st.setState({ drill: { ...st.getState().drill, linkTemplate: 'javascript:window.__dtPwned=1//{Meeting Id}' } });
+      await click(3);
+      await new Promise((r) => setTimeout(r, 300));
+      const p3 = document.getElementById('dt-panel');
+      const guard = { anchors: p3?.querySelectorAll('.dt-link').length, blocked: p3?.querySelectorAll('.dt-link-bad').length, pwned: window.__dtPwned === 1 };
+      return { bodies, first, after, mismatchShown, guard };
+    });
+
+    const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
+    const pagingOk = run.bodies[0]?.record_offset === 0 && run.bodies[0]?.record_size === 2
+      && run.bodies[1]?.record_offset === 2
+      && run.first.rows === 2 && run.first.more && run.after.rows === 3 && !run.after.more;
+    const badgeOk = /Meeting count: 3 · rows: 3/.test(run.after.badge || '') && !run.after.mismatch && run.mismatchShown;
+    const linkOk = run.after.href === 'https://example.invalid/m/m1'
+      && run.guard.anchors === 0 && run.guard.blocked > 0 && !run.guard.pwned;
+    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, probeErrors };
+  } finally {
+    await probe.close();
+  }
+}
+
 async function runUrlActionSchemeProbe(browser) {
   const EVIL = 'javascript:window.__pwned=1';
   const GOOD = 'https://example.invalid/x?id={{Customer ID}}';
@@ -446,9 +546,21 @@ try {
   const urlActOk = urlAct.dispatcherReady && !urlAct.pwned && urlAct.hostileOpened.length === 0
     && urlAct.goodOpened && urlAct.probeErrors.length === 0;
 
+  const dtp = await runDrillthroughProbe(browser);
+  console.log('');
+  console.log(`Drill-through probe (S22) — rail item + inspector panel render: ${dtp.railOk && dtp.panelOk}`);
+  console.log(`Drill-through probe (S22) — code-gen emits '<modelGuid>::<column>' scoping + both handlers: ${dtp.codeOk}`);
+  console.log(`Drill-through probe (S22) — clicked point scopes the searchdata query: ${dtp.scopedQuery}`);
+  console.log(`Drill-through probe (S22) — Load more advances record_offset and appends: ${dtp.pagingOk}`);
+  console.log(`Drill-through probe (S22) — KPI/row-count badge reconciles and flags a mismatch: ${dtp.badgeOk}`);
+  console.log(`Drill-through probe (S22) — {Column} link resolves; javascript: template refused: ${dtp.linkOk}`);
+  dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
+    && dtp.badgeOk && dtp.linkOk && dtp.probeErrors.length === 0;
+
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
-    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk;
+    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk && dtOk;
   console.log(ok ? '\nBOOT CHECK: PASS' : '\nBOOT CHECK: FAIL');
 } finally {
   try { await browser?.close(); } catch { /* already gone */ }

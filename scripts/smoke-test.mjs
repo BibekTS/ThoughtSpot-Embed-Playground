@@ -148,6 +148,12 @@ try {
     const r = await postJson('/api/ts-rest', { path: '/api/rest/2.0/metadata/copyobject', method: 'POST', body: { identifier: 'abc' } });
     check('ts-rest allowlisted path without a token → 401', r.status === 401, `status ${r.status}`);
   }
+  {
+    // searchdata (drill-through detail rows) is allowlisted for the relay but, like every other
+    // relayed path, must carry the caller's OWN token — so RLS is enforced upstream, not bypassed.
+    const r = await postJson('/api/ts-rest', { path: '/api/rest/2.0/searchdata', method: 'POST', body: { query_string: '[x]' } });
+    check('ts-rest searchdata without a token → 401', r.status === 401, `status ${r.status}`);
+  }
 
   // 7) The write-back stub is opt-in.
   {

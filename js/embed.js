@@ -268,6 +268,7 @@ export function doRender(section, config, callbacks, options = {}) {
     case 'liveboard':
     case 'liveboard-custom':
     case 'ai-highlights':
+    case 'drillthrough':
       embed = new LiveboardEmbed('#ts-embed-container', {
         frameParams: {},
         liveboardV2: true,
@@ -416,6 +417,12 @@ export function doRender(section, config, callbacks, options = {}) {
       onEvent('CustomAction', JSON.stringify(payload?.data ?? payload, null, 2));
       // Notify app.js to display in the custom action panel
       if (window.__onCustomAction) window.__onCustomAction(payload);
+    })
+    .on(EmbedEvent.VizPointClick, (payload) => {
+      // A click on a data point in any viz. Carries clickedPoint.selectedAttributes[] and
+      // .selectedMeasures[] ({ value, column: { name } }) — the raw payload is forwarded so
+      // app.js can read those directly and turn a click into a drill-through.
+      if (window.__onVizPointClick) window.__onVizPointClick(payload);
     })
     .on(EmbedEvent.Save, (payload) => {
       // Fires when a user clicks Save inside the embed. ThoughtSpot has NO server-side
