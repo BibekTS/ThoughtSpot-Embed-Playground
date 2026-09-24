@@ -302,3 +302,19 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   new row renderer needs a name→value mapping step before it can do placeholder substitution or
   column lookup. `available_data_row_count` is the full match count (not the page size), which is what
   makes `record_offset` paging and a row-count reconciliation badge possible from one response.
+- 2026-09-24 (S22, found by the first LIVE run): **`available_data_row_count` is NOT the total.**
+  The REST v2 `searchData` response schema documents it as "Total available data row count", but on
+  `ps-internal` (26.8.0.cl) it comes back **equal to `returned_data_row_count` on every page** —
+  `record_size` 3/10/100/1000 all returned `available == returned == record_size`, and a request at
+  `record_offset: 90` still said 100. It only drops below the page size when the result genuinely
+  runs out. So: a FULL page tells you nothing about the total, and any `loaded < available` paging
+  predicate silently stops after page one. The reliable end-of-data signal is a **short page**.
+  `js/app.js dtKnownTotal()` encodes the safe reading: trust a reported total only when it exceeds
+  what you already hold, otherwise treat a short page as "that's all" and a full page as "unknown".
+  The pre-existing `aiSearchData` consumer inherits the same wrong assumption — filed as S24.
+- 2026-09-24 (S22, process): the headless probe for this feature **passed while the code was wrong**,
+  because the probe's own fixture hard-coded `available_data_row_count: 3` — i.e. the fixture asserted
+  the author's assumption about the upstream contract rather than the contract. A stub can only test
+  the code against the fixture's beliefs. Rule of thumb: whenever a fixture encodes an upstream
+  response shape, the value chosen must come from an observed real response, and the probe should
+  cover the awkward case (here: a full page, where total and page size are indistinguishable).

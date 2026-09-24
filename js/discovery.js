@@ -568,7 +568,10 @@ export async function aiSearchData(host, { queryString, worksheetId, recordSize 
  *   • it goes through apiRest(), so it works under cookieless trusted auth (which CORS-blocks a
  *     direct browser→TS call). The relay forwards the CALLER'S bearer, so RLS still applies.
  *   • it takes a record_offset, so the caller can page past the 1,000-row response cap.
- * `totalRows` comes from available_data_row_count — the full matching count, not the page size.
+ * `totalRows` echoes available_data_row_count, which the REST schema calls the "Total available
+ * data row count" but which 26.8.0.cl returns equal to returned_data_row_count on EVERY page —
+ * so it is a page count, not a total. Callers must treat a SHORT page as the end-of-data signal
+ * and only trust `totalRows` when it exceeds what they already hold (see dtKnownTotal in app.js).
  *
  * @param {string} host
  * @param {{ queryString: string, modelId: string, offset?: number, size?: number }} opts

@@ -342,9 +342,14 @@ async function runDrillthroughProbe(browser) {
     // Drive the REAL dispatcher; only the network is faked.
     const run = await probe.evaluate(async () => {
       const cols = ['Meeting Id', 'User Name', 'Booked at'];
+      // The fixture emulates the REAL cluster: available_data_row_count comes back equal to the
+      // rows in THIS page, never the grand total (verified on 26.8.0.cl, contrary to the REST
+      // schema's "Total available data row count"). Page 1 is therefore indistinguishable from a
+      // result of exactly 2 rows except by asking for page 2 — so a full page must keep "Load more"
+      // alive and must NOT let the badge claim a reconciliation it cannot know yet.
       const pages = [
-        { column_names: cols, data_rows: [['m1', 'Lakshman', '2026-01-02'], ['m2', 'Lakshman', '2026-01-03']], available_data_row_count: 3, returned_data_row_count: 2 },
-        { column_names: cols, data_rows: [['m3', 'Lakshman', '2026-01-04']], available_data_row_count: 3, returned_data_row_count: 1 },
+        { column_names: cols, data_rows: [['m1', 'Lakshman', '2026-01-02'], ['m2', 'Lakshman', '2026-01-03']], available_data_row_count: 2, returned_data_row_count: 2 },
+        { column_names: cols, data_rows: [['m3', 'Lakshman', '2026-01-04']], available_data_row_count: 1, returned_data_row_count: 1 },
       ];
       let call = 0; const bodies = [];
       const real = window.fetch;
@@ -365,7 +370,12 @@ async function runDrillthroughProbe(browser) {
       await click(3);
       await new Promise((r) => setTimeout(r, 300));
       const p1 = document.getElementById('dt-panel');
-      const first = { rows: p1?.querySelectorAll('.dt-table tbody tr').length, more: !!p1?.querySelector('.dt-more') };
+      const first = {
+        rows: p1?.querySelectorAll('.dt-table tbody tr').length,
+        more: !!p1?.querySelector('.dt-more'),
+        badge: p1?.querySelector('.dt-badge')?.textContent,
+        mismatch: !!p1?.querySelector('.dt-badge--mismatch'),
+      };
       p1?.querySelector('.dt-more')?.click();
       await new Promise((r) => setTimeout(r, 300));
       const p2 = document.getElementById('dt-panel');
@@ -389,10 +399,15 @@ async function runDrillthroughProbe(browser) {
     });
 
     const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
+    // The load-bearing assertion: after a FULL page, "Load more" must still be offered. A
+    // row-count comparison against available_data_row_count would have hidden it here.
     const pagingOk = run.bodies[0]?.record_offset === 0 && run.bodies[0]?.record_size === 2
       && run.bodies[1]?.record_offset === 2
       && run.first.rows === 2 && run.first.more && run.after.rows === 3 && !run.after.more;
-    const badgeOk = /Meeting count: 3 · rows: 3/.test(run.after.badge || '') && !run.after.mismatch && run.mismatchShown;
+    // Mid-paging the total is unknown, so the badge reads "2+" and must NOT flag a mismatch;
+    // once a short page proves the end, it reconciles 3 against 3.
+    const badgeOk = /rows: 2\+/.test(run.first.badge || '') && !run.first.mismatch
+      && /Meeting count: 3 · rows: 3/.test(run.after.badge || '') && !run.after.mismatch && run.mismatchShown;
     const linkOk = run.after.href === 'https://example.invalid/m/m1'
       && run.guard.anchors === 0 && run.guard.blocked > 0 && !run.guard.pwned;
     return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, probeErrors };
@@ -551,8 +566,8 @@ try {
   console.log(`Drill-through probe (S22) — rail item + inspector panel render: ${dtp.railOk && dtp.panelOk}`);
   console.log(`Drill-through probe (S22) — code-gen emits '<modelGuid>::<column>' scoping + both handlers: ${dtp.codeOk}`);
   console.log(`Drill-through probe (S22) — clicked point scopes the searchdata query: ${dtp.scopedQuery}`);
-  console.log(`Drill-through probe (S22) — Load more advances record_offset and appends: ${dtp.pagingOk}`);
-  console.log(`Drill-through probe (S22) — KPI/row-count badge reconciles and flags a mismatch: ${dtp.badgeOk}`);
+  console.log(`Drill-through probe (S22) — a FULL page keeps Load more alive; offset advances and appends: ${dtp.pagingOk}`);
+  console.log(`Drill-through probe (S22) — badge stays neutral ("N+") until the count is known, then reconciles: ${dtp.badgeOk}`);
   console.log(`Drill-through probe (S22) — {Column} link resolves; javascript: template refused: ${dtp.linkOk}`);
   dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
   const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk

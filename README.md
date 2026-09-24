@@ -72,8 +72,14 @@ Two independent moves:
    (which is how you get past the 1,000-row response cap), and renders them outside the iframe — with
    per-row `{Column}` deep links into whatever system owns the record.
 
-A badge reconciles the measure the user clicked against `available_data_row_count` and turns amber
-when they disagree — i.e. when the summary and detail models are not counting the same grain.
+A badge reconciles the measure the user clicked against the detail row count and turns amber when
+they disagree — i.e. when the summary and detail models are not counting the same grain.
+
+> **Paging caveat, learned the hard way.** The REST schema calls `available_data_row_count` the
+> "Total available data row count", but on 26.8.0.cl it comes back equal to `returned_data_row_count`
+> on *every* page. A full page therefore says nothing about the total. This panel treats a **short
+> page** as the end-of-data signal, and the badge reads `N+` (neutral, no mismatch claimed) until the
+> count is actually known. Reuse that reading if you copy this code.
 
 **A 15-minute demo, in six steps:** pick the summary Liveboard → click a funnel stage and watch the
 detail Liveboard open already filtered → right-click the measure on a bar and pick "View detail" →

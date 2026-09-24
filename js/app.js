@@ -5317,7 +5317,7 @@ function hideDrillBar() { const bar = $('#drill-bar'); if (bar) bar.remove(); }
 // Nothing here is a security boundary: runtime filters are visible and editable in the URL, and the
 // detail rows are only safe because searchdata runs under the VIEWER'S OWN token (RLS applies).
 
-let dt = null;  // active detail view: { filters, kpi, kpiLabel, columns, rows, totalRows, offset, loading, error }
+let dt = null;  // active detail view: { filters, kpi, columns, rows, reportedTotal, exhausted, offset, loading, error }
 
 /** Build a TS search query string: the requested columns, then one equality clause per filter. */
 function dtQueryString(columns, filters) {
@@ -5405,7 +5405,7 @@ async function openDetailPanel(payload) {
   const filters = scoped.length ? scoped : attrs;
   const kpi = dtClickedMeasure(payload);
 
-  dt = { filters, kpi, columns: [], rows: [], totalRows: 0, offset: 0, loading: true, error: '' };
+  dt = { filters, kpi, columns: [], rows: [], reportedTotal: 0, exhausted: false, offset: 0, loading: true, error: '' };
   renderDetailPanel();
   await dtFetchPage(true);
 }
@@ -5431,11 +5431,33 @@ async function dtFetchPage(reset = false) {
   } else {
     dt.columns = res.columns;
     dt.rows = reset ? res.rows : [...dt.rows, ...res.rows];
-    dt.totalRows = res.totalRows;
     dt.offset = dt.rows.length;
-    logEvent('Drill-through', `✓ ${res.returned} row(s) · ${dt.rows.length} of ${res.totalRows} loaded`);
+    // Do NOT trust available_data_row_count as the total. The REST schema documents it as "Total
+    // available data row count", but on 26.8.0.cl it comes back equal to returned_data_row_count on
+    // every page — including a full 1,000-row one — so a full page tells you nothing about the total.
+    // The only reliable end-of-data signal is a SHORT page. `reportedTotal` is kept and used only
+    // when it actually exceeds what we've loaded, so a cluster that DOES report a real total still
+    // gets the nicer "N of M" display.
+    dt.reportedTotal = Number.isFinite(res.totalRows) ? res.totalRows : 0;
+    dt.exhausted = res.rows.length < d.pageSize;
+    const known = dtKnownTotal();
+    logEvent('Drill-through', `✓ ${res.rows.length} row(s) · ${dt.rows.length} loaded${known === null ? ' (more available)' : ` of ${known}`}`);
   }
   renderDetailPanel();
+}
+
+/**
+ * The true row count, or null when it is genuinely unknown.
+ *   • a cluster that reports a real total (> what we hold) → trust it
+ *   • we paged until a short page came back → we hold everything
+ *   • otherwise a full page came back and the total is unknowable without fetching more
+ * Returning null is the honest answer, and it is what stops the badge claiming a false mismatch.
+ */
+function dtKnownTotal() {
+  if (!dt) return null;
+  if (dt.reportedTotal > dt.rows.length) return dt.reportedTotal;
+  if (dt.exhausted) return dt.rows.length;
+  return null;
 }
 
 function dtClosePanel() {
@@ -5469,13 +5491,18 @@ function renderDetailPanel() {
   // agree. When they don't, the summary and the detail model are not counting the same thing —
   // which is exactly the question a customer asks, so make the mismatch loud rather than hiding it.
   const badge = el('div', 'dt-badge');
+  const known = dtKnownTotal();
   const kpiNum = dt.kpi ? Number(dt.kpi.value) : NaN;
-  const mismatch = Number.isFinite(kpiNum) && !dt.loading && !dt.error && kpiNum !== dt.totalRows;
+  // Only claim a mismatch once the row count is actually KNOWN. While a full page came back the
+  // total is unknown, so the badge shows "N+" and stays neutral rather than crying wolf.
+  const mismatch = Number.isFinite(kpiNum) && !dt.loading && !dt.error && known !== null && kpiNum !== known;
   if (mismatch) badge.classList.add('dt-badge--mismatch');
+  const rowsTxt = dt.loading ? '…' : (known === null ? `${dt.rows.length}+` : String(known));
   badge.textContent = dt.kpi
-    ? `${dt.kpi.label}: ${dt.kpi.value} · rows: ${dt.loading ? '…' : dt.totalRows}${mismatch ? ' ⚠' : ''}`
-    : `rows: ${dt.loading ? '…' : dt.totalRows}`;
+    ? `${dt.kpi.label}: ${dt.kpi.value} · rows: ${rowsTxt}${mismatch ? ' ⚠' : ''}`
+    : `rows: ${rowsTxt}`;
   if (mismatch) badge.title = 'The clicked measure and the detail row count disagree — the two models are not counting the same grain.';
+  else if (known === null && !dt.loading) badge.title = 'A full page came back, so the total is not known yet — load more to reconcile.';
 
   const close = el('button', 'dt-close'); close.type = 'button';
   close.textContent = '✕'; close.setAttribute('aria-label', 'Close detail panel');
@@ -5531,9 +5558,12 @@ function renderDetailPanel() {
   const count = el('span', 'dt-count');
   count.textContent = dt.loading && !dt.rows.length
     ? 'Loading…'
-    : `Showing ${dt.rows.length} of ${dt.totalRows} row${dt.totalRows === 1 ? '' : 's'}`;
+    : (known === null
+      ? `Showing ${dt.rows.length} rows — more available`
+      : `Showing ${dt.rows.length} of ${known} row${known === 1 ? '' : 's'}`);
   foot.appendChild(count);
-  if (dt.rows.length < dt.totalRows) {
+  // A SHORT page is the end-of-data signal, not a row-count comparison (see dtFetchPage).
+  if (!dt.exhausted && !dt.error) {
     const more = el('button', 'dt-more'); more.type = 'button';
     more.textContent = dt.loading ? 'Loading…' : `Load more (${d.pageSize})`;
     more.disabled = dt.loading;
