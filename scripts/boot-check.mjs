@@ -15,6 +15,9 @@
  *     inert text in the auth chips and the Event Log — it must never execute
  *   ✓ URL-action scheme probe (BACKLOG S13): a `javascript:` urlTemplate from a #s= hash must be
  *     refused at window.open, while a plain https template still opens with placeholders resolved
+ *   ✓ Drill-through probe (BACKLOG S22): the column-scoped action reaches the generated code as
+ *     '<modelGuid>::<column>', a clicked point scopes the searchdata query, Load more advances
+ *     record_offset, the KPI/row-count badge reconciles, and a javascript: link template is refused
  *
  * Chrome resolution: $CHROME_PATH, then the standard macOS / Linux install locations
  * (GitHub's ubuntu runners ship google-chrome). Requires devDependency puppeteer-core.
@@ -301,6 +304,200 @@ async function runAnswerPreconfirmProbe(browser) {
 //   Positive control (mandatory): dispatch a plain https action with a {{placeholder}} → it MUST
 //     open the substituted, encodeURIComponent'd URL. Without it, a broken registry rebuild or a
 //     no-op dispatcher would make the negative assertion vacuously true.
+// Drill-through probe (S22): the demo section's two host-side moves must hold end to end.
+// searchdata is stubbed in-page so this runs with no ThoughtSpot instance — what's under test is
+// OUR wiring, not TS: the column-scoped action reaches the generated code as
+// '<modelGuid>::<column>', the clicked point scopes the detail query, record_offset actually
+// advances on "Load more", the KPI/row-count badge reconciles (and shouts when it doesn't), and a
+// javascript: link template is refused at the anchor rather than rendered.
+async function runDrillthroughProbe(browser) {
+  const drill = {
+    enabled: true, summaryModelId: 'model-a', measureColumn: 'Meeting count', actionLabel: 'View meetings',
+    detailModelId: 'model-b', detailColumns: ['Meeting Id', 'User Name', 'Booked at'], scopeColumn: 'Stage',
+    drillLiveboardId: 'lb-detail', linkTemplate: 'https://example.invalid/m/{Meeting Id}', pageSize: 2,
+    // The paging/link legs below assert against the docked grid; the modal leg flips this at the end.
+    presentation: 'panel', recordNoun: 'meetings', periodLabel: 'This Year',
+  };
+  const hash = Buffer.from(JSON.stringify({ section: 'drillthrough', liveboardId: 'lb-summary', drill }), 'utf8').toString('base64url');
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    await sleep(900);
+
+    const railOk = await probe.evaluate(() =>
+      [...document.querySelectorAll('#embed-list li')].some((li) => li.textContent.includes('Drill-through')));
+    const panelOk = await probe.evaluate(() =>
+      [...document.querySelectorAll('.acc')].some((a) => a.textContent.includes('Drill-through')));
+
+    const code = await probe.evaluate(async () => {
+      document.querySelector('[data-tab="code"]')?.click();
+      await new Promise((r) => setTimeout(r, 400));
+      return document.getElementById('code-view')?.textContent || document.getElementById('bottom')?.textContent || '';
+    });
+    const codeOk = code.includes("modelColumnNames: ['model-a::Meeting count']")
+      && code.includes('CustomActionsPosition.CONTEXTMENU') && code.includes('CustomActionTarget.VIZ')
+      && code.includes('EmbedEvent.VizPointClick') && code.includes('HostEvent.GetFilters')
+      && code.includes('record_offset: offset');
+
+    // Drive the REAL dispatcher; only the network is faked.
+    const run = await probe.evaluate(async () => {
+      const cols = ['Meeting Id', 'User Name', 'Booked at'];
+      // The fixture emulates the REAL cluster: available_data_row_count comes back equal to the
+      // rows in THIS page, never the grand total (verified on 26.8.0.cl, contrary to the REST
+      // schema's "Total available data row count"). Page 1 is therefore indistinguishable from a
+      // result of exactly 2 rows except by asking for page 2 — so a full page must keep "Load more"
+      // alive and must NOT let the badge claim a reconciliation it cannot know yet.
+      const pages = [
+        { column_names: cols, data_rows: [['m1', 'Lakshman', '2026-01-02'], ['m2', 'Lakshman', '2026-01-03']], available_data_row_count: 2, returned_data_row_count: 2 },
+        { column_names: cols, data_rows: [['m3', 'Lakshman', '2026-01-04']], available_data_row_count: 1, returned_data_row_count: 1 },
+      ];
+      let call = 0; const bodies = [];
+      const real = window.fetch;
+      window.fetch = async (url, opts) => {
+        if (String(url).includes('searchdata')) {
+          bodies.push(JSON.parse(opts.body));
+          return new Response(JSON.stringify({ contents: [pages[Math.min(call++, 1)]] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return real(url, opts);
+      };
+      const click = (measure) => window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: { clickedPoint: {
+          selectedAttributes: [{ column: { name: 'Stage' }, value: 'Prospecting' }, { column: { name: 'User Name' }, value: 'Lakshman' }],
+          selectedMeasures: [{ column: { name: 'Meeting count' }, value: measure }],
+        } },
+      });
+      await click(3);
+      await new Promise((r) => setTimeout(r, 300));
+      const p1 = document.getElementById('dt-panel');
+      const first = {
+        rows: p1?.querySelectorAll('.dt-table tbody tr').length,
+        more: !!p1?.querySelector('.dt-more'),
+        badge: p1?.querySelector('.dt-badge')?.textContent,
+        mismatch: !!p1?.querySelector('.dt-badge--mismatch'),
+      };
+      p1?.querySelector('.dt-more')?.click();
+      await new Promise((r) => setTimeout(r, 300));
+      const p2 = document.getElementById('dt-panel');
+      const after = {
+        rows: p2?.querySelectorAll('.dt-table tbody tr').length, more: !!p2?.querySelector('.dt-more'),
+        href: p2?.querySelector('.dt-link')?.getAttribute('href'),
+        badge: p2?.querySelector('.dt-badge')?.textContent, mismatch: !!p2?.querySelector('.dt-badge--mismatch'),
+      };
+      // A KPI that disagrees with the row count must be flagged, not quietly shown.
+      await click(99);
+      await new Promise((r) => setTimeout(r, 300));
+      const mismatchShown = !!document.querySelector('.dt-badge--mismatch');
+      // A javascript: link template must never become a live anchor.
+      const st = await import('./js/state.js');
+      st.setState({ drill: { ...st.getState().drill, linkTemplate: 'javascript:window.__dtPwned=1//{Meeting Id}' } });
+      await click(3);
+      await new Promise((r) => setTimeout(r, 300));
+      const p3 = document.getElementById('dt-panel');
+      const guard = { anchors: p3?.querySelectorAll('.dt-link').length, blocked: p3?.querySelectorAll('.dt-link-bad').length, pwned: window.__dtPwned === 1 };
+
+      // Modal presentation: the record-list surface. Same `dt` state, different painter.
+      call = 0; // rewind the stub so this leg sees a FULL first page, not the tail of the last one
+      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', linkTemplate: 'https://example.invalid/m/{Meeting Id}' } });
+      await click(3);
+      await new Promise((r) => setTimeout(r, 300));
+      const mp = document.getElementById('dt-modal-panel');
+      const modal = {
+        mounted: !!mp,
+        panelGone: !document.getElementById('dt-panel'),
+        title: mp?.querySelector('.modal-title')?.textContent,
+        period: mp?.querySelector('.modal-sub')?.textContent,
+        summary: mp?.querySelector('.dt-summary')?.textContent,
+        records: mp?.querySelectorAll('.dt-rec').length,
+        chevrons: mp?.querySelectorAll('.dt-rec-chev').length,
+        href: mp?.querySelector('a.dt-rec')?.getAttribute('href'),
+        more: !!mp?.querySelector('.dt-more'),
+      };
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await new Promise((r) => setTimeout(r, 120));
+      modal.closedByEsc = !document.getElementById('dt-modal');
+      // TABLE right-click payload, copied from a real 26.8.0.cl response (see docs/org-memory):
+      // contextMenuPoints is an OBJECT, selectedAttributes is EMPTY, and the row's attributes are
+      // in deselectedAttributes. Reading only selectedAttributes yields no scope at all, and the
+      // detail query silently returns the whole model — which is what shipped before this fixture.
+      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', scopeColumn: 'Employee Name', measureColumn: 'Total Sales Amount' } });
+      document.getElementById('dt-modal')?.remove();
+      call = 0;
+      const tableQueryIdx = bodies.length; // keep the paging legs' bodies intact
+      await window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: {
+          vizId: 'viz-TABLE',
+          contextMenuPoints: {
+            clickedPoint: {
+              selectedAttributes: [],
+              deselectedAttributes: [
+                { column: { name: 'Employee Name' }, value: 'Lynn Tsoflias' },
+                { column: { name: 'Territory' }, value: 'Pacific' },
+              ],
+              // The user right-clicked the QUOTA cell, so that is what ThoughtSpot reports as
+              // selected — modelColumnNames scopes the action to the VIZ, not to one column, so this
+              // is reachable in the real UI. The configured measureColumn must still win, otherwise
+              // the modal is titled after a '{Null}' quota (observed on a real screenshot).
+              selectedMeasures: [{ column: { name: 'Total Sales Amount Quota' }, value: '{Null}' }],
+              deselectedMeasures: [
+                { column: { name: 'Total Sales Amount' }, value: '134280.9824' },
+                { column: { name: 'Quota %' }, value: '{Null}' },
+              ],
+            },
+            selectedPoints: [],
+          },
+        },
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      const tp = document.getElementById('dt-modal-panel');
+      const tableClick = {
+        query: bodies[tableQueryIdx]?.query_string,
+        title: tp?.querySelector('.modal-title')?.textContent,
+        summary: tp?.querySelector('.dt-summary')?.textContent,
+      };
+
+      // Drill scoping: VizPointClick fires for EVERY viz on the board, so a click from a viz other
+      // than the configured one must not drill away. Only the negative case is asserted here — the
+      // positive case re-renders a real embed, which this stubbed page has no business doing.
+      st.setState({ drill: { ...st.getState().drill, trigger: 'action', drillLiveboardId: 'lb-detail', drillVizId: 'viz-CHART' } });
+      document.getElementById('dt-modal')?.remove();
+      await window.__onVizPointClick({ data: { vizId: 'viz-TABLE', clickedPoint: { selectedAttributes: [{ column: { name: 'Stage' }, value: 'Prospecting' }] } } });
+      await new Promise((r) => setTimeout(r, 200));
+      const scoping = { otherVizDrilled: !!document.getElementById('drill-bar') };
+      return { bodies, first, after, mismatchShown, guard, modal, scoping, tableClick };
+    });
+
+    const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
+    // The load-bearing assertion: after a FULL page, "Load more" must still be offered. A
+    // row-count comparison against available_data_row_count would have hidden it here.
+    const pagingOk = run.bodies[0]?.record_offset === 0 && run.bodies[0]?.record_size === 2
+      && run.bodies[1]?.record_offset === 2
+      && run.first.rows === 2 && run.first.more && run.after.rows === 3 && !run.after.more;
+    // Mid-paging the total is unknown, so the badge reads "2+" and must NOT flag a mismatch;
+    // once a short page proves the end, it reconciles 3 against 3.
+    const badgeOk = /2\+ meetings/.test(run.first.badge || '') && !run.first.mismatch
+      && /Meeting count: 3 · 3 meetings/.test(run.after.badge || '') && !run.after.mismatch && run.mismatchShown;
+    const linkOk = run.after.href === 'https://example.invalid/m/m1'
+      && run.guard.anchors === 0 && run.guard.blocked > 0 && !run.guard.pwned;
+    const m = run.modal;
+    const modalOk = m.mounted && m.panelGone && m.closedByEsc
+      && m.title === 'Meeting count' && m.period === 'This Year'
+      && /meetings/.test(m.summary || '') && /Meeting count: 3/.test(m.summary || '')
+      && m.records === 2 && m.chevrons === 2 && m.href === 'https://example.invalid/m/m1' && m.more;
+    const t = run.tableClick;
+    const tableClickOk = t.query === "[Meeting Id] [User Name] [Booked at] [Employee Name] = 'Lynn Tsoflias'"
+      && t.title === 'Total Sales Amount' && /134,280\.9824/.test(t.summary || '')
+      && /Employee Name: Lynn Tsoflias/.test(t.summary || '');
+    const drillScopeOk = run.scoping.otherVizDrilled === false;
+    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk, drillScopeOk, probeErrors };
+  } finally {
+    await probe.close();
+  }
+}
+
 async function runUrlActionSchemeProbe(browser) {
   const EVIL = 'javascript:window.__pwned=1';
   const GOOD = 'https://example.invalid/x?id={{Customer ID}}';
@@ -446,9 +643,24 @@ try {
   const urlActOk = urlAct.dispatcherReady && !urlAct.pwned && urlAct.hostileOpened.length === 0
     && urlAct.goodOpened && urlAct.probeErrors.length === 0;
 
+  const dtp = await runDrillthroughProbe(browser);
+  console.log('');
+  console.log(`Drill-through probe (S22) — rail item + inspector panel render: ${dtp.railOk && dtp.panelOk}`);
+  console.log(`Drill-through probe (S22) — code-gen emits '<modelGuid>::<column>' scoping + both handlers: ${dtp.codeOk}`);
+  console.log(`Drill-through probe (S22) — clicked point scopes the searchdata query: ${dtp.scopedQuery}`);
+  console.log(`Drill-through probe (S22) — a FULL page keeps Load more alive; offset advances and appends: ${dtp.pagingOk}`);
+  console.log(`Drill-through probe (S22) — badge stays neutral ("N+") until the count is known, then reconciles: ${dtp.badgeOk}`);
+  console.log(`Drill-through probe (S22) — {Column} link resolves; javascript: template refused: ${dtp.linkOk}`);
+  console.log(`Drill-through probe (S22) — modal record list: title/period/summary, rows+chevrons, Esc closes: ${dtp.modalOk}`);
+  console.log(`Drill-through probe (S22) — TABLE right-click (deselectedAttributes) scopes the query + badge: ${dtp.tableClickOk}`);
+  console.log(`Drill-through probe (S22) — a click from a DIFFERENT viz does not drill away: ${dtp.drillScopeOk}`);
+  dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
+    && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.tableClickOk && dtp.drillScopeOk && dtp.probeErrors.length === 0;
+
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
-    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk;
+    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk && dtOk;
   console.log(ok ? '\nBOOT CHECK: PASS' : '\nBOOT CHECK: FAIL');
 } finally {
   try { await browser?.close(); } catch { /* already gone */ }

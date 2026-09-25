@@ -23,6 +23,7 @@ const EMBEDS = [
   { id: 'liveboard-custom', name: 'Custom Liveboard',  cls: 'LiveboardEmbed', needs: 'liveboard' },
   { id: 'ai-highlights',    name: 'AI Highlights',     cls: 'LiveboardEmbed', needs: 'liveboard' },
   { id: 'viz',              name: 'Single Viz',        cls: 'LiveboardEmbed', needs: 'viz' },
+  { id: 'drillthrough',     name: 'Drill-through',     cls: 'LiveboardEmbed', needs: 'liveboard' },
   { id: 'fullapp',          name: 'Full App',          cls: 'AppEmbed',       needs: 'none' },
   { id: 'ai-insights',      name: 'AI Insights (REST)',cls: 'Spotter REST',   needs: 'worksheet' },
   { id: 'spotter-chat',     name: 'Spotter Chat (MCP)',cls: 'Spotter MCP',    needs: 'none' },
@@ -33,7 +34,7 @@ const META = Object.fromEntries(EMBEDS.map(e => [e.id, e]));
 // embeds, the four LiveboardEmbed flavours, and the two whole-app / no-iframe options.
 const RAIL_GROUPS = [
   { label: 'Search & AI',  ids: ['search', 'spotter', 'spotter-chat'] },
-  { label: 'Liveboards',   ids: ['liveboard', 'liveboard-custom', 'ai-highlights', 'viz'] },
+  { label: 'Liveboards',   ids: ['liveboard', 'liveboard-custom', 'ai-highlights', 'viz', 'drillthrough'] },
   { label: 'App & REST',   ids: ['fullapp', 'ai-insights'] },
 ];
 
@@ -47,6 +48,7 @@ const EMBED_BLURBS = {
   viz:              'Embed a single visualization from a Liveboard — or one standalone Answer — on its own.',
   fullapp:          'Embed the entire ThoughtSpot app — nav bar, search, Liveboards, the works.',
   'ai-insights':    'Headless Spotter over REST — you render the AI answer cards yourself, with no ThoughtSpot iframe.',
+  drillthrough:     'Summary → detail. A point click opens a filtered detail Liveboard; a column-scoped action opens your own paged grid of event-grain rows.',
   'spotter-chat':   'Your own chat UI over the Spotter 3 MCP server — streamed prose with vendor terms relabelled, answers as embedded charts.',
 };
 
@@ -141,6 +143,7 @@ const DISPLAY = {
 
 DISPLAY['liveboard-custom'] = DISPLAY.liveboard; // same display flags as liveboard
 DISPLAY['ai-highlights'] = DISPLAY.liveboard;    // AI Highlights renders a Liveboard, then triggers HostEvent.AIHighlights
+DISPLAY.drillthrough = DISPLAY.liveboard;         // the drill-through demo renders a plain Liveboard as its summary
 
 // Hover descriptions for the display flags above (keyed by flag name; same key = same meaning across sections).
 const HINTS = {
@@ -228,6 +231,10 @@ const PDF_ACTION_ID = window.TS_PDF_ACTION_ID || 'download-invoice-pdf';
 // Id of the app-injected "Date" PRIMARY toolbar button (host-side date filter). Gated by
 // state.dateBtn.enabled; the CustomAction dispatcher routes it to openDatePicker().
 const DATE_ACTION_ID = '__date_filter';
+// Id of the app-injected "View detail" action for the Drill-through demo. Injected only on the
+// drillthrough section and scoped via dataModelIds.modelColumnNames to ONE measure column, so it
+// appears in that column's right-click menu and nowhere else. Routed to openDetailPanel().
+const DT_ACTION_ID = '__dt_view_detail';
 let editingActionId = null;      // id of the custom action currently loaded into the form for editing
 let lastSaved = null;            // { name, guid, at } — most recent EmbedEvent.Save this session
 let drillParent = null;          // { liveboardId } — set while drilled into a detail board (Q4)
@@ -671,6 +678,7 @@ function render() {
   if (pendingHostConfirm) { showHostConfirm(getState().host); return; }
   // A normal render always exits any active drill-down (Q4) — drop the back bar and state.
   if (drillParent) { drillParent = null; hideDrillBar(); }
+  dtClosePanel(); // the detail rows belong to a specific clicked point — never survive a re-render
   const s = getState();
   renderPersonalStrip(); // paint/refresh the Personal-liveboards tab strip on every render path
   // fullHeight makes the SDK grow the iframe to the Liveboard's content height; the stage must then
@@ -1941,8 +1949,9 @@ function renderInspector() {
   body.appendChild(groupLbl('Data'));
   body.appendChild(sectionObject(s));
   if (s.section === 'liveboard-custom') body.appendChild(sectionCfbSetup());
-  if (['liveboard', 'liveboard-custom', 'viz', 'fullapp', 'ai-highlights'].includes(s.section)) body.appendChild(sectionFilters(s));
-  if (['search', 'liveboard', 'liveboard-custom', 'viz', 'ai-highlights'].includes(s.section)) body.appendChild(sectionParams(s));
+  if (s.section === 'drillthrough') body.appendChild(sectionDrillthrough(s));
+  if (['liveboard', 'liveboard-custom', 'viz', 'fullapp', 'ai-highlights', 'drillthrough'].includes(s.section)) body.appendChild(sectionFilters(s));
+  if (['search', 'liveboard', 'liveboard-custom', 'viz', 'ai-highlights', 'drillthrough'].includes(s.section)) body.appendChild(sectionParams(s));
   body.appendChild(groupLbl('Behavior'));
   if ((DISPLAY[s.section] || []).length) body.appendChild(sectionDisplay(s));
   body.appendChild(sectionActions(s));
@@ -2654,6 +2663,21 @@ function buildEmbedCustomActions(s) {
       name: 'Date',
       position: CustomActionsPosition.PRIMARY,                // visible primary button on the toolbar
       target: CustomActionTarget.LIVEBOARD,
+    });
+  }
+  // Drill-through demo — "View detail", scoped to a SINGLE measure column so it shows up only in
+  // that column's right-click menu. The scoping key is dataModelIds.modelColumnNames, whose entries
+  // are '<modelGuid>::<columnName>' (verified against the SDK docs for 1.49.0; requires 1.43.0+ /
+  // 10.14.0.cl+). Without both the model GUID and the column the action would apply to every viz,
+  // so it is only injected when both are configured. The dispatcher routes it to openDetailPanel().
+  const d = s.drill || {};
+  if (s.section === 'drillthrough' && d.enabled && d.summaryModelId && d.measureColumn) {
+    actions.push({
+      id: DT_ACTION_ID,
+      name: d.actionLabel || 'View detail',
+      position: CustomActionsPosition.CONTEXTMENU,            // right-click menu on the data point
+      target: CustomActionTarget.VIZ,                         // per-viz, so the clicked row comes through
+      dataModelIds: { modelColumnNames: [`${d.summaryModelId}::${d.measureColumn}`] },
     });
   }
   return actions;
@@ -5065,6 +5089,8 @@ window.__onCustomAction = async (payload) => {
   if (id === PDF_ACTION_ID) { await handleInvoicePdf(payload); return; }
   // "Date" primary button → open the host-side chooser (Today / On a specific date).
   if (id === DATE_ACTION_ID) { openDatePicker(); return; }
+  // Drill-through demo: the column-scoped "View detail" action → host-rendered detail rows.
+  if (id === DT_ACTION_ID) { await openDetailPanel(payload); return; }
   const reg = customActionRegistry[id];
   if (!reg) return;
   const row = extractRow(payload);
@@ -5201,20 +5227,42 @@ function buildParentRuntimeFilters() {
   return [...fromActive, ...fromCfb];
 }
 
-// Pull the clicked point's *dimensional* attributes (not measures) across SDK payload shapes.
-function clickedAttributes(payload) {
+/**
+ * Every point-ish object a payload might carry, most specific first. `contextMenuPoints` is an
+ * OBJECT ({clickedPoint, selectedPoints}) on a table right-click and an ARRAY on other surfaces —
+ * both shapes observed live, so handle both rather than guessing one.
+ */
+function clickedPoints(payload) {
   const d = payload?.data ?? payload ?? {};
-  const attrs = d.clickedPoint?.selectedAttributes
-    || d.selectedPoints?.[0]?.selectedAttributes
-    || d.contextMenuPoints?.[0]?.selectedAttributes
-    || [];
-  const out = [];
-  attrs.forEach(a => {
-    const name = a?.column?.name ?? a?.columnName;
-    const val = a?.value ?? a?.dataValue;
-    if (name != null && val != null && val !== '') out.push({ columnName: name, operator: RuntimeFilterOp.IN, values: [String(val)] });
-  });
-  return out;
+  const cmp = d.contextMenuPoints;
+  return [
+    d.clickedPoint,
+    Array.isArray(cmp) ? cmp[0] : cmp?.clickedPoint,
+    Array.isArray(cmp) ? cmp[1] : cmp?.selectedPoints?.[0],
+    d.selectedPoints?.[0],
+  ].filter(Boolean);
+}
+
+// Pull the clicked point's *dimensional* attributes (not measures) across SDK payload shapes.
+// On a TABLE right-click ThoughtSpot reports the clicked MEASURE in selectedMeasures and leaves
+// selectedAttributes EMPTY — the row's attribute values arrive in `deselectedAttributes`
+// (verified live on 26.8.0.cl: Employee Name='Lynn Tsoflias', Territory='Pacific'). Without that
+// fallback a table action produces no scope at all and the detail query returns the whole model.
+// The fallback only applies when selectedAttributes is empty, so chart clicks are unaffected.
+function clickedAttributes(payload) {
+  for (const p of clickedPoints(payload)) {
+    const attrs = (p.selectedAttributes?.length ? p.selectedAttributes : p.deselectedAttributes) || [];
+    const out = [];
+    attrs.forEach(a => {
+      const name = a?.column?.name ?? a?.columnName;
+      const val = a?.value ?? a?.dataValue;
+      if (name != null && val != null && val !== '' && val !== '{Null}') {
+        out.push({ columnName: name, operator: RuntimeFilterOp.IN, values: [String(val)] });
+      }
+    });
+    if (out.length) return out;
+  }
+  return [];
 }
 
 // Render the curated drill liveboard in place, carrying the merged filters; show a Back bar.
@@ -5278,6 +5326,621 @@ function showDrillBar(drillId, filters) {
   bar.hidden = false;
 }
 function hideDrillBar() { const bar = $('#drill-bar'); if (bar) bar.remove(); }
+
+// ═══ DRILL-THROUGH DEMO — summary Liveboard → event-grain detail rows ═════════
+// Two host-side moves over one Liveboard, both driven from the Drill-through inspector panel:
+//   1. POINT CLICK  → EmbedEvent.VizPointClick gives clickedPoint.selectedAttributes; those become
+//      runtime filters, merged with whatever the user has set INSIDE the iframe (HostEvent.GetFilters)
+//      and with the host's own filters, and carried into a detail Liveboard via the existing drill path.
+//   2. "View detail" → a CONTEXTMENU/VIZ custom action scoped to ONE measure column
+//      (dataModelIds.modelColumnNames) opens a host-rendered grid of event-grain rows fetched with
+//      POST searchdata against a second, finer-grained model. The grid pages via record_offset and
+//      reconciles the clicked measure against available_data_row_count.
+// Nothing here is a security boundary: runtime filters are visible and editable in the URL, and the
+// detail rows are only safe because searchdata runs under the VIEWER'S OWN token (RLS applies).
+
+let dt = null;  // active detail view: { filters, kpi, columns, rows, reportedTotal, exhausted, offset, loading, error }
+
+/** Build a TS search query string: the requested columns, then one equality clause per filter. */
+/**
+ * ThoughtSpot reports a bucketed attribute as "Day(Order Date)" / "Month(...)" etc., but the search
+ * token is the underlying column. Strip the wrapper or the clause is rejected as a bad token.
+ */
+/** A filter value as the UI should SHOW it — date attributes arrive as raw epochs. */
+function dtDisplayValue(col, v) {
+  if (CFB_DATE_NAME_RE.test(col)) { const iso = cfbFmtDate(v); if (iso) return iso; }
+  return String(v);
+}
+
+function dtSearchColumn(name) {
+  const m = /^(?:Day|Week|Month|Quarter|Year|Hour|Minute|Second)\((.+)\)$/i.exec(String(name));
+  return m ? m[1] : name;
+}
+
+/**
+ * A value as a search literal. Date attributes arrive as raw epochs and ThoughtSpot's search parser
+ * wants **MM/DD/YYYY** here — `'2026-01-29'` and a bare 2026-01-29 are both rejected (verified live
+ * on 26.8.0.cl). That format is locale-shaped, so a non-US cluster may want DD/MM/YYYY.
+ */
+function dtSearchLiteral(col, v) {
+  if (CFB_DATE_NAME_RE.test(col)) {
+    const iso = cfbFmtDate(v);
+    if (iso) { const [y, mo, d] = iso.split('-'); return `${mo}/${d}/${y}`; }
+  }
+  return String(v).replace(/'/g, '');
+}
+
+function dtQueryString(columns, filters) {
+  // "Order Date.daily" → "[Order Date].daily". Without a suffix ThoughtSpot picks its own bucketing
+  // and will happily hand back Month(Order Date) when the rows you want are per-day.
+  const cols = columns.map(c => {
+    const m = /^(.*)\.([a-z_]+)$/.exec(c);
+    return m ? `[${m[1]}].${m[2]}` : `[${c}]`;
+  }).join(' ');
+  // TS search literals are single-quoted, so a value containing a quote would break the query.
+  // Drop those characters rather than risk a malformed clause — the caller logs what was sent.
+  const clauses = filters.map(f => {
+    const col = dtSearchColumn(f.columnName);
+    const vals = (f.values || []).map(v => dtSearchLiteral(f.columnName, v)).filter(Boolean);
+    if (!vals.length) return '';
+    return vals.length === 1
+      ? `[${col}] = '${vals[0]}'`
+      : `[${col}] = ${vals.map(v => `'${v}'`).join(' ')}`;
+  }).filter(Boolean);
+  return [cols, ...clauses].join(' ').trim();
+}
+
+/** Resolve a per-row deep link. Accepts {Column} or {{Column}}; refuses anything not http(s). */
+function dtResolveLink(tpl, rowObj) {
+  if (!tpl) return '';
+  const url = tpl.replace(/\{\{?\s*([^{}]+?)\s*\}?\}/g, (_, c) => encodeURIComponent(String(rowObj[c.trim()] ?? '')));
+  return safeNavUrl(url); // same http(s)-only guard the URL custom actions use — no fourth copy
+}
+
+/** COMPACT data_rows are arrays aligned to column_names; give callers a name→value view. */
+function dtRowObject(columns, row) {
+  if (Array.isArray(row)) return Object.fromEntries(columns.map((c, i) => [c, row[i]]));
+  return (row && typeof row === 'object') ? row : {};
+}
+
+/** The measure value the user actually clicked — the left half of the reconciliation badge. */
+const dtIsNull = (v) => v === null || v === undefined || v === '' || v === '{Null}';
+
+/**
+ * The measure the record list is ABOUT.
+ *
+ * Prefer the configured `measureColumn` wherever it sits on the clicked point, because
+ * `dataModelIds.modelColumnNames` scopes a custom action to a **visualization**, not to a column —
+ * confirmed live: with the action scoped to 'Total Sales Amount', right-clicking the neighbouring
+ * 'Total Sales Amount Quota' cell still shows it. Taking "whatever cell was clicked" then titles the
+ * modal after the wrong measure and, on this Liveboard, prints a '{Null}' quota as the KPI.
+ * The clicked cell's own measure is the fallback.
+ */
+function dtClickedMeasure(payload) {
+  const want = (getState().drill || {}).measureColumn;
+  const pick = (m) => ({ label: m.column?.name ?? m.columnName ?? 'KPI', value: m.value ?? m.dataValue });
+  const points = clickedPoints(payload);
+  if (want) {
+    for (const p of points) {
+      const all = [...(p.selectedMeasures || []), ...(p.deselectedMeasures || [])];
+      const m = all.find(x => (x?.column?.name ?? x?.columnName) === want && !dtIsNull(x.value ?? x.dataValue));
+      if (m) return pick(m);
+    }
+  }
+  // Fallback order: the clicked cell's own measure, then any other measure on the row. Skip nulls
+  // throughout — a modal titled "<measure>: {Null}" tells the viewer nothing and reconciles against
+  // nothing, so an adjacent real measure is strictly more useful than the empty cell they hit.
+  for (const p of points) {
+    const m = (p.selectedMeasures || []).find(x => !dtIsNull(x.value ?? x.dataValue));
+    if (m) return pick(m);
+  }
+  for (const p of points) {
+    const m = (p.deselectedMeasures || []).find(x => !dtIsNull(x.value ?? x.dataValue));
+    if (m) return pick(m);
+  }
+  return null;
+}
+
+// ── 1. Point click → filtered detail Liveboard ───────────────────────────────
+window.__onVizPointClick = async (payload) => {
+  const s = getState();
+  const d = s.drill || {};
+  if (s.section !== 'drillthrough' || !d.enabled) return;
+  logEvent('VizPointClick', JSON.stringify(payload?.data ?? payload).slice(0, 300));
+  // Trigger = 'click': a plain left-click on a cell/point opens the record list, the closest thing
+  // to the hover-reveal "View details" affordance a native app can put inside its own table. We
+  // cannot inject that link into the viz itself — it lives in a cross-origin iframe.
+  if (d.trigger === 'click') {
+    // Left-click is claimed by the record list, so a configured drill board would never fire.
+    // Say so rather than leaving a set-but-dead setting.
+    if (d.drillLiveboardId) logEvent('Drill', 'ℹ Opened-by is "left-click", so the point-click drill is off — the record list owns the click. Switch to right-click to use both.');
+    await openDetailPanel(payload);
+    return;
+  }
+  if (!d.drillLiveboardId) return;                       // panel-only setup: the action does the work
+  if (drillParent) return;                               // already drilled — a click in the detail board is not a new drill
+  // A Liveboard has many vizzes, and VizPointClick fires for all of them. Without this, clicking a
+  // cell in the detail TABLE would drill away to the other board mid-demo. Scoping the drill to one
+  // viz lets a chart drill AND a table open the record list on the same Liveboard.
+  const clickedVizId = payload?.data?.vizId || payload?.vizId || '';
+  if (d.drillVizId && clickedVizId && clickedVizId !== d.drillVizId) return;
+
+  const clicked = clickedAttributes(payload);
+  if (!clicked.length) {
+    logEvent('Drill', '⚠ point click carried no dimensional attributes — nothing to filter by.');
+    return;
+  }
+  // Also carry what the user set INSIDE the iframe. GetFilters returns a promise directly (no
+  // callback arg); it is unsupported on some builds, so a failure degrades to host-side filters only.
+  let fromEmbed = [];
+  try {
+    const res = await currentEmbed?.trigger(HostEvent.GetFilters);
+    const list = Array.isArray(res) ? res : (res?.filters || res?.data || []);
+    fromEmbed = (Array.isArray(list) ? list : [])
+      .filter(f => f?.column && Array.isArray(f.values) && f.values.length)
+      .map(f => ({ columnName: f.column, operator: RuntimeFilterOp[f.operator] ?? RuntimeFilterOp.IN, values: f.values.map(String) }));
+    logEvent('HostEvent', `GetFilters → ${fromEmbed.length} Liveboard filter(s) carried`);
+  } catch (e) {
+    logEvent('HostEvent', `GetFilters unavailable (${e.message}) — carrying host-side filters only`);
+  }
+  // Clicked attributes win: they are the point the user actually selected. De-dupe by column so a
+  // board filter on the same column can't AND itself against the click into an empty result.
+  const byCol = new Map();
+  [...buildParentRuntimeFilters(), ...fromEmbed, ...clicked].forEach(f => byCol.set(f.columnName, f));
+  enterDrill(d.drillLiveboardId, [...byCol.values()]);
+};
+
+// ── 2. "View detail" → host-rendered, paged grid of event-grain rows ─────────
+async function openDetailPanel(payload) {
+  const s = getState();
+  const d = s.drill || {};
+  if (!d.detailModelId) { toast('Drill-through: pick a detail Model first.'); return; }
+  if (!d.detailColumns?.length) { toast('Drill-through: list the detail columns to show first.'); return; }
+
+  // Scope the detail query to the clicked point. Prefer the configured scope column when the click
+  // carries it; otherwise fall back to every dimensional attribute on the point.
+  const attrs = clickedAttributes(payload);
+  const scoped = d.scopeColumn ? attrs.filter(f => f.columnName === d.scopeColumn) : attrs;
+  const filters = scoped.length ? scoped : attrs;
+  const kpi = dtClickedMeasure(payload);
+
+  dt = { filters, kpi, columns: [], rows: [], reportedTotal: 0, exhausted: false, offset: 0, loading: true, error: '' };
+  renderDetail();
+  await dtFetchPage(true);
+}
+
+/** Fetch one page and merge it into `dt`. `reset` replaces the rows, otherwise it appends. */
+async function dtFetchPage(reset = false) {
+  const s = getState();
+  const d = s.drill || {};
+  if (!dt) return;
+  dt.loading = true; dt.error = '';
+  renderDetail();
+  const query = dtQueryString(d.detailColumns, dt.filters);
+  const offset = reset ? 0 : dt.offset;
+  logEvent('Drill-through', `searchdata ← "${query}" (offset ${offset}, size ${d.pageSize})`);
+  const res = await Discovery.searchDataPage(s.host, {
+    queryString: query, modelId: d.detailModelId, offset, size: d.pageSize,
+  });
+  if (!dt) return;                                        // the panel was closed while the fetch was in flight
+  dt.loading = false;
+  if (!res.ok) {
+    dt.error = res.error || 'searchdata failed';
+    logEvent('Drill-through', `✗ ${dt.error}`);
+  } else {
+    dt.columns = res.columns;
+    dt.rows = reset ? res.rows : [...dt.rows, ...res.rows];
+    dt.offset = dt.rows.length;
+    // Do NOT trust available_data_row_count as the total. The REST schema documents it as "Total
+    // available data row count", but on 26.8.0.cl it comes back equal to returned_data_row_count on
+    // every page — including a full 1,000-row one — so a full page tells you nothing about the total.
+    // The only reliable end-of-data signal is a SHORT page. `reportedTotal` is kept and used only
+    // when it actually exceeds what we've loaded, so a cluster that DOES report a real total still
+    // gets the nicer "N of M" display.
+    dt.reportedTotal = Number.isFinite(res.totalRows) ? res.totalRows : 0;
+    dt.exhausted = res.rows.length < d.pageSize;
+    const known = dtKnownTotal();
+    logEvent('Drill-through', `✓ ${res.rows.length} row(s) · ${dt.rows.length} loaded${known === null ? ' (more available)' : ` of ${known}`}`);
+  }
+  renderDetail();
+}
+
+/**
+ * The true row count, or null when it is genuinely unknown.
+ *   • a cluster that reports a real total (> what we hold) → trust it
+ *   • we paged until a short page came back → we hold everything
+ *   • otherwise a full page came back and the total is unknowable without fetching more
+ * Returning null is the honest answer, and it is what stops the badge claiming a false mismatch.
+ */
+function dtKnownTotal() {
+  if (!dt) return null;
+  if (dt.reportedTotal > dt.rows.length) return dt.reportedTotal;
+  if (dt.exhausted) return dt.rows.length;
+  return null;
+}
+
+let dtKeyHandler = null;   // Esc-to-close, bound only while the modal is mounted
+
+const dtNum = (n) => n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+
+/**
+ * Reconcile the clicked measure against the detail rows. WHICH comparison is right depends on the
+ * measure: a count ("57 Conversations") reconciles against the ROW COUNT, but a sum ("Total Sales
+ * Amount: 185,915.1558") never will — it reconciles against the SUM of the matching detail column.
+ * Pick automatically: if a detail column carries the same name as the clicked measure, add it up;
+ * otherwise count rows. Either way, only claim a mismatch once paging is finished.
+ */
+function dtReconcile() {
+  const noun = (getState().drill || {}).recordNoun || 'rows';
+  const kpiNum = dt.kpi ? Number(dt.kpi.value) : NaN;
+  const head = dt.kpi ? `${dt.kpi.label}: ${Number.isFinite(kpiNum) ? dtNum(kpiNum) : dt.kpi.value} · ` : '';
+  const settled = dt.exhausted && !dt.loading && !dt.error;
+  const measureCol = dt.kpi ? dt.columns.find(c => c === dt.kpi.label) : null;
+
+  if (measureCol && Number.isFinite(kpiNum)) {
+    const sum = dt.rows.reduce((a, row) => {
+      const n = Number(dtRowObject(dt.columns, row)[measureCol]);
+      return a + (Number.isFinite(n) ? n : 0);
+    }, 0);
+    const tol = Math.max(0.01, Math.abs(kpiNum) * 1e-9); // floats via two aggregations
+    const mismatch = settled && Math.abs(sum - kpiNum) > tol;
+    return {
+      text: `${head}${dt.rows.length}${dt.exhausted ? '' : '+'} ${noun} · \u03a3 ${dtNum(sum)}${dt.exhausted ? '' : '\u2026'}`,
+      mismatch,
+      reconciled: settled && !mismatch,
+      tip: !settled ? 'Load more to finish reconciling — this is the sum of the rows loaded so far.'
+        : mismatch ? 'The clicked measure and the sum of the detail rows disagree — the two are not measuring the same thing.'
+        : 'The detail rows add up to exactly the measure you clicked.',
+    };
+  }
+
+  const known = dtKnownTotal();
+  const rowsTxt = dt.loading && !dt.rows.length ? '\u2026' : (known === null ? `${dt.rows.length}+ ${noun}` : `${known} ${noun}`);
+  const mismatch = Number.isFinite(kpiNum) && !dt.loading && !dt.error && known !== null && kpiNum !== known;
+  return {
+    text: `${head}${rowsTxt}`,
+    mismatch,
+    // A tick only when a real comparison happened: a numeric measure, paging settled, and it matched.
+    reconciled: Number.isFinite(kpiNum) && known !== null && !dt.loading && !dt.error && !mismatch,
+    tip: mismatch ? 'The clicked measure and the detail row count disagree — the two models are not counting the same grain.'
+      : known === null && !dt.loading ? 'A full page came back, so the total is not known yet — load more to reconcile.' : '',
+  };
+}
+
+function dtClosePanel() {
+  dt = null;
+  document.getElementById('dt-panel')?.remove();
+  document.getElementById('dt-modal')?.remove();
+  if (dtKeyHandler) { document.removeEventListener('keydown', dtKeyHandler); dtKeyHandler = null; }
+}
+
+/** Paint whichever surface the setup asks for. Both read the same `dt` state. */
+function renderDetail() {
+  const pres = (getState().drill || {}).presentation;
+  if (pres === 'panel') { document.getElementById('dt-modal')?.remove(); renderDetailPanel(); return; }
+  document.getElementById('dt-panel')?.remove();
+  renderDetailModal();
+}
+
+/**
+ * One cell, ready to display. COMPACT search results carry date columns as RAW EPOCH NUMBERS with no
+ * type metadata (the same constraint the custom filter bar hit), so `Month(Order Date)` arrives as
+ * 1733011200 and would render as a meaningless integer. Reuse the filter bar's name heuristic +
+ * epoch formatter rather than inventing a second one.
+ */
+function dtCell(rowObj, col) {
+  const v = rowObj[col];
+  if (v === null || v === undefined || v === '') return '';
+  if (CFB_DATE_NAME_RE.test(col)) { const iso = cfbFmtDate(v); if (iso) return iso; }
+  return String(v);
+}
+
+/** title = first column · date-ish column to the right · everything else in the meta line. */
+function dtSplitColumns(cols) {
+  const title = cols[0];
+  const dateCol = cols.slice(1).find(c => CFB_DATE_NAME_RE.test(c)) || '';
+  return { title, dateCol, meta: cols.filter(c => c !== title && c !== dateCol) };
+}
+
+/** "12 orders · Total Sales Amount: 4,291 — Jae Pak · Europe" */
+function dtSummaryLine() {
+  const r = dtReconcile();
+  const scope = dt.filters.map(f => `${f.columnName}: ${f.values.map(dtDisplayValue.bind(null, f.columnName)).join(' / ')}`).join(' · ');
+  return `${r.text}${scope ? ` — ${scope}` : ''}`;
+}
+
+/** One record row: icon · title + meta · date · chevron. The whole row is the link when one resolves. */
+function dtRecordEl(rowObj, cols, d) {
+  const { title, dateCol, meta } = dtSplitColumns(cols);
+  const cell = (c) => dtCell(rowObj, c);
+  const href = dtResolveLink(d.linkTemplate, rowObj);
+  const row = el(href ? 'a' : 'div', `dt-rec${href ? '' : ' dt-rec--flat'}`);
+  if (href) { row.href = href; row.target = '_blank'; row.rel = 'noopener noreferrer'; }
+  else if (d.linkTemplate) row.title = 'Blocked: the link template did not resolve to a plain http(s) URL.';
+
+  const icon = el('span', 'dt-rec-icon'); icon.setAttribute('aria-hidden', 'true');
+  const main = el('div', 'dt-rec-main');
+  const t = el('div', 'dt-rec-title'); t.textContent = cell(title) || '—';
+  const m = el('div', 'dt-rec-meta'); m.textContent = meta.map(cell).filter(Boolean).join(' • ');
+  main.append(t, m);
+  const right = el('div', 'dt-rec-right');
+  if (dateCol) { const dd = el('div', 'dt-rec-date'); dd.textContent = cell(dateCol); right.appendChild(dd); }
+  const chev = el('span', 'dt-rec-chev'); chev.textContent = '›';
+  row.append(icon, main, right, chev);
+  return row;
+}
+
+/** Shimmer placeholders, so the modal has shape before the first page lands. */
+function dtSkeletonEl(n = 6) {
+  const wrap = el('div', 'dt-skel');
+  for (let i = 0; i < n; i++) {
+    const r = el('div', 'dt-skel-row');
+    r.append(el('span', 'dt-skel-dot'), el('span', 'dt-skel-line'), el('span', 'dt-skel-line dt-skel-line--short'));
+    wrap.appendChild(r);
+  }
+  return wrap;
+}
+
+// Centred record list over the board — the shape of the drill-through pattern customers recognise:
+// title = the measure you clicked, a period subtitle, a one-line summary, then the individual
+// records behind that number, each one clickable through to the system that owns it.
+function renderDetailModal() {
+  const s = getState();
+  const d = s.drill || {};
+  let modal = document.getElementById('dt-modal');
+  if (!dt) { modal?.remove(); return; }
+  if (!modal) {
+    modal = el('div', 'modal'); modal.id = 'dt-modal';
+    const scrim = el('div', 'modal-scrim');
+    scrim.addEventListener('click', dtClosePanel);
+    const panel = el('div', 'modal-panel modal-panel--center dt-modal-panel'); panel.id = 'dt-modal-panel';
+    modal.append(scrim, panel);
+    document.body.appendChild(modal);
+    dtKeyHandler = (ev) => { if (ev.key === 'Escape') dtClosePanel(); };
+    document.addEventListener('keydown', dtKeyHandler);
+  }
+  const panel = document.getElementById('dt-modal-panel');
+  panel.innerHTML = '';
+
+  const head = el('div', 'modal-head');
+  const heading = el('div');
+  const title = el('div', 'modal-title');
+  title.textContent = dt.kpi?.label || d.actionLabel || 'Detail';
+  heading.appendChild(title);
+  if (d.periodLabel) { const sub = el('div', 'modal-sub'); sub.textContent = d.periodLabel; heading.appendChild(sub); }
+  const x = el('button', 'modal-close'); x.type = 'button'; x.textContent = '✕';
+  x.setAttribute('aria-label', 'Close'); x.addEventListener('click', dtClosePanel);
+  head.append(heading, x);
+  panel.appendChild(head);
+
+  const body = el('div', 'modal-body dt-modal-body');
+  const rec = dtReconcile();
+  const summary = el('div', `dt-summary${rec.mismatch ? ' dt-summary--mismatch' : ''}`);
+  summary.textContent = dtSummaryLine() + (rec.mismatch ? '  ⚠' : (rec.reconciled ? '  ✓' : ''));
+  if (rec.tip) summary.title = rec.tip;
+  body.appendChild(summary);
+
+  if (dt.error) { const e = el('div', 'dt-error'); e.textContent = dt.error; body.appendChild(e); }
+
+  if (dt.loading && !dt.rows.length) {
+    body.appendChild(dtSkeletonEl());
+  } else if (dt.rows.length) {
+    const list = el('div', 'dt-reclist');
+    dt.rows.forEach(r => list.appendChild(dtRecordEl(dtRowObject(dt.columns, r), dt.columns, d)));
+    body.appendChild(list);
+  } else if (!dt.error) {
+    const empty = el('div', 'dt-empty'); empty.textContent = 'No detail rows behind this value.';
+    body.appendChild(empty);
+  }
+  panel.appendChild(body);
+
+  const foot = el('div', 'modal-foot dt-modal-foot');
+  const known = dtKnownTotal();
+  const count = el('span', 'dt-count');
+  count.textContent = dt.loading && !dt.rows.length ? 'Loading…'
+    : (known === null ? `Showing ${dt.rows.length} — more available` : `Showing ${dt.rows.length} of ${known}`);
+  foot.appendChild(count);
+  if (!dt.exhausted && !dt.error) {
+    const more = el('button', 'dt-more'); more.type = 'button';
+    more.textContent = dt.loading ? 'Loading…' : `Load more (${d.pageSize})`;
+    more.disabled = dt.loading;
+    more.addEventListener('click', () => { dtFetchPage(false); });
+    foot.appendChild(more);
+  }
+  const viewAll = safeNavUrl(d.viewAllUrl || '');
+  if (viewAll) {
+    const a = el('a', 'dt-viewall'); a.href = viewAll; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    a.textContent = `View all ${d.recordNoun || 'records'}`;
+    foot.appendChild(a);
+  }
+  panel.appendChild(foot);
+}
+
+function renderDetailPanel() {
+  const s = getState();
+  const d = s.drill || {};
+  let panel = document.getElementById('dt-panel');
+  if (!dt) { panel?.remove(); return; }
+  if (!panel) {
+    panel = el('div', 'dt-panel'); panel.id = 'dt-panel';
+    const stage = $('#stage'); const bottom = $('#bottom');
+    if (bottom) stage.insertBefore(panel, bottom); else stage.appendChild(panel);
+  }
+  panel.innerHTML = '';
+
+  // ── header: what was clicked, the reconciliation badge, and a close button ──
+  const head = el('div', 'dt-head');
+  const title = el('div', 'dt-title');
+  const strong = el('strong'); strong.textContent = d.actionLabel || 'View detail';
+  const scope = el('span', 'dt-scope');
+  scope.textContent = dt.filters.length
+    ? dt.filters.map(f => `${f.columnName}: ${f.values.map(dtDisplayValue.bind(null, f.columnName)).join(' / ')}`).join('  ·  ')
+    : 'no scope carried from the click';
+  title.append(strong, document.createTextNode(' · '), scope);
+
+  // The point of the badge: the KPI the user clicked and the number of detail rows behind it should
+  // agree. When they don't, the summary and the detail model are not counting the same thing —
+  // which is exactly the question a customer asks, so make the mismatch loud rather than hiding it.
+  const badge = el('div', 'dt-badge');
+  const r = dtReconcile();
+  if (r.mismatch) badge.classList.add('dt-badge--mismatch');
+  badge.textContent = r.text + (r.mismatch ? ' ⚠' : '');
+  if (r.tip) badge.title = r.tip;
+
+  const close = el('button', 'dt-close'); close.type = 'button';
+  close.textContent = '✕'; close.setAttribute('aria-label', 'Close detail panel');
+  close.addEventListener('click', dtClosePanel);
+  head.append(title, badge, close);
+  panel.appendChild(head);
+
+  if (dt.error) {
+    const err = el('div', 'dt-error'); err.textContent = dt.error;   // upstream text — never innerHTML
+    panel.appendChild(err);
+  }
+
+  // ── the rows ──
+  if (dt.columns.length) {
+    const wrap = el('div', 'dt-table-wrap');
+    const table = el('table', 'dt-table');
+    const thead = el('thead'); const htr = el('tr');
+    dt.columns.forEach(name => { const th = el('th'); th.textContent = name; htr.appendChild(th); });
+    if (d.linkTemplate) htr.appendChild(el('th'));        // link column has no header label
+    thead.appendChild(htr); table.appendChild(thead);
+    const tbody = el('tbody');
+    dt.rows.forEach(row => {
+      const rowObj = dtRowObject(dt.columns, row);
+      const tr = el('tr');
+      dt.columns.forEach(name => {
+        const td = el('td');
+        td.textContent = dtCell(rowObj, name) || '—';
+        tr.appendChild(td);
+      });
+      if (d.linkTemplate) {
+        const td = el('td', 'dt-linkcell');
+        const href = dtResolveLink(d.linkTemplate, rowObj);
+        if (href) {
+          const a = el('a', 'dt-link'); a.href = href; a.target = '_blank'; a.rel = 'noopener noreferrer';
+          a.textContent = 'Open ↗';
+          td.appendChild(a);
+        } else {
+          const bad = el('span', 'dt-link-bad'); bad.textContent = '—';
+          bad.title = 'Blocked: the link template did not resolve to a plain http(s) URL.';
+          td.appendChild(bad);
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody); wrap.appendChild(table);
+    panel.appendChild(wrap);
+  }
+
+  // ── footer: how far we've paged, and the Load-more control ──
+  const foot = el('div', 'dt-foot');
+  const knownFoot = dtKnownTotal();
+  const count = el('span', 'dt-count');
+  count.textContent = dt.loading && !dt.rows.length
+    ? 'Loading…'
+    : (knownFoot === null
+      ? `Showing ${dt.rows.length} rows — more available`
+      : `Showing ${dt.rows.length} of ${knownFoot} row${knownFoot === 1 ? '' : 's'}`);
+  foot.appendChild(count);
+  // A SHORT page is the end-of-data signal, not a row-count comparison (see dtFetchPage).
+  if (!dt.exhausted && !dt.error) {
+    const more = el('button', 'dt-more'); more.type = 'button';
+    more.textContent = dt.loading ? 'Loading…' : `Load more (${d.pageSize})`;
+    more.disabled = dt.loading;
+    // record_offset paging is what gets you past the 1,000-row response cap on searchdata.
+    more.addEventListener('click', () => { dtFetchPage(false); });
+    foot.appendChild(more);
+  }
+  panel.appendChild(foot);
+}
+
+// — Drill-through setup panel (inspector) —
+function sectionDrillthrough(s) {
+  const d = s.drill || {};
+  const set = (patch) => { setState({ drill: { ...getState().drill, ...patch } }); };
+  const c = el('div', 'sec-body');
+
+  c.appendChild(infoHint(
+    'Summary Liveboard → detail rows, entirely host-side.',
+    'Pick the Liveboard above as your summary board. A click on a data point carries that point’s '
+    + 'attributes (plus any filters set inside the iframe, via HostEvent.GetFilters) into the detail '
+    + 'Liveboard. Separately, a right-click action scoped to the summary Model\u2019s measure column opens a paged grid of '
+    + 'event-grain rows fetched with POST searchdata against a finer-grained Model. Needs SDK 1.43.0+ / '
+    + 'cluster 10.14.0.cl+ for the column scoping.'));
+
+  c.appendChild(toggleField('Enable drill-through', d.enabled, v => { set({ enabled: v }); renderInspector(); render(); },
+    'Injects the column-scoped action and listens for point clicks on this section only.'));
+
+  const wsOpts = discovered.worksheets.map(w => ({ id: w.id, name: w.name }));
+  const lbOpts = discovered.liveboards.map(l => ({ id: l.id, name: l.name }));
+
+  c.appendChild(el('div', 'insp-group-lbl', 'The action'));
+  c.appendChild(labeledSelect('Summary Model', d.summaryModelId, wsOpts, v => { set({ summaryModelId: v }); renderInspector(); render(); },
+    'The Model behind the summary Liveboard. Its GUID is half of the modelColumnNames scoping key.', !connected));
+  c.appendChild(textField('Measure column', d.measureColumn, v => { set({ measureColumn: v }); render(); },
+    'e.g. Meeting count'));
+  c.appendChild(el('div', 'fld-hint', 'The SDK scopes the action as "<modelGuid>::<column>", which limits it to VISUALIZATIONS built on that column — not to that column’s cells, so it shows on every cell of a matching viz. The record list always reports THIS measure, wherever on the row you right-click. Leave either field blank and no action is injected at all.'));
+  c.appendChild(textField('Action label', d.actionLabel, v => { set({ actionLabel: v }); render(); }, 'View detail'));
+  c.appendChild(enumSelect('Opened by', d.trigger, [
+    { value: 'action', label: 'Right-click → menu item' },
+    { value: 'click', label: 'Plain left-click on the value' },
+  ], v => { set({ trigger: v }); renderInspector(); render(); },
+  'Right-click opens ThoughtSpot\u2019s own menu with your item added to it, and nothing reaches your code until the user picks it. Left-click fires VizPointClick straight away with no menu at all, so your panel opens on the first click. Verified on 26.8.0.cl for both a table cell and a chart mark.'));
+
+  c.appendChild(el('div', 'insp-group-lbl', 'The record list'));
+  c.appendChild(enumSelect('Show as', d.presentation, [
+    { value: 'modal', label: 'Modal over the board' },
+    { value: 'panel', label: 'Docked grid below' },
+  ], v => { set({ presentation: v }); renderInspector(); }, 'Modal = a record list, one row per record. Panel = a dense table docked under the embed.'));
+  c.appendChild(textField('Period label', d.periodLabel, v => set({ periodLabel: v }), 'This Year'));
+  c.appendChild(textField('A row is a…', d.recordNoun, v => set({ recordNoun: v }), 'orders'));
+  c.appendChild(textField('“View all” link', d.viewAllUrl, v => set({ viewAllUrl: v }), 'https://…'));
+  c.appendChild(el('div', 'fld-hint', 'Optional footer CTA, like the “View all Conversations” button on the reference design. http(s) only.'));
+
+  c.appendChild(el('div', 'insp-group-lbl', 'The detail rows'));
+  c.appendChild(labeledSelect('Detail Model', d.detailModelId, wsOpts, v => { set({ detailModelId: v }); renderInspector(); },
+    'The event-grain Model queried by POST searchdata — one row per event, not the aggregate.', !connected));
+  c.appendChild(textField('Detail columns', (d.detailColumns || []).join(', '),
+    v => set({ detailColumns: v.split(',').map(x => x.trim()).filter(Boolean) }),
+    'Meeting Id, User Name, Booked at, Stage'));
+  c.appendChild(textField('Scope column', d.scopeColumn, v => set({ scopeColumn: v }), 'e.g. Stage'));
+  c.appendChild(el('div', 'fld-hint', 'Which clicked attribute filters the detail query. Blank = carry every attribute on the clicked point.'));
+  const ps = textField('Page size', String(d.pageSize ?? 100), v => { const n = Number(v); set({ pageSize: Number.isFinite(n) ? Math.min(1000, Math.max(1, Math.round(n))) : 100 }); renderInspector(); }, '100');
+  c.appendChild(ps);
+  c.appendChild(el('div', 'fld-hint', 'record_size per page. "Load more" advances record_offset, which is how you get past the 1,000-row response cap.'));
+  c.appendChild(textField('Row link template', d.linkTemplate, v => set({ linkTemplate: v }),
+    'https://app.example.com/meetings/{Meeting Id}'));
+  c.appendChild(el('div', 'fld-hint', 'Per-row deep link. {Column} is replaced with that row’s value (URL-encoded). Only plain http(s) links are opened.'));
+
+  c.appendChild(el('div', 'insp-group-lbl', 'The point click'));
+  c.appendChild(labeledSelect('Detail Liveboard', d.drillLiveboardId, lbOpts, v => { set({ drillLiveboardId: v }); renderInspector(); },
+    'Opened, filtered, when a point is clicked. Leave unset to demo the record list alone.', !connected));
+  if (d.drillLiveboardId) {
+    if (s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
+      loadViz(s.liveboardId).then(() => renderInspector());
+    }
+    const vizzes = vizCache[s.liveboardId] || [];
+    c.appendChild(labeledSelect('Drill only from', d.drillVizId, vizzes, v => set({ drillVizId: v }),
+      _vizLoading.has(s.liveboardId) ? 'Loading…' : '', !connected));
+    c.appendChild(el('div', 'fld-hint', 'VizPointClick fires for every viz on the board. Pick one so a chart can drill while a table opens the record list — leave blank and any click drills.'));
+    if (d.trigger === 'click') {
+      const warn = el('div', 'sec-note sec-note--warn');
+      warn.textContent = 'Opened by is set to left-click, so the record list owns the click and this drill will not fire. Switch to right-click to run both on one board.';
+      c.appendChild(warn);
+    }
+  }
+
+  const sec = el('div', 'sec-note sec-note--warn');
+  sec.textContent = 'Runtime filters are not a security boundary — they are visible and editable in the URL. The detail rows are safe because searchdata runs under the viewer’s own token, so RLS applies to them.';
+  c.appendChild(sec);
+
+  const count = [d.enabled, d.summaryModelId, d.measureColumn, d.detailModelId, (d.detailColumns || []).length, d.drillLiveboardId].filter(Boolean).length;
+  return accordion('Drill-through', count, c, true);
+}
+
 
 // ═══ PERSONAL LIVEBOARDS — per-user editable copies as a tab strip ════════════
 // End users make their own copy (or copies) of a standard liveboard via POST metadata/copyobject; the
@@ -5620,7 +6283,7 @@ function generateCode() {
   if (s.section === 'spotter') opt.push(`  worksheetId: '${esc(s.worksheetId)}',`);
   // Masterpieces is on by default; the flags loop below emits the explicit `false` when it's toggled off.
   const masterpiecesOn = (s.flags[s.section] || {}).isLiveboardMasterpiecesEnabled !== false;
-  if (s.section === 'liveboard' || s.section === 'liveboard-custom' || s.section === 'ai-highlights') {
+  if (s.section === 'liveboard' || s.section === 'liveboard-custom' || s.section === 'ai-highlights' || s.section === 'drillthrough') {
     opt.push('  liveboardV2: true,');
     if (masterpiecesOn) opt.push('  isLiveboardMasterpiecesEnabled: true,');
     opt.push(`  liveboardId: '${esc(s.liveboardId)}',`);
@@ -5635,12 +6298,16 @@ function generateCode() {
   if (hiddenKeys.length) opt.push(`  hiddenActions: [${hiddenKeys.map(a => `Action.${a}`).join(', ')}],`);
   if (s.disabledActions.length) opt.push(`  disabledActions: [${s.disabledActions.map(a => `Action.${a}`).join(', ')}],`);
   if (s.disabledActions.length && s.disabledActionReason) opt.push(`  disabledActionReason: '${esc(s.disabledActionReason)}',`);
-  if (s.customActions.length || exportMenu || pickerMenu || dateBtn) {
+  const dtAction = s.section === 'drillthrough' && s.drill?.enabled && s.drill.summaryModelId && s.drill.measureColumn ? s.drill : null;
+  if (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction) {
     opt.push('  customActions: [');
     s.customActions.forEach(a => opt.push(`    { id: '${esc(a.id)}', name: '${esc(a.label)}', position: CustomActionsPosition.${a.pos || 'PRIMARY'}, target: CustomActionTarget.${a.target || 'LIVEBOARD'} },`));
     if (exportMenu) opt.push(`    { id: 'export', name: '${esc(s.exportOpts.actionLabel || 'Preconfigured pdf download')}', position: CustomActionsPosition.MENU, target: CustomActionTarget.LIVEBOARD },`);
     if (pickerMenu) opt.push(`    { id: 'export-customize', name: '${esc(s.exportOpts.pickerLabel || 'Customize Export')}', position: CustomActionsPosition.MENU, target: CustomActionTarget.LIVEBOARD },`);
     if (dateBtn) opt.push(`    { id: '${DATE_ACTION_ID}', name: 'Date', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.LIVEBOARD },`);
+    // Scoped to ONE column: dataModelIds.modelColumnNames entries are '<modelGuid>::<columnName>',
+    // so the action shows up only in that column's context menu (SDK 1.43.0+ / 10.14.0.cl+).
+    if (dtAction) opt.push(`    { id: '${DT_ACTION_ID}', name: '${esc(dtAction.actionLabel || 'View detail')}', position: CustomActionsPosition.CONTEXTMENU, target: CustomActionTarget.VIZ, dataModelIds: { modelColumnNames: ['${esc(dtAction.summaryModelId)}::${esc(dtAction.measureColumn)}'] } },`);
     opt.push('  ],');
   }
   if (s.runtimeParameters.length) { opt.push('  runtimeParameters: ['); s.runtimeParameters.forEach(p => opt.push(`    { name: '${esc(p.name)}', value: '${esc(p.value)}' },`)); opt.push('  ],'); }
@@ -5648,6 +6315,54 @@ function generateCode() {
 
   // `let` when Personal liveboards is on so switchBoard() can reassign `embed` on a tab click.
   L.push(`${plbOn ? 'let' : 'const'} embed = new ${embedCls}('#ts-embed-container', {\n${opt.join('\n')}\n});`);
+  if (s.section === 'drillthrough' && s.drill?.enabled) {
+    const d = s.drill;
+    L.push('');
+    L.push('// ── Drill-through: a point click carries the clicked attributes + the board\'s own filters ──');
+    L.push('// HostEvent.GetFilters returns a promise directly (no callback argument).');
+    L.push('embed.on(EmbedEvent.VizPointClick, async ({ data }) => {');
+    L.push('  const clicked = (data.clickedPoint?.selectedAttributes ?? [])');
+    L.push('    .map(a => ({ columnName: a.column.name, operator: RuntimeFilterOp.IN, values: [a.value] }));');
+    L.push('  let boardFilters = [];');
+    L.push('  try {');
+    L.push('    const res = await embed.trigger(HostEvent.GetFilters);');
+    L.push('    boardFilters = (Array.isArray(res) ? res : res?.filters ?? [])');
+    L.push('      .filter(f => f.column && f.values?.length)');
+    L.push('      .map(f => ({ columnName: f.column, operator: RuntimeFilterOp[f.operator] ?? RuntimeFilterOp.IN, values: f.values }));');
+    L.push('  } catch (_) { /* unsupported on this build — carry the click alone */ }');
+    L.push('  embed.destroy();');
+    L.push(`  new ${embedCls}('#ts-embed-container', {`);
+    L.push('    frameParams: {}, liveboardV2: true,');
+    L.push(`    liveboardId: '${esc(d.drillLiveboardId || 'detail-liveboard-guid')}',`);
+    L.push('    // Clicked attributes last so they win on a column the board also filters.');
+    L.push('    runtimeFilters: [...boardFilters, ...clicked],');
+    L.push('  }).render();');
+    L.push('});');
+    L.push('');
+    L.push('// ── "' + (d.actionLabel || 'View detail') + '": event-grain rows for the clicked point ──');
+    L.push('// searchdata runs under the VIEWER\'S token, so RLS applies to the detail rows.');
+    L.push('// record_offset is what pages past the 1,000-row response cap.');
+    L.push('embed.on(EmbedEvent.CustomAction, async (payload) => {');
+    L.push(`  if (payload.id !== '${DT_ACTION_ID}') return;`);
+    L.push('  const attrs = payload.data?.clickedPoint?.selectedAttributes ?? [];');
+    L.push(`  const scope = attrs${d.scopeColumn ? `.filter(a => a.column.name === '${esc(d.scopeColumn)}')` : ''};`);
+    L.push(`  const cols = ${JSON.stringify(d.detailColumns || [])}.map(c => \`[\${c}]\`).join(' ');`);
+    L.push('  const where = scope.map(a => `[${a.column.name}] = \'${a.value}\'`).join(\' \');');
+    L.push(`  const page = async (offset) => (await fetch('${esc(s.host)}/api/rest/2.0/searchdata', {`);
+    L.push('    method: \'POST\', credentials: \'include\',');
+    L.push('    headers: { \'Content-Type\': \'application/json\', Accept: \'application/json\' },');
+    L.push('    body: JSON.stringify({');
+    L.push('      query_string: `${cols} ${where}`.trim(),');
+    L.push(`      logical_table_identifier: '${esc(d.detailModelId || 'detail-model-guid')}',`);
+    L.push(`      data_format: 'COMPACT', record_size: ${Number(d.pageSize) || 100}, record_offset: offset,`);
+    L.push('    }),');
+    L.push('  })).json();');
+    L.push('  const first = (await page(0)).contents?.[0] ?? {};');
+    L.push('  // first.available_data_row_count is the FULL match count — reconcile it against the');
+    L.push('  // measure the user clicked (payload.data.clickedPoint.selectedMeasures[0].value).');
+    L.push('  renderYourGrid(first.column_names, first.data_rows, first.available_data_row_count);');
+    L.push('});');
+  }
   if (drillAction) {
     // Drill-down with filters carried over (Q4): clicked attributes + parent filters → detail board.
     L.push('');
