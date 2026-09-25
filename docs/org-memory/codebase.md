@@ -318,3 +318,26 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   the code against the fixture's beliefs. Rule of thumb: whenever a fixture encodes an upstream
   response shape, the value chosen must come from an observed real response, and the probe should
   cover the awkward case (here: a full page, where total and page size are indistinguishable).
+- 2026-09-25 (S22, found by the first LIVE click test): **a TABLE right-click reports the row's
+  attributes in `deselectedAttributes`, not `selectedAttributes`** — and `contextMenuPoints` is an
+  OBJECT (`{clickedPoint, selectedPoints}`), not the array the old extractor assumed. Verified on
+  26.8.0.cl by right-clicking a `Total Sales Amount` cell on a TABLE_MODE viz: `selectedAttributes`
+  came back `[]` while `deselectedAttributes` held `Employee Name='Lynn Tsoflias'`,
+  `Territory='Pacific'`, `Day(Order Date)='1769644800'`, and `selectedMeasures` held the clicked
+  `Total Sales Amount`. `deselectedMeasures` held the row's OTHER measures, mostly `'{Null}'` — so
+  never fall back to it for "the measure the user clicked". CHART clicks are different: there
+  `selectedAttributes` IS populated (a bubble/bar click carried Territory + Product), so the
+  deselected fallback must be conditional on selectedAttributes being empty. Encoded in
+  `clickedPoints()` / `clickedAttributes()` / `dtClickedMeasure()` in app.js. Symptom when wrong:
+  the detail query loses its scope entirely and silently returns the whole model.
+- 2026-09-25 (S22): `dataModelIds.modelColumnNames` matches the column's **display name as the viz
+  shows it**, not the underlying model column. `'<modelGuid>::Total Sales Amount'` put the action in
+  the right-click menu of that column; the model's own column is named `Sales Amount`. Confirmed
+  live — the menu read Filter · Drill down · Show underlying data · SpotIQ analyze · Copy to
+  clipboard · **View orders**.
+- 2026-09-25 (S22, driving the embed in tests): ThoughtSpot renders each Liveboard tile as a `div`
+  whose **`id` is the viz GUID** (`#c27c6f29-…`), which is a far steadier hook than tile titles or
+  `data-testid`s. Its context menu does NOT use `role="menuitem"` — match menu entries by exact leaf
+  text instead. Tiles render lazily, so `scrollIntoView` + retry before looking for marks/cells.
+  Puppeteer reaches into the cross-origin TS iframe fine (`page.frames()` → `evaluateHandle` →
+  `ElementHandle.click()`), so a full live click-path test is possible without any TS-side setup.

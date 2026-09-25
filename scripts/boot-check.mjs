@@ -418,6 +418,40 @@ async function runDrillthroughProbe(browser) {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
       await new Promise((r) => setTimeout(r, 120));
       modal.closedByEsc = !document.getElementById('dt-modal');
+      // TABLE right-click payload, copied from a real 26.8.0.cl response (see docs/org-memory):
+      // contextMenuPoints is an OBJECT, selectedAttributes is EMPTY, and the row's attributes are
+      // in deselectedAttributes. Reading only selectedAttributes yields no scope at all, and the
+      // detail query silently returns the whole model — which is what shipped before this fixture.
+      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', scopeColumn: 'Employee Name' } });
+      document.getElementById('dt-modal')?.remove();
+      call = 0;
+      const tableQueryIdx = bodies.length; // keep the paging legs' bodies intact
+      await window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: {
+          vizId: 'viz-TABLE',
+          contextMenuPoints: {
+            clickedPoint: {
+              selectedAttributes: [],
+              deselectedAttributes: [
+                { column: { name: 'Employee Name' }, value: 'Lynn Tsoflias' },
+                { column: { name: 'Territory' }, value: 'Pacific' },
+              ],
+              selectedMeasures: [{ column: { name: 'Total Sales Amount' }, value: '134280.9824' }],
+              deselectedMeasures: [{ column: { name: 'Quota %' }, value: '{Null}' }],
+            },
+            selectedPoints: [],
+          },
+        },
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      const tp = document.getElementById('dt-modal-panel');
+      const tableClick = {
+        query: bodies[tableQueryIdx]?.query_string,
+        title: tp?.querySelector('.modal-title')?.textContent,
+        summary: tp?.querySelector('.dt-summary')?.textContent,
+      };
+
       // Drill scoping: VizPointClick fires for EVERY viz on the board, so a click from a viz other
       // than the configured one must not drill away. Only the negative case is asserted here — the
       // positive case re-renders a real embed, which this stubbed page has no business doing.
@@ -426,7 +460,7 @@ async function runDrillthroughProbe(browser) {
       await window.__onVizPointClick({ data: { vizId: 'viz-TABLE', clickedPoint: { selectedAttributes: [{ column: { name: 'Stage' }, value: 'Prospecting' }] } } });
       await new Promise((r) => setTimeout(r, 200));
       const scoping = { otherVizDrilled: !!document.getElementById('drill-bar') };
-      return { bodies, first, after, mismatchShown, guard, modal, scoping };
+      return { bodies, first, after, mismatchShown, guard, modal, scoping, tableClick };
     });
 
     const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
@@ -446,8 +480,11 @@ async function runDrillthroughProbe(browser) {
       && m.title === 'Meeting count' && m.period === 'This Year'
       && /meetings/.test(m.summary || '') && /Meeting count: 3/.test(m.summary || '')
       && m.records === 2 && m.chevrons === 2 && m.href === 'https://example.invalid/m/m1' && m.more;
+    const t = run.tableClick;
+    const tableClickOk = t.query === "[Meeting Id] [User Name] [Booked at] [Employee Name] = 'Lynn Tsoflias'"
+      && t.title === 'Total Sales Amount' && /134280\.9824/.test(t.summary || '');
     const drillScopeOk = run.scoping.otherVizDrilled === false;
-    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, drillScopeOk, probeErrors };
+    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk, drillScopeOk, probeErrors };
   } finally {
     await probe.close();
   }
@@ -607,10 +644,11 @@ try {
   console.log(`Drill-through probe (S22) — badge stays neutral ("N+") until the count is known, then reconciles: ${dtp.badgeOk}`);
   console.log(`Drill-through probe (S22) — {Column} link resolves; javascript: template refused: ${dtp.linkOk}`);
   console.log(`Drill-through probe (S22) — modal record list: title/period/summary, rows+chevrons, Esc closes: ${dtp.modalOk}`);
+  console.log(`Drill-through probe (S22) — TABLE right-click (deselectedAttributes) scopes the query + badge: ${dtp.tableClickOk}`);
   console.log(`Drill-through probe (S22) — a click from a DIFFERENT viz does not drill away: ${dtp.drillScopeOk}`);
   dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
   const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
-    && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.drillScopeOk && dtp.probeErrors.length === 0;
+    && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.tableClickOk && dtp.drillScopeOk && dtp.probeErrors.length === 0;
 
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk

@@ -5227,20 +5227,42 @@ function buildParentRuntimeFilters() {
   return [...fromActive, ...fromCfb];
 }
 
-// Pull the clicked point's *dimensional* attributes (not measures) across SDK payload shapes.
-function clickedAttributes(payload) {
+/**
+ * Every point-ish object a payload might carry, most specific first. `contextMenuPoints` is an
+ * OBJECT ({clickedPoint, selectedPoints}) on a table right-click and an ARRAY on other surfaces —
+ * both shapes observed live, so handle both rather than guessing one.
+ */
+function clickedPoints(payload) {
   const d = payload?.data ?? payload ?? {};
-  const attrs = d.clickedPoint?.selectedAttributes
-    || d.selectedPoints?.[0]?.selectedAttributes
-    || d.contextMenuPoints?.[0]?.selectedAttributes
-    || [];
-  const out = [];
-  attrs.forEach(a => {
-    const name = a?.column?.name ?? a?.columnName;
-    const val = a?.value ?? a?.dataValue;
-    if (name != null && val != null && val !== '') out.push({ columnName: name, operator: RuntimeFilterOp.IN, values: [String(val)] });
-  });
-  return out;
+  const cmp = d.contextMenuPoints;
+  return [
+    d.clickedPoint,
+    Array.isArray(cmp) ? cmp[0] : cmp?.clickedPoint,
+    Array.isArray(cmp) ? cmp[1] : cmp?.selectedPoints?.[0],
+    d.selectedPoints?.[0],
+  ].filter(Boolean);
+}
+
+// Pull the clicked point's *dimensional* attributes (not measures) across SDK payload shapes.
+// On a TABLE right-click ThoughtSpot reports the clicked MEASURE in selectedMeasures and leaves
+// selectedAttributes EMPTY — the row's attribute values arrive in `deselectedAttributes`
+// (verified live on 26.8.0.cl: Employee Name='Lynn Tsoflias', Territory='Pacific'). Without that
+// fallback a table action produces no scope at all and the detail query returns the whole model.
+// The fallback only applies when selectedAttributes is empty, so chart clicks are unaffected.
+function clickedAttributes(payload) {
+  for (const p of clickedPoints(payload)) {
+    const attrs = (p.selectedAttributes?.length ? p.selectedAttributes : p.deselectedAttributes) || [];
+    const out = [];
+    attrs.forEach(a => {
+      const name = a?.column?.name ?? a?.columnName;
+      const val = a?.value ?? a?.dataValue;
+      if (name != null && val != null && val !== '' && val !== '{Null}') {
+        out.push({ columnName: name, operator: RuntimeFilterOp.IN, values: [String(val)] });
+      }
+    });
+    if (out.length) return out;
+  }
+  return [];
 }
 
 // Render the curated drill liveboard in place, carrying the merged filters; show a Back bar.
@@ -5354,12 +5376,13 @@ function dtRowObject(columns, row) {
 
 /** The measure value the user actually clicked — the left half of the reconciliation badge. */
 function dtClickedMeasure(payload) {
-  const d = payload?.data ?? payload ?? {};
-  const m = d.clickedPoint?.selectedMeasures?.[0]
-    || d.selectedPoints?.[0]?.selectedMeasures?.[0]
-    || d.contextMenuPoints?.[0]?.selectedMeasures?.[0];
-  if (!m) return null;
-  return { label: m.column?.name ?? m.columnName ?? 'KPI', value: m.value ?? m.dataValue };
+  // selectedMeasures ONLY — deselectedMeasures holds the row's other measure columns (Quota, Quota %),
+  // which are not what the user clicked and are frequently '{Null}'.
+  for (const p of clickedPoints(payload)) {
+    const m = p.selectedMeasures?.[0];
+    if (m) return { label: m.column?.name ?? m.columnName ?? 'KPI', value: m.value ?? m.dataValue };
+  }
+  return null;
 }
 
 // ── 1. Point click → filtered detail Liveboard ───────────────────────────────
