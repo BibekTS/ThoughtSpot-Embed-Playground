@@ -418,19 +418,30 @@ function renderConfirmExtras() {
   if (s.styles?.cssUrl) rows.push(`Loads a remote stylesheet: ${s.styles.cssUrl}`);
   ul.textContent = '';
   rows.forEach(t => { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
-  ul.hidden = rows.length === 0;
+  ul.hidden = false; // rows always carries at least the auth-mode line
 }
 
 // ── Unconfirmed-link persistence hold ─────────────────────────────────────────
 // state.js's holdHostPersist() blanks only `host` from localStorage, so the rest of an unconfirmed
 // #s= payload (authType, auth.username/orgId, styles.cssUrl…) would still be written and outlive a
 // dismissed link. state.js is the guard-protected sanitize layer, so the hold is completed here:
-// snapshot whatever localStorage held BEFORE the link was opened and restore it after every
-// persist until the user confirms. schedulePersist() debounces 250ms, so the restore sits behind it.
+// snapshot whatever localStorage held BEFORE the link was opened and restore it, on a short poll,
+// until the user confirms.
+//
+// Two reasons this POLLS rather than hanging off subscribe():
+//   • `setState(patch, {silent:true})` skips notify() but still calls schedulePersist(), so a
+//     subscribe-driven restore would silently never fire for a silent write.
+//   • schedulePersist() writes 250ms after the last change; a restore scheduled behind that left a
+//     ~150ms window in which the tab could be closed with the link's payload in storage. Polling
+//     cuts that to at most one interval.
+// RESIDUAL RISK (unavoidable without state.js, which is guard-protected): this is a
+// write-then-revert, not a suppression. A tab closed inside one poll interval of a persist still
+// leaves the link's non-host payload in localStorage. The real fix is to generalise
+// `_holdHostPersist` (state.js:159) to omit the whole payload rather than just `host`.
 const LS_STATE_KEY = 'tsp_state_v1'; // must match STORAGE_KEY in js/state.js
+const PERSIST_HOLD_POLL_MS = 50;     // upper bound on the exposure window
 let preLinkStorage = null;           // the pre-link localStorage entry (null = there was none)
-let persistHoldTimer = null;
-let persistHoldOff = null;           // subscribe() teardown while the hold is armed
+let persistHoldTimer = null;         // the poll handle; non-null means the hold is armed
 
 function restorePreLinkStorage() {
   try {
@@ -439,20 +450,16 @@ function restorePreLinkStorage() {
   } catch (_) {}
 }
 function holdAllPersist() {
-  if (persistHoldOff) return;
+  if (persistHoldTimer) return;
   try { preLinkStorage = localStorage.getItem(LS_STATE_KEY); } catch (_) { preLinkStorage = null; }
   restorePreLinkStorage();
-  // loadState() already scheduled a persist before this ran — undo that one too.
-  clearTimeout(persistHoldTimer);
-  persistHoldTimer = setTimeout(restorePreLinkStorage, 400);
-  persistHoldOff = subscribe(() => {
-    clearTimeout(persistHoldTimer);
-    persistHoldTimer = setTimeout(restorePreLinkStorage, 400); // behind state.js's 250ms debounce
-  });
+  persistHoldTimer = setInterval(() => {
+    try { if (localStorage.getItem(LS_STATE_KEY) !== preLinkStorage) restorePreLinkStorage(); } catch (_) {}
+  }, PERSIST_HOLD_POLL_MS);
 }
 function releaseAllPersist() {
-  if (persistHoldOff) { persistHoldOff(); persistHoldOff = null; }
-  clearTimeout(persistHoldTimer);
+  clearInterval(persistHoldTimer);
+  persistHoldTimer = null;
   preLinkStorage = null;
 }
 
@@ -2429,8 +2436,12 @@ function sectionObject(s) {
   }
   if (needs === 'viz') {
     // Lazy-load vizzes when the inspector renders with a pre-selected liveboard but a cold
-    // cache — happens on page reload or when arriving via a shared link.
-    if (s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
+    // cache — happens on page reload or when arriving via a shared link. Auto-load ONLY when
+    // connected (same fence as the standalone-Answer auto-load below): discoverViz issues a
+    // CREDENTIALED (`credentials:'include'`) POST, and renderInspector() runs at boot while a
+    // shared-link host is still awaiting confirmation — so an unfenced call here contacts the
+    // attacker's host with the user's cookies, zero clicks (S10 review).
+    if (connected && s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
       loadViz(s.liveboardId).then(() => renderInspector());
     }
     const isLoading = _vizLoading.has(s.liveboardId);

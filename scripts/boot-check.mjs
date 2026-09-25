@@ -270,28 +270,37 @@ async function runAnswerPickerProbe(browser) {
 // That POST must NEVER hit a host that arrived via the attacker-controllable #s= share hash before
 // the user has explicitly clicked Connect — otherwise a shared link would silently drive the
 // visitor's session against an attacker-named host. The guard is app.js's `connected &&` prefix on
-// the auto-load condition (sectionObject, ~app.js:1118).
+// both auto-load conditions in sectionObject (js/app.js, the `needs === 'viz'` branch).
 //
-// Navigate to `#s={section:'viz', host:EVIL}`. The app boots into pendingHostConfirm (host set,
-// NOT connected) and renders the Single-Viz inspector — so the auto-load condition
-// (`connected && answerList === undefined`) is genuinely evaluated pre-connect. Assert the confirm
-// overlay is up (positive control: we are in the pre-confirm state where the guard matters) AND that
-// the app fired NO discovery POST at the unconfirmed host. It matches ONLY the discovery path
-// (/metadata/search); the SDK's own preauth GETs at an unconfirmed host were a separate issue,
-// fixed under S10 and now covered by runHostConfirmProbe/runPreauthExfilProbe — keeping this probe
-// narrow means a discovery regression is still attributable here. Runs on its own page.
+// Navigate to `#s={section:'viz', host:EVIL, liveboardId:LB}`. The app boots into
+// pendingHostConfirm (host set, NOT connected) and renders the Single-Viz inspector — so BOTH
+// auto-load conditions are genuinely evaluated pre-connect:
+//   • the standalone-Answer load (`connected && answerList === undefined`) → POST /metadata/search
+//   • the viz load (`connected && s.liveboardId && vizCache[...] === undefined`, fenced by the S10
+//     review) → POST /metadata/liveboard/data via Discovery.discoverViz
+// The `liveboardId` is what gives the second leg teeth: without it loadViz() returns early and the
+// assertion passes whether or not the fence exists. Both discovery calls send
+// `credentials:'include'` (discovery.js), so an unfenced one ships the visitor's cookies to an
+// attacker-named host with zero clicks.
+// Assert the confirm overlay is up (positive control: we are in the pre-confirm state where the
+// guards matter) AND that NO discovery POST — and in fact no request at all — reached the
+// unconfirmed host. Runs on its own page.
 async function runAnswerPreconfirmProbe(browser) {
   const HOST = 'https://evil.s3probe.example';
+  const LB = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'; // survives sanitize; makes loadViz() reachable
   const hash = Buffer.from(
-    JSON.stringify({ section: 'viz', host: HOST }), 'utf8'
+    JSON.stringify({ section: 'viz', host: HOST, liveboardId: LB }), 'utf8'
   ).toString('base64url');
   const probe = await browser.newPage();
-  // Record ONLY the app's own discovery POST (discoverAnswers → /metadata/search) at the evil host,
-  // NOT the SDK preauth GETs — see the note above. Attached BEFORE goto so a boot-time fetch is caught.
+  // Attached BEFORE goto so a boot-time fetch is caught. `discoveryHits` names the app's own
+  // credentialed REST calls (both /metadata/ paths); `allHits` catches anything else that slips out.
   const discoveryHits = [];
+  const allHits = [];
   probe.on('request', (r) => {
     const u = r.url();
-    if (u.startsWith(HOST) && u.includes('/metadata/search')) discoveryHits.push(u);
+    if (!u.startsWith(HOST)) return;
+    allHits.push(`${r.method()} ${u}`);
+    if (u.includes('/metadata/')) discoveryHits.push(`${r.method()} ${u}`);
   });
   let confirmShown;
   try {
@@ -303,8 +312,14 @@ async function runAnswerPreconfirmProbe(browser) {
       const name = document.getElementById('confirm-host-name')?.textContent || '';
       return !!active && name.includes(host);
     }, { polling: 300, timeout: 20_000 }, HOST).then(() => true, () => false);
-    await sleep(600); // let any (guarded-away) auto-load fetch initiate before we read the tally
-    return { confirmShown, noDiscoveryContact: discoveryHits.length === 0, discoveryHits };
+    await sleep(800); // let any (guarded-away) auto-load fetch initiate before we read the tally
+    return {
+      confirmShown,
+      noDiscoveryContact: discoveryHits.length === 0,
+      noAnyContact: allHits.length === 0,
+      discoveryHits,
+      allHits,
+    };
   } finally {
     await probe.close();
   }
@@ -473,7 +488,11 @@ async function runPreauthExfilProbe(browser, authType, expectPath, testAuthChang
       btn.click();
       return true;
     });
-    const waitUntil = async (fn, ms = 20_000) => {
+    // 6s, not 20s: the mint is immediate when it happens at all, and this budget is spent TWICE
+    // per run across TWO runs on top of a 20s waitForFunction — against a 120s whole-run watchdog
+    // that process.exit(1)s WITHOUT printing `BOOT CHECK: FAIL`. A real regression must surface as
+    // a named failure, not as a watchdog timeout.
+    const waitUntil = async (fn, ms = 6_000) => {
       const deadline = Date.now() + ms;
       while (Date.now() < deadline) { if (fn()) return true; await sleep(200); }
       return false;
@@ -577,6 +596,8 @@ try {
   console.log(`Answer pre-confirm probe (S3) — confirm overlay shown (pre-connect state): ${s3pre.confirmShown}`);
   console.log(`Answer pre-confirm probe (S3) — no discovery POST to unconfirmed host: ${s3pre.noDiscoveryContact}`);
   s3pre.discoveryHits.forEach((u) => console.log('  - discovery POST at unconfirmed host:', u));
+  console.log(`Answer pre-confirm probe (S3/S10) — no request of ANY kind to unconfirmed host: ${s3pre.noAnyContact}`);
+  s3pre.allHits.forEach((u) => console.log('  - request at unconfirmed host:', u));
 
   const urlAct = await runUrlActionSchemeProbe(browser);
   console.log(`URL-action scheme probe (S13) — dispatcher installed: ${urlAct.dispatcherReady}`);
@@ -620,12 +641,14 @@ try {
     exfilOk = exfilOk && r.confirmShown && r.preConfirmHostHits.length === 0
       && r.preConfirmMintHits.length === 0 && r.noMintOnAuthChange && r.noHostContactOnAuthChange
       && (!r.authChangeTested || r.authChangeFired)
-      && r.confirmClicked && r.mintedAfterConfirm && r.contactedAfterConfirm;
+      && r.confirmClicked && r.mintedAfterConfirm && r.contactedAfterConfirm
+      && r.probeErrors.length === 0;
   }
 
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
-    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk && exfilOk;
+    && s3pre.confirmShown && s3pre.noDiscoveryContact && s3pre.noAnyContact
+    && urlActOk && exfilOk;
   console.log(ok ? '\nBOOT CHECK: PASS' : '\nBOOT CHECK: FAIL');
 } finally {
   try { await browser?.close(); } catch { /* already gone */ }

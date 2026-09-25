@@ -292,8 +292,10 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   an attacker a live token with zero clicks. `applyConfig()` (`js/app.js`) now short-circuits before
   `initSDK` while `pendingHostConfirm`; `buildConfig()` still runs so the code generator stays live.
   Corollary: `pendingHostConfirm` must be cleared by the Confirm click ALONE — `connect()` used to
-  clear it for every caller, so `onTokenApplied`'s `connect({silent:true})` was a second, clickless
-  route to the same sink.
+  clear it for every caller, so `onTokenApplied`'s `connect({silent:true})` was a second route to
+  the same sink. (That one is NOT clickless — it needs the user to click "Mint & apply" in the
+  trusted-auth modal — but it clears the confirm state without the confirm gesture, so the modal is
+  now blocked outright while `pendingHostConfirm`.)
 - 2026-09-25 (S10, gates): **both gate servers run with `TS_SECRET_KEY=''`, so anything
   mint-dependent 503s and a probe that merely asserts "no token leaked" passes vacuously.** A probe
   covering a mint path MUST stub the route — puppeteer `setRequestInterception(true)` +
@@ -307,5 +309,35 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `styles.cssUrl`) was still written and outlived a dismissed link. `js/state.js` is guard-protected,
   so the hold is completed from `js/app.js` (`holdAllPersist()`): snapshot the pre-link
   `tsp_state_v1` entry and restore it ~400ms behind `schedulePersist()`'s 250ms debounce on every
-  `subscribe()` notification until Confirm. Note the storage-key constant is now duplicated in
+  50ms poll until Confirm. **This is a write-then-revert, not a suppression — the payload IS
+  briefly in `localStorage`, and a tab closed inside one poll interval of a persist leaves the
+  attacker's `authType`/`auth.username`/`styles.cssUrl`/`customActions` (host blanked) behind, to be
+  applied against the victim's OWN host on their next visit.** The first cut restored on a
+  `subscribe()` callback at +400ms against `schedulePersist`'s +250ms write, i.e. a ~150ms exposure
+  window; polling shortens it but cannot close it. Polling is also required for correctness:
+  `setState(patch, {silent:true})` (`js/state.js:132`) skips `notify()` but still calls
+  `schedulePersist()`, so a `subscribe()`-driven restore never fires for a silent write (only
+  `persistCfb()` is silent today, and it is not reachable pre-confirm — latent trap). The real fix
+  is to generalise `_holdHostPersist` (`js/state.js:159`) to omit the whole payload instead of just
+  `host`; that is a guard-protected change. Note the storage-key constant is now duplicated in
   `js/app.js` (`LS_STATE_KEY`) — it must stay in lockstep with `STORAGE_KEY` (`js/state.js:20`).
+- 2026-09-25 (S10 review, a SECOND zero-click host contact the first fix missed): gating
+  `initSDK()` is not sufficient — **`renderInspector()` also runs at boot while
+  `pendingHostConfirm`** (`js/app.js`, right after the confirm state is computed), and
+  `sectionObject`'s `needs === 'viz'` branch auto-fired `loadViz()` → `Discovery.discoverViz` →
+  a `credentials:'include'` POST `${host}/api/rest/2.0/metadata/liveboard/data`, with no
+  `connected &&` fence — unlike the standalone-Answer auto-load ~25 lines below, which S3 had
+  fenced. A link encoding `{host, section:'viz', liveboardId}` (both fields survive sanitize)
+  therefore shipped the visitor's cookies to the attacker's host with zero clicks. **Rule: every
+  auto-loader reachable from `renderInspector()` needs the `connected &&` fence**, because
+  `connected` is the only flag that is provably false pre-confirm (set only in `connect()`, after
+  `pendingHostConfirm=false`). Swept the other inspector sections at the time of the fix: the
+  remaining discovery calls (`refreshPersonalCopies`, the export/CFB/AI-Insights REST calls) are all
+  behind explicit user gestures.
+- 2026-09-25 (S10 review, why the probes missed it): **a negative security probe is only as strong
+  as the state its fixture reaches.** All three pre-existing pre-confirm probes defaulted to
+  `section:'search'`, and the one that did use `{section:'viz'}` omitted `liveboardId` — precisely
+  the input that makes `loadViz()` return early at its first line. The probe passed against
+  genuinely vulnerable code. When a fence guards a lazy loader, the fixture must carry whatever
+  makes that loader *actually run*, and the probe should assert on ANY request to the host, not
+  only on the one path the author had in mind.
