@@ -471,8 +471,8 @@ async function runDrillthroughProbe(browser) {
       && run.first.rows === 2 && run.first.more && run.after.rows === 3 && !run.after.more;
     // Mid-paging the total is unknown, so the badge reads "2+" and must NOT flag a mismatch;
     // once a short page proves the end, it reconciles 3 against 3.
-    const badgeOk = /rows: 2\+/.test(run.first.badge || '') && !run.first.mismatch
-      && /Meeting count: 3 · rows: 3/.test(run.after.badge || '') && !run.after.mismatch && run.mismatchShown;
+    const badgeOk = /2\+ meetings/.test(run.first.badge || '') && !run.first.mismatch
+      && /Meeting count: 3 · 3 meetings/.test(run.after.badge || '') && !run.after.mismatch && run.mismatchShown;
     const linkOk = run.after.href === 'https://example.invalid/m/m1'
       && run.guard.anchors === 0 && run.guard.blocked > 0 && !run.guard.pwned;
     const m = run.modal;
@@ -482,7 +482,8 @@ async function runDrillthroughProbe(browser) {
       && m.records === 2 && m.chevrons === 2 && m.href === 'https://example.invalid/m/m1' && m.more;
     const t = run.tableClick;
     const tableClickOk = t.query === "[Meeting Id] [User Name] [Booked at] [Employee Name] = 'Lynn Tsoflias'"
-      && t.title === 'Total Sales Amount' && /134280\.9824/.test(t.summary || '');
+      && t.title === 'Total Sales Amount' && /134,280\.9824/.test(t.summary || '')
+      && /Employee Name: Lynn Tsoflias/.test(t.summary || '');
     const drillScopeOk = run.scoping.otherVizDrilled === false;
     return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk, drillScopeOk, probeErrors };
   } finally {

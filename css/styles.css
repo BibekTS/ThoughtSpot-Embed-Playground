@@ -1703,3 +1703,4 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
 }
 @keyframes dtshimmer { from { background-position: 100% 50%; } to { background-position: 0 50%; } }
 @media (prefers-reduced-motion: reduce) { .dt-skel-dot, .dt-skel-line { animation: none; } }
+.dt-summary--mismatch { background: var(--warn-soft); color: var(--warn); font-weight: 600; }

@@ -341,3 +341,21 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   text instead. Tiles render lazily, so `scrollIntoView` + retry before looking for marks/cells.
   Puppeteer reaches into the cross-origin TS iframe fine (`page.frames()` → `evaluateHandle` →
   `ElementHandle.click()`), so a full live click-path test is possible without any TS-side setup.
+- 2026-09-25 (S22, found by reviewing a real screenshot): a drill-through must carry **every**
+  attribute on the clicked point, not one. The clicked measure on a table is the intersection of all
+  its attribute columns — `Employee Quota Achievement` is Employee × Territory × Day, so scoping the
+  detail query to Employee alone returned ~10× the rows and the number could never reconcile. Two
+  ThoughtSpot syntax facts make the full scope work:
+  (a) bucketed attributes come back wrapped — `Day(Order Date)` — and the wrapper must be stripped
+      before use as a search token (`[Order Date]`), or the query is rejected as "Bad tokens";
+  (b) the date literal ThoughtSpot's search parser accepts here is **`MM/DD/YYYY`**. Verified on
+      26.8.0.cl: `[Order Date] = '01/29/2026'` → 178 rows summing to exactly the clicked KPI, while
+      `'2026-01-29'` and bare `2026-01-29` both 400, and `[Order Date].daily = '2026-01-29'` silently
+      returned the WRONG rows (200 rows, different sum) rather than erroring. That format is
+      locale-shaped — a non-US cluster may need DD/MM/YYYY.
+- 2026-09-25 (S22): **which reconciliation is correct depends on the measure.** A count measure
+  ("57 Conversations") reconciles against the detail ROW COUNT; a sum ("Total Sales Amount") never
+  will — it reconciles against the SUM of the matching detail column. `dtReconcile()` picks
+  automatically: if a detail column carries the same name as the clicked measure, add it up,
+  otherwise count rows. Getting this wrong doesn't just look odd — it flashes a false mismatch
+  warning on a demo that is actually correct.

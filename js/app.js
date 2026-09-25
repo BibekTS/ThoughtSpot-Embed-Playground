@@ -5342,6 +5342,34 @@ function hideDrillBar() { const bar = $('#drill-bar'); if (bar) bar.remove(); }
 let dt = null;  // active detail view: { filters, kpi, columns, rows, reportedTotal, exhausted, offset, loading, error }
 
 /** Build a TS search query string: the requested columns, then one equality clause per filter. */
+/**
+ * ThoughtSpot reports a bucketed attribute as "Day(Order Date)" / "Month(...)" etc., but the search
+ * token is the underlying column. Strip the wrapper or the clause is rejected as a bad token.
+ */
+/** A filter value as the UI should SHOW it — date attributes arrive as raw epochs. */
+function dtDisplayValue(col, v) {
+  if (CFB_DATE_NAME_RE.test(col)) { const iso = cfbFmtDate(v); if (iso) return iso; }
+  return String(v);
+}
+
+function dtSearchColumn(name) {
+  const m = /^(?:Day|Week|Month|Quarter|Year|Hour|Minute|Second)\((.+)\)$/i.exec(String(name));
+  return m ? m[1] : name;
+}
+
+/**
+ * A value as a search literal. Date attributes arrive as raw epochs and ThoughtSpot's search parser
+ * wants **MM/DD/YYYY** here — `'2026-01-29'` and a bare 2026-01-29 are both rejected (verified live
+ * on 26.8.0.cl). That format is locale-shaped, so a non-US cluster may want DD/MM/YYYY.
+ */
+function dtSearchLiteral(col, v) {
+  if (CFB_DATE_NAME_RE.test(col)) {
+    const iso = cfbFmtDate(v);
+    if (iso) { const [y, mo, d] = iso.split('-'); return `${mo}/${d}/${y}`; }
+  }
+  return String(v).replace(/'/g, '');
+}
+
 function dtQueryString(columns, filters) {
   // "Order Date.daily" → "[Order Date].daily". Without a suffix ThoughtSpot picks its own bucketing
   // and will happily hand back Month(Order Date) when the rows you want are per-day.
@@ -5352,11 +5380,12 @@ function dtQueryString(columns, filters) {
   // TS search literals are single-quoted, so a value containing a quote would break the query.
   // Drop those characters rather than risk a malformed clause — the caller logs what was sent.
   const clauses = filters.map(f => {
-    const vals = (f.values || []).map(v => String(v).replace(/'/g, '')).filter(Boolean);
+    const col = dtSearchColumn(f.columnName);
+    const vals = (f.values || []).map(v => dtSearchLiteral(f.columnName, v)).filter(Boolean);
     if (!vals.length) return '';
     return vals.length === 1
-      ? `[${f.columnName}] = '${vals[0]}'`
-      : `[${f.columnName}] = ${vals.map(v => `'${v}'`).join(' ')}`;
+      ? `[${col}] = '${vals[0]}'`
+      : `[${col}] = ${vals.map(v => `'${v}'`).join(' ')}`;
   }).filter(Boolean);
   return [cols, ...clauses].join(' ').trim();
 }
@@ -5505,6 +5534,49 @@ function dtKnownTotal() {
 
 let dtKeyHandler = null;   // Esc-to-close, bound only while the modal is mounted
 
+const dtNum = (n) => n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+
+/**
+ * Reconcile the clicked measure against the detail rows. WHICH comparison is right depends on the
+ * measure: a count ("57 Conversations") reconciles against the ROW COUNT, but a sum ("Total Sales
+ * Amount: 185,915.1558") never will — it reconciles against the SUM of the matching detail column.
+ * Pick automatically: if a detail column carries the same name as the clicked measure, add it up;
+ * otherwise count rows. Either way, only claim a mismatch once paging is finished.
+ */
+function dtReconcile() {
+  const noun = (getState().drill || {}).recordNoun || 'rows';
+  const kpiNum = dt.kpi ? Number(dt.kpi.value) : NaN;
+  const head = dt.kpi ? `${dt.kpi.label}: ${Number.isFinite(kpiNum) ? dtNum(kpiNum) : dt.kpi.value} · ` : '';
+  const settled = dt.exhausted && !dt.loading && !dt.error;
+  const measureCol = dt.kpi ? dt.columns.find(c => c === dt.kpi.label) : null;
+
+  if (measureCol && Number.isFinite(kpiNum)) {
+    const sum = dt.rows.reduce((a, row) => {
+      const n = Number(dtRowObject(dt.columns, row)[measureCol]);
+      return a + (Number.isFinite(n) ? n : 0);
+    }, 0);
+    const tol = Math.max(0.01, Math.abs(kpiNum) * 1e-9); // floats via two aggregations
+    const mismatch = settled && Math.abs(sum - kpiNum) > tol;
+    return {
+      text: `${head}${dt.rows.length}${dt.exhausted ? '' : '+'} ${noun} · \u03a3 ${dtNum(sum)}${dt.exhausted ? '' : '\u2026'}`,
+      mismatch,
+      tip: !settled ? 'Load more to finish reconciling — this is the sum of the rows loaded so far.'
+        : mismatch ? 'The clicked measure and the sum of the detail rows disagree — the two are not measuring the same thing.'
+        : 'The detail rows add up to exactly the measure you clicked.',
+    };
+  }
+
+  const known = dtKnownTotal();
+  const rowsTxt = dt.loading && !dt.rows.length ? '\u2026' : (known === null ? `${dt.rows.length}+ ${noun}` : `${known} ${noun}`);
+  const mismatch = Number.isFinite(kpiNum) && !dt.loading && !dt.error && known !== null && kpiNum !== known;
+  return {
+    text: `${head}${rowsTxt}`,
+    mismatch,
+    tip: mismatch ? 'The clicked measure and the detail row count disagree — the two models are not counting the same grain.'
+      : known === null && !dt.loading ? 'A full page came back, so the total is not known yet — load more to reconcile.' : '',
+  };
+}
+
 function dtClosePanel() {
   dt = null;
   document.getElementById('dt-panel')?.remove();
@@ -5541,12 +5613,10 @@ function dtSplitColumns(cols) {
 }
 
 /** "12 orders · Total Sales Amount: 4,291 — Jae Pak · Europe" */
-function dtSummaryLine(d) {
-  const known = dtKnownTotal();
-  const count = dt.loading && !dt.rows.length ? '…' : (known === null ? `${dt.rows.length}+` : String(known));
-  const scope = dt.filters.map(f => f.values.join(' / ')).join(' · ');
-  const measure = dt.kpi ? `${dt.kpi.label}: ${dt.kpi.value}` : '';
-  return `${count} ${d.recordNoun || 'records'}${measure ? ` · ${measure}` : ''}${scope ? ` — ${scope}` : ''}`;
+function dtSummaryLine() {
+  const r = dtReconcile();
+  const scope = dt.filters.map(f => `${f.columnName}: ${f.values.map(dtDisplayValue.bind(null, f.columnName)).join(' / ')}`).join(' · ');
+  return `${r.text}${scope ? ` — ${scope}` : ''}`;
 }
 
 /** One record row: icon · title + meta · date · chevron. The whole row is the link when one resolves. */
@@ -5614,7 +5684,10 @@ function renderDetailModal() {
   panel.appendChild(head);
 
   const body = el('div', 'modal-body dt-modal-body');
-  const summary = el('div', 'dt-summary'); summary.textContent = dtSummaryLine(d);
+  const rec = dtReconcile();
+  const summary = el('div', `dt-summary${rec.mismatch ? ' dt-summary--mismatch' : ''}`);
+  summary.textContent = dtSummaryLine() + (rec.mismatch ? '  ⚠' : (dt.exhausted && dt.kpi && !dt.error ? '  ✓' : ''));
+  if (rec.tip) summary.title = rec.tip;
   body.appendChild(summary);
 
   if (dt.error) { const e = el('div', 'dt-error'); e.textContent = dt.error; body.appendChild(e); }
@@ -5671,7 +5744,7 @@ function renderDetailPanel() {
   const strong = el('strong'); strong.textContent = d.actionLabel || 'View detail';
   const scope = el('span', 'dt-scope');
   scope.textContent = dt.filters.length
-    ? dt.filters.map(f => `${f.columnName}: ${f.values.join(' / ')}`).join('  ·  ')
+    ? dt.filters.map(f => `${f.columnName}: ${f.values.map(dtDisplayValue.bind(null, f.columnName)).join(' / ')}`).join('  ·  ')
     : 'no scope carried from the click';
   title.append(strong, document.createTextNode(' · '), scope);
 
@@ -5679,18 +5752,10 @@ function renderDetailPanel() {
   // agree. When they don't, the summary and the detail model are not counting the same thing —
   // which is exactly the question a customer asks, so make the mismatch loud rather than hiding it.
   const badge = el('div', 'dt-badge');
-  const known = dtKnownTotal();
-  const kpiNum = dt.kpi ? Number(dt.kpi.value) : NaN;
-  // Only claim a mismatch once the row count is actually KNOWN. While a full page came back the
-  // total is unknown, so the badge shows "N+" and stays neutral rather than crying wolf.
-  const mismatch = Number.isFinite(kpiNum) && !dt.loading && !dt.error && known !== null && kpiNum !== known;
-  if (mismatch) badge.classList.add('dt-badge--mismatch');
-  const rowsTxt = dt.loading ? '…' : (known === null ? `${dt.rows.length}+` : String(known));
-  badge.textContent = dt.kpi
-    ? `${dt.kpi.label}: ${dt.kpi.value} · rows: ${rowsTxt}${mismatch ? ' ⚠' : ''}`
-    : `rows: ${rowsTxt}`;
-  if (mismatch) badge.title = 'The clicked measure and the detail row count disagree — the two models are not counting the same grain.';
-  else if (known === null && !dt.loading) badge.title = 'A full page came back, so the total is not known yet — load more to reconcile.';
+  const r = dtReconcile();
+  if (r.mismatch) badge.classList.add('dt-badge--mismatch');
+  badge.textContent = r.text + (r.mismatch ? ' ⚠' : '');
+  if (r.tip) badge.title = r.tip;
 
   const close = el('button', 'dt-close'); close.type = 'button';
   close.textContent = '✕'; close.setAttribute('aria-label', 'Close detail panel');
@@ -5742,12 +5807,13 @@ function renderDetailPanel() {
 
   // ── footer: how far we've paged, and the Load-more control ──
   const foot = el('div', 'dt-foot');
+  const knownFoot = dtKnownTotal();
   const count = el('span', 'dt-count');
   count.textContent = dt.loading && !dt.rows.length
     ? 'Loading…'
-    : (known === null
+    : (knownFoot === null
       ? `Showing ${dt.rows.length} rows — more available`
-      : `Showing ${dt.rows.length} of ${known} row${known === 1 ? '' : 's'}`);
+      : `Showing ${dt.rows.length} of ${knownFoot} row${knownFoot === 1 ? '' : 's'}`);
   foot.appendChild(count);
   // A SHORT page is the end-of-data signal, not a row-count comparison (see dtFetchPage).
   if (!dt.exhausted && !dt.error) {
