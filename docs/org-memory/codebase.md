@@ -280,3 +280,27 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `ba27a041aaf037086be5c0f17b215494bb6ca4dc` at f927b9c). But byte-identity is wrong for any line
   carrying a cross-reference: `# see step 3's commit rule` pointed into SKILL.md while `qa-verifier.md`
   has its own step 3 (`npm run boot-check`) — a reader of the agent file alone resolves it wrongly.
+
+## Hygiene / a11y / CSS (S41, 2026-09-25)
+
+- 2026-09-25 (S41): **`INSTRUCTIONS.md` cannot be deleted.** `scripts/smoke-test.mjs` probes that
+  `/INSTRUCTIONS.md` is NOT statically served; removing the file makes that assertion vacuous (a
+  missing file 404s trivially), and `smoke-test.mjs` is guard-protected, so the probe cannot be
+  re-pointed without a human `human-approved` PR. Keep the file, or move the probe and the file in
+  one human-labelled PR. It still contains a real instance hostname + GUIDs.
+- 2026-09-25 (S41): `node --test lib/spotter-mcp/` **fails on Node 22** with
+  `Cannot find module …/lib/spotter-mcp` — a directory argument is resolved as a module specifier.
+  Use `node --test 'lib/spotter-mcp/*.test.mjs'` (23 pass). Separately, `npm run test:spotter-mcp`
+  runs **only** `customize.test.mjs`, so `router.test.mjs` is in no gate at all (that is M15).
+- 2026-09-25 (S41): of the 36 `.aip-*` rules in `css/styles.css`, exactly 14 class names are dead;
+  the other 22 are built at runtime by the AI Insights panel via `el()` in `js/app.js`. "The aip
+  block is dead CSS" is **false** — check each class name, not the block.
+- 2026-09-25 (S41): `var(--warn, …)`, `var(--danger, …)` and `var(--success, …)` fallbacks were
+  removable because `:root` defines all three. `var(--err, #c0392b)` in `.flow-step.failed .fs-dot`
+  is **not** — `--err` is defined nowhere, so that fallback is load-bearing. Left in place.
+- 2026-09-25 (S41): `index.html` now ships `<link rel="icon" href="data:,">`, so the browser never
+  requests `/favicon.ico`, and `scripts/boot-check.mjs`'s favicon 4xx exemption is **removed** — the
+  gate now fails on ANY 4xx/5xx. Verified on a private port (45301, clean env): 0 responses >= 400,
+  0 JS errors. **`CLAUDE.md` is now stale on this point** (it still says "no non-favicon 4xx … the
+  only allowed console 404 is `/favicon.ico`"); it is guard-protected, so a human PR must fix it —
+  filed as **M19**.

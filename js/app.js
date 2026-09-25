@@ -1029,6 +1029,7 @@ function toggleBottom(force) {
   const open = force != null ? force : bp.dataset.open === 'false';
   bp.dataset.open = String(open);
   $('#bp-toggle').classList.toggle('open', open);
+  $('#bp-toggle').setAttribute('aria-expanded', String(open)); // keep the a11y state with the visual one
 }
 
 function logEvent(type, data) {

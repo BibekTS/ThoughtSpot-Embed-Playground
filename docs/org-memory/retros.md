@@ -74,3 +74,23 @@ This log is the raw material for org retrospectives (BACKLOG M2).
   unless M9 guarantees a SHA exists. Batching was right and cost nothing. The real friction was
   convergence: four fix rounds on a docs-only diff is expensive, and three of the four were caused by
   the same author-side blind spot (writing shell prose without running it). Filed S21, M11, M12, M13.
+- 2026-09-25 (full-project review — S25–S41, M14–M19): the first end-to-end sweep since 2026-07-22
+  found **17 app bugs and 6 process failures**, four of them P1 security. The uncomfortable part is
+  *why the gates were blind to all of them*. (1) **The gates boot without a secret.** Both
+  `smoke-test.mjs` and `boot-check.mjs` spawn the server with `TS_SECRET_KEY: ''`, so every
+  trusted-auth-path assertion passes **vacuously** — the code under test is never reached. That is
+  how S26 (empty username allowlist fails open; `autoCreate` bypasses it) survived a gate whose
+  stated job is the username allowlist. Filed **M14** (mint-stubbing probe pattern) and **M16** (the
+  smoke test never asserted the allowlist or the rate limiter *at all* — the two guards S26/S27
+  break). A gate that cannot fail proves nothing, and nothing in the bar distinguishes "asserted and
+  passed" from "skipped". (2) **`lib/` is outside every gate.** `esm-parse` covers `js/*.js`;
+  `npm run test:spotter-mcp` runs one of the two test files, so `lib/spotter-mcp/router.test.mjs`
+  has never been executed by CI, and there is no lint anywhere (**M15**). (3) **Records decay.** No
+  retro since 2026-07-22, `codebase.md` at 282–405 lines against its own ~120-line cap, rows marked
+  `done` before merge, and verification evidence quoted without a SHA (**M17**) — every one of these
+  is the org failing the doctrine it wrote for itself in the M9/M10 cycle, which is a sharper signal
+  than any single bug. What worked: the hunt was worth an order of magnitude more than the cycle
+  that produced it, and the highest-value findings came from lenses aimed at *the gates* rather than
+  at the code. Lesson, and it is the M9/M10 lesson again one level up: **a gate whose environment
+  disables the code path it asserts is untested code**, exactly as prose describing a shell workflow
+  is untested code. Both must be executed adversarially — mutation-tested — not merely read.

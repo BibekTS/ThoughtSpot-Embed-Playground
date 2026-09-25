@@ -38,10 +38,11 @@ If it is a count, run that many cycles, re-reading `BACKLOG.md` each time — an
 items are **independent** (their researcher briefs prove disjoint **product** files — the records
 files `BACKLOG.md` and `docs/org-memory/*`, which every branch edits, don't count), run their
 Engineering→QA phases in parallel worktrees, one branch + PR per item, instead of back-to-back.
-Items whose product-file sets overlap stay sequential. Merge parallel PRs **one at a time**: the
-shared records files make same-position append conflicts likely, so after each merge rebase the
-next branch on the updated `main` (`git pull --rebase origin main`, re-resolve the records
-appends, push) before merging it.
+Items whose product-file sets overlap stay sequential. Merge parallel PRs **one at a time**, and
+**merge without rebasing** — a rebase orphans the QA-verified SHA (step 7), so the queue never
+rewrites a branch QA has signed off. The shared records files make same-position append conflicts
+likely; resolve each conflict **in the merge**, and **re-run QA only on a branch that actually
+conflicted** — a clean merge needs no re-verification.
 
 ## 1. CEO — pick the work
 - Read `BACKLOG.md`. Choose the item (arg, or top `open` by priority). An item stuck `in-progress`
@@ -279,8 +280,9 @@ the `fix` argument the same run chains straight into fixing, so hunt-and-fix is 
    strands the `in-progress` Status edit and duplicates rows. Then run the standard playbook
    (steps 2–8) on each newly-filed finding, highest priority first. Independent findings
    (disjoint product files — records files don't count, see "Parallel dispatch") get parallel
-   worktrees, one implementer, one branch, one PR each, merged one at a time with rebases in
-   between; overlapping ones go sequentially. Plain `discover` stops after filing.
+   worktrees, one implementer, one branch, one PR each, merged one at a time **without rebasing**
+   (see "Parallel dispatch" — conflicts are resolved in the merge, and only a branch that actually
+   conflicted is re-QA'd); overlapping ones go sequentially. Plain `discover` stops after filing.
 6. **Report** what was hunted, what was found, what was filed (and, with `fix`, what shipped) —
    and the micro-retro.
 

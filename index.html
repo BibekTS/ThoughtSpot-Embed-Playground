@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ThoughtSpot Embed Playground</title>
+  <meta name="description" content="A tool-first playground for the ThoughtSpot Visual Embed SDK: connect, pick an embed, tweak options, and copy runnable SDK code. Every setup is a shareable link.">
+  <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:,">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/styles.css">
@@ -23,8 +26,9 @@
 
     <div class="tb-connect">
       <input id="host-input" class="tb-host" type="text" spellcheck="false" autocomplete="off"
+             aria-label="ThoughtSpot instance URL"
              placeholder="https://your-instance.thoughtspot.cloud">
-      <select id="auth-select" class="tb-auth" title="Authentication type">
+      <select id="auth-select" class="tb-auth" title="Authentication type" aria-label="Authentication type">
         <option value="None">Auth: Browser session</option>
         <option value="TrustedAuthTokenCookieless">Auth: Trusted token</option>
       </select>
@@ -34,7 +38,7 @@
 
     <!-- Status pill sits apart from the fused connect control so it isn't squeezed
          by the 760px cap — the connected "user · org" needs room to show in full. -->
-    <span id="conn-status" class="tb-status" data-state="idle"><span class="tb-status-txt">Not connected</span></span>
+    <span id="conn-status" class="tb-status" data-state="idle" aria-live="polite"><span class="tb-status-txt">Not connected</span></span>
 
     <div class="tb-right">
       <a id="docs-link" class="tb-icon-btn" href="https://developers.thoughtspot.com/docs/" target="_blank" rel="noopener"
@@ -84,7 +88,7 @@
         <div class="cfb-actions">
           <button id="cfb-clear" class="cfb-clear" type="button">Clear all</button>
           <div class="cfb-export-group">
-            <select id="cfb-format" class="cfb-format" title="Report file format (REST: file_format)">
+            <select id="cfb-format" class="cfb-format" title="Report file format (REST: file_format)" aria-label="Report file format">
               <option value="PDF">PDF</option>
               <option value="XLSX">XLSX</option>
               <option value="CSV">CSV</option>
@@ -218,11 +222,11 @@
           <div class="bp-head-r">
             <button id="copy-code" class="bp-mini" hidden>Copy</button>
             <button id="clear-log" class="bp-mini">Clear</button>
-            <button id="bp-toggle" class="bp-chevron">▲</button>
+            <button id="bp-toggle" class="bp-chevron" aria-label="Collapse or expand the bottom panel" aria-expanded="true" aria-controls="pane-log">▲</button>
           </div>
         </div>
         <div class="bp-body">
-          <div class="bp-pane active" id="pane-log"><div id="log-list" class="log-list"><div class="log-empty">No events yet — interact with the embed.</div></div></div>
+          <div class="bp-pane active" id="pane-log"><div id="log-list" class="log-list" aria-live="polite"><div class="log-empty">No events yet — interact with the embed.</div></div></div>
           <div class="bp-pane" id="pane-code"><pre id="code-view" class="code-view"></pre></div>
           <div class="bp-pane" id="pane-flow"><div id="flow-diagram" class="flow"></div></div>
           <div class="bp-pane" id="pane-apis"><div class="log-empty">Connect and render an embed to see the APIs in use.</div></div>
@@ -256,27 +260,27 @@
 </div>
 
 <!-- ── Trusted-auth token-claims playground (slide-over) ────────────────── -->
-<div id="auth-modal" class="modal" hidden>
+<div id="auth-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title" hidden>
   <div class="modal-scrim" data-close="auth"></div>
   <div class="modal-panel auth-panel">
     <div class="modal-head">
       <div>
-        <div class="modal-title">Trusted Auth — token claims</div>
+        <div id="auth-modal-title" class="modal-title">Trusted Auth — token claims</div>
         <div class="modal-sub">Mint tokens with groups, JIT provisioning, and ABAC/RLS entitlements. The secret_key stays on the server.</div>
       </div>
-      <button class="modal-close" data-close="auth">✕</button>
+      <button class="modal-close" data-close="auth" aria-label="Close">✕</button>
     </div>
     <div id="auth-body" class="modal-body"></div>
   </div>
 </div>
 
 <!-- ── Raw webhook payload viewer (centered dialog) ─────────────────────── -->
-<div id="payload-modal" class="modal" hidden>
+<div id="payload-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="payload-modal-title" hidden>
   <div class="modal-scrim" data-close="payload"></div>
   <div class="modal-panel modal-panel--center wh-payload-panel">
     <div class="modal-head">
       <div>
-        <div class="modal-title">Raw webhook payload</div>
+        <div id="payload-modal-title" class="modal-title">Raw webhook payload</div>
         <div id="wh-payload-sub" class="modal-sub"></div>
       </div>
       <div class="wh-payload-head-actions">
@@ -288,12 +292,12 @@
   </div>
 </div>
 
-<div id="email-modal" class="modal" hidden>
+<div id="email-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="email-modal-title" hidden>
   <div class="modal-scrim" data-close="email"></div>
   <div class="modal-panel modal-panel--center wh-email-panel">
     <div class="modal-head">
       <div>
-        <div class="modal-title">Compose per-recipient email</div>
+        <div id="email-modal-title" class="modal-title">Compose per-recipient email</div>
         <div id="wh-email-sub" class="modal-sub"></div>
       </div>
       <button class="modal-close" data-close="email" aria-label="Close">✕</button>
@@ -322,7 +326,7 @@
   </div>
 </div>
 
-<div id="toast-container"></div>
+<div id="toast-container" aria-live="polite"></div>
 
 <script type="module" src="js/app.js"></script>
 </body>
