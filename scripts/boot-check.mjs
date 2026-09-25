@@ -422,7 +422,7 @@ async function runDrillthroughProbe(browser) {
       // contextMenuPoints is an OBJECT, selectedAttributes is EMPTY, and the row's attributes are
       // in deselectedAttributes. Reading only selectedAttributes yields no scope at all, and the
       // detail query silently returns the whole model — which is what shipped before this fixture.
-      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', scopeColumn: 'Employee Name' } });
+      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', scopeColumn: 'Employee Name', measureColumn: 'Total Sales Amount' } });
       document.getElementById('dt-modal')?.remove();
       call = 0;
       const tableQueryIdx = bodies.length; // keep the paging legs' bodies intact
@@ -437,8 +437,15 @@ async function runDrillthroughProbe(browser) {
                 { column: { name: 'Employee Name' }, value: 'Lynn Tsoflias' },
                 { column: { name: 'Territory' }, value: 'Pacific' },
               ],
-              selectedMeasures: [{ column: { name: 'Total Sales Amount' }, value: '134280.9824' }],
-              deselectedMeasures: [{ column: { name: 'Quota %' }, value: '{Null}' }],
+              // The user right-clicked the QUOTA cell, so that is what ThoughtSpot reports as
+              // selected — modelColumnNames scopes the action to the VIZ, not to one column, so this
+              // is reachable in the real UI. The configured measureColumn must still win, otherwise
+              // the modal is titled after a '{Null}' quota (observed on a real screenshot).
+              selectedMeasures: [{ column: { name: 'Total Sales Amount Quota' }, value: '{Null}' }],
+              deselectedMeasures: [
+                { column: { name: 'Total Sales Amount' }, value: '134280.9824' },
+                { column: { name: 'Quota %' }, value: '{Null}' },
+              ],
             },
             selectedPoints: [],
           },

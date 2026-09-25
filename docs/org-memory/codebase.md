@@ -359,3 +359,23 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   automatically: if a detail column carries the same name as the clicked measure, add it up,
   otherwise count rows. Getting this wrong doesn't just look odd — it flashes a false mismatch
   warning on a demo that is actually correct.
+- 2026-09-25 (S22, correcting an earlier entry): **`dataModelIds.modelColumnNames` scopes a custom
+  action to a VISUALIZATION, not to a column.** The doc wording is "displayed only on visualizations
+  that are created using the specified modelColumnNames", and live behaviour matches: with the action
+  scoped to `'<guid>::Total Sales Amount'`, right-clicking the neighbouring `Total Sales Amount Quota`
+  cell on the same table still shows it. An earlier entry here implied per-cell targeting — it is not.
+  Consequence for any drill-through: never take "the measure the user clicked" as the measure the
+  feature is about. Look up the CONFIGURED measure across `selectedMeasures` ∪ `deselectedMeasures`
+  on the clicked point and prefer that; on this Liveboard the quota column is `{Null}`, so taking the
+  clicked cell produced a modal titled "Total Sales Amount Quota: {Null}".
+- 2026-09-25 (S22): a "✓ reconciled" marker must be gated on a comparison having actually HAPPENED —
+  numeric measure, paging settled, values equal — not merely on paging being finished. The first cut
+  showed ✓ next to a `{Null}` KPI, which is worse than showing nothing: it asserts a check that was
+  never performed.
+- 2026-09-25 (tooling): the SpotterCode MCP `execute-thoughtspot-code` session is pinned to the
+  **Primary** org and there is no way to move it — `/api/rest/2.0/auth/session/org` (POST and PUT),
+  `/api/rest/2.0/auth/orgs/switch` and `/callosum/v1/tspublic/v1/session/orgs/update` all 404, the
+  `x-requested-orgid` family of headers is ignored (400), and `/callosum/v1/session/orgs/update`
+  400s on every body shape tried. Objects in another org return "Logical Table not found". For
+  ps-internal content living in the `Bibek` org, verify through the playground's own
+  `/api/ts-rest` relay instead — same cluster, same user, correct org.

@@ -5404,12 +5404,32 @@ function dtRowObject(columns, row) {
 }
 
 /** The measure value the user actually clicked — the left half of the reconciliation badge. */
+const dtIsNull = (v) => v === null || v === undefined || v === '' || v === '{Null}';
+
+/**
+ * The measure the record list is ABOUT.
+ *
+ * Prefer the configured `measureColumn` wherever it sits on the clicked point, because
+ * `dataModelIds.modelColumnNames` scopes a custom action to a **visualization**, not to a column —
+ * confirmed live: with the action scoped to 'Total Sales Amount', right-clicking the neighbouring
+ * 'Total Sales Amount Quota' cell still shows it. Taking "whatever cell was clicked" then titles the
+ * modal after the wrong measure and, on this Liveboard, prints a '{Null}' quota as the KPI.
+ * The clicked cell's own measure is the fallback.
+ */
 function dtClickedMeasure(payload) {
-  // selectedMeasures ONLY — deselectedMeasures holds the row's other measure columns (Quota, Quota %),
-  // which are not what the user clicked and are frequently '{Null}'.
-  for (const p of clickedPoints(payload)) {
-    const m = p.selectedMeasures?.[0];
-    if (m) return { label: m.column?.name ?? m.columnName ?? 'KPI', value: m.value ?? m.dataValue };
+  const want = (getState().drill || {}).measureColumn;
+  const pick = (m) => ({ label: m.column?.name ?? m.columnName ?? 'KPI', value: m.value ?? m.dataValue });
+  const points = clickedPoints(payload);
+  if (want) {
+    for (const p of points) {
+      const all = [...(p.selectedMeasures || []), ...(p.deselectedMeasures || [])];
+      const m = all.find(x => (x?.column?.name ?? x?.columnName) === want && !dtIsNull(x.value ?? x.dataValue));
+      if (m) return pick(m);
+    }
+  }
+  for (const p of points) {
+    const m = (p.selectedMeasures || []).find(x => !dtIsNull(x.value ?? x.dataValue));
+    if (m) return pick(m);
   }
   return null;
 }
@@ -5560,6 +5580,7 @@ function dtReconcile() {
     return {
       text: `${head}${dt.rows.length}${dt.exhausted ? '' : '+'} ${noun} · \u03a3 ${dtNum(sum)}${dt.exhausted ? '' : '\u2026'}`,
       mismatch,
+      reconciled: settled && !mismatch,
       tip: !settled ? 'Load more to finish reconciling — this is the sum of the rows loaded so far.'
         : mismatch ? 'The clicked measure and the sum of the detail rows disagree — the two are not measuring the same thing.'
         : 'The detail rows add up to exactly the measure you clicked.',
@@ -5572,6 +5593,8 @@ function dtReconcile() {
   return {
     text: `${head}${rowsTxt}`,
     mismatch,
+    // A tick only when a real comparison happened: a numeric measure, paging settled, and it matched.
+    reconciled: Number.isFinite(kpiNum) && known !== null && !dt.loading && !dt.error && !mismatch,
     tip: mismatch ? 'The clicked measure and the detail row count disagree — the two models are not counting the same grain.'
       : known === null && !dt.loading ? 'A full page came back, so the total is not known yet — load more to reconcile.' : '',
   };
@@ -5686,7 +5709,7 @@ function renderDetailModal() {
   const body = el('div', 'modal-body dt-modal-body');
   const rec = dtReconcile();
   const summary = el('div', `dt-summary${rec.mismatch ? ' dt-summary--mismatch' : ''}`);
-  summary.textContent = dtSummaryLine() + (rec.mismatch ? '  ⚠' : (dt.exhausted && dt.kpi && !dt.error ? '  ✓' : ''));
+  summary.textContent = dtSummaryLine() + (rec.mismatch ? '  ⚠' : (rec.reconciled ? '  ✓' : ''));
   if (rec.tip) summary.title = rec.tip;
   body.appendChild(summary);
 

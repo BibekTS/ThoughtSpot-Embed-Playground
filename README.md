@@ -67,7 +67,7 @@ Two independent moves:
    iframe (`HostEvent.GetFilters`, which returns a promise directly), and the detail Liveboard renders
    with them as runtime filters. Clicked attributes win on any column that appears in both.
 2. **"View detail" → your own record list.** A `CONTEXTMENU`/`VIZ` custom action scoped with
-   `dataModelIds.modelColumnNames: ['<modelGuid>::<column>']` appears on **one measure column only**.
+   `dataModelIds.modelColumnNames: ['<modelGuid>::<column>']` is limited to vizzes built on that column.
    It fetches event-grain rows with `POST /api/rest/2.0/searchdata`, pages them with `record_offset`
    (which is how you get past the 1,000-row response cap), and renders them outside the iframe — with
    per-row `{Column}` deep links into whatever system owns the record.
@@ -76,6 +76,13 @@ Two independent moves:
    period subtitle, a summary line, skeleton while loading, one row per record with a chevron through
    to the owning system, and an optional "View all …" footer. **Panel** is a dense grid docked under
    the embed. Both read the same state.
+
+   > **`modelColumnNames` scopes to a visualization, not to a column.** The action shows on *every*
+   > cell of any viz that uses the named column — verified live: scoped to `Total Sales Amount`, it
+   > still appears when you right-click the neighbouring `Total Sales Amount Quota` cell. So the
+   > record list takes its measure from the configured **Measure column** wherever it sits on the
+   > clicked row, not from whichever cell was right-clicked; otherwise the modal ends up titled after
+   > a `{Null}` quota.
 
    The action opens on **right-click** by default; "Opened by → plain left-click" is also available.
    A native app can reveal a *View details* link on cell hover — inside a cross-origin iframe that is
