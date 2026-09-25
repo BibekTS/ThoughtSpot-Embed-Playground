@@ -304,3 +304,38 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   0 JS errors. **`CLAUDE.md` is now stale on this point** (it still says "no non-favicon 4xx … the
   only allowed console 404 is `/favicon.ico`"); it is guard-protected, so a human PR must fix it —
   filed as **M19**.
+- 2026-09-25 (UX O8/O9): `--accent` (`#00c9de`) is **2.02:1 on white** — it is a fill colour, not
+  an ink. Every accent-coloured label in `css/styles.css` failed WCAG AA, and the `:focus-visible`
+  rule added by S41 (`outline: 2px solid var(--accent)`) failed the 3:1 non-text floor of WCAG
+  1.4.11 too. `css/styles.css:23-24` now defines `--accent-ink: #067a87` (5.07:1 on `#fff`,
+  4.65:1 on `--accent-soft`, 4.82:1 on `--bg`, but only **4.45:1 on `--surface-3` `#eaf1f7`** — do
+  not put accent text there) and `--accent-2-ink: #4f46e5` (6.29:1). Rule, now in `THEME.md` §8:
+  **`--accent` paints, `--accent-ink` writes.** Roughly 50 further `color: var(--accent)` sites
+  remain in the sheet (`.st-link`, `.lr-type`, `.wh-*`, `.cfb-*`, `.flow-lane`, `.badge-good`, …) —
+  same defect, not yet converted; that is a follow-up.
+- 2026-09-25 (UX O2/O5): `#topbar` is a single non-wrapping, non-scrolling flex row inside
+  `body{overflow:hidden}`, so anything that does not fit is **unreachable**, not scrolled to. Two
+  independent failures came out of that: at 390px `#connect-btn` sat at x=411 off-screen, and at
+  1440px-connected the utilities wrapped inside their fixed 30px height. The fix needs BOTH halves
+  or it just moves the overflow: `.tb-right{flex:0 0 auto}` + `.tb-icon-btn{white-space:nowrap}`
+  stops the wrap, but then `#conn-status` (which was `flex:0 0 auto` with `max-width:440px`) pushes
+  the whole right cluster past the viewport edge. `#conn-status` must be `flex:0 1 auto` with a
+  `min-width` floor (`css/styles.css:134`). Measure `#reset-btn`'s `getBoundingClientRect()
+  .right <= innerWidth`, not just `scrollWidth`.
+- 2026-09-25 (UX O1): the inspector can be a mobile drawer with **zero JS**. `index.html:17-19`
+  puts a visually-hidden checkbox as the first element in `<body>` (NOT `hidden` — `[hidden]` is
+  `display:none !important` in this sheet, which kills focusability) and a `<label for=…>` in the
+  topbar's `.tb-right`; `.mobile-opt-cb:checked ~ #app #inspector` then wins on specificity over
+  the `@media (max-width:860px) { #inspector{display:none} }` rule. The checkbox must stay a
+  *preceding sibling of `#app`* for that combinator to work. Keyboard focus lands on the invisible
+  checkbox, so the ring is painted on the label via
+  `.mobile-opt-cb:focus-visible ~ #app .mobile-opt-btn`.
+- 2026-09-25 (UX O1, follow-up): the onboarding copy in `index.html` says "in the options panel
+  **on the right**", which is wrong once the panel is a bottom sheet. The `st-needs` variant of
+  that string is generated in `js/app.js`, so both must change together in a JS pass — not done
+  here (CSS/HTML-only scope).
+- 2026-09-25 (UX O11): `index.html` had **zero** `h1`–`h4`. The static overlay titles, inspector
+  title and modal titles are now real `<h2>`s and the wordmark an `<h1>`; `.tb-name` needed
+  `font-size/font-weight/line-height: inherit` added (`css/styles.css:113`) because the UA
+  `h1` sizing would otherwise blow up the 14px brand scale. `js/app.js` still builds two
+  `.modal-title` **divs** (`js/app.js:2793`, `:2996`) — those stay unheaded until a JS pass.
