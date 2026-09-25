@@ -5888,7 +5888,7 @@ function sectionDrillthrough(s) {
     { value: 'action', label: 'Right-click → menu item' },
     { value: 'click', label: 'Plain left-click on the value' },
   ], v => { set({ trigger: v }); renderInspector(); render(); },
-  'A native app can reveal a "View details" link on hover; inside a cross-origin iframe the closest equivalents are the right-click menu item (most reliable, works on table cells) or a plain left-click, which also opens ThoughtSpot\u2019s own menu.'));
+  'Right-click opens ThoughtSpot\u2019s own menu with your item added to it, and nothing reaches your code until the user picks it. Left-click fires VizPointClick straight away with no menu at all, so your panel opens on the first click. Verified on 26.8.0.cl for both a table cell and a chart mark.'));
 
   c.appendChild(el('div', 'insp-group-lbl', 'The record list'));
   c.appendChild(enumSelect('Show as', d.presentation, [

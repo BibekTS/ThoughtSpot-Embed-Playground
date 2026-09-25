@@ -391,3 +391,15 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   their union is the full row.** That is why a measure-cell click leaves selectedAttributes empty —
   no attribute was the target. Anything needing "the whole row" must read both buckets; anything
   needing "what did they actually click" reads `selected*` alone.
+- 2026-09-25 (S22, click matrix, verified on 26.8.0.cl): **left-click and right-click are not two
+  routes to the same menu.** Observed on both a table cell and a chart mark, with VizPointClick
+  subscribed: a LEFT click fires `EmbedEvent.VizPointClick` immediately and ThoughtSpot shows **no
+  menu**; a RIGHT click fires **no host event at all** and opens ThoughtSpot's own menu (Filter,
+  Drill down, Show underlying data, SpotIQ analyze, Copy to clipboard) with the custom action
+  appended, and `EmbedEvent.CustomAction` fires only once the user picks that item. An earlier note
+  and the inspector hint claimed left-click also raises ThoughtSpot's menu; it does not, at least
+  while VizPointClick is subscribed. Practical consequence: left-click is one gesture to the panel,
+  right-click is two, and right-click leaves ThoughtSpot's own actions reachable.
+  `payload.data.vizId` is present on VizPointClick for both viz types, so scoping a drill to one
+  visualization is reliable (confirmed: a left-click on the table did not drill while the drill was
+  pinned to the chart).
