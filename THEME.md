@@ -60,27 +60,42 @@ never hardcode the hexes in components.
   --warn:          #c08930;   --warn-soft:    #faf3e0;
   --danger:        #b85450;   --danger-soft:  #fae9e8;
 
+  /* Status borders (the tinted hairline each status pill/callout uses) */
+  --success-border:#c0dccf;
+  --warn-border:   #ead9a8;
+  --danger-border: #ebcccc;
+
   /* Code surface */
   --code-bg:       #0a0f24;   /* near-black navy for code blocks */
+
+  /* Layout (the tool shell's fixed rails) */
+  --topbar-h:      52px;
+  --rail-w:        212px;
+  --insp-w:        340px;
+  --bp-collapsed:  40px;
+  --bp-open:       300px;
 
   /* Shape */
   --radius:        9px;       /* cards; buttons/inputs use 7–8px; pills use 999px */
 
   /* Type */
-  --sans:          'Inter', system-ui, sans-serif;
   --mono:          'JetBrains Mono', ui-monospace, monospace;
 }
 ```
 
 ### Elevation (navy-tinted shadows)
 
+> These are **values, not tokens**: `css/styles.css` inlines them and defines no shadow or glow
+> custom property in `:root`. Use the literal rather than a `var()` that doesn't exist — or add
+> the custom properties to `:root` first if you want them tokenized. Same for the sans stack.
+
 ```css
 /* Use these instead of black shadows. */
---shadow-xs:   0 1px 3px  rgba(26,31,74,.06);   /* top bar / hairline lift */
---shadow-sm:   0 2px 8px  rgba(26,31,74,.12);
---shadow-md:   0 8px 24px rgba(26,31,74,.12);   /* cards, popovers */
---shadow-lg:   0 10px 28px rgba(26,31,74,.28);  /* modals, drawers */
---glow-accent: 0 2px 10px rgba(0,201,222,.30);  /* primary/brand buttons */
+0 1px  3px  rgba(26,31,74,.06)   /* xs — top bar / hairline lift */
+0 2px  8px  rgba(26,31,74,.12)   /* sm */
+0 8px  24px rgba(26,31,74,.12)   /* md — cards, popovers */
+0 10px 28px rgba(26,31,74,.28)   /* lg — modals, drawers */
+0 2px  10px rgba(0,201,222,.30)  /* accent glow — primary/brand buttons */
 ```
 
 ---
@@ -99,7 +114,7 @@ Base:
 ```css
 * , *::before, *::after { box-sizing: border-box; }
 body {
-  font-family: var(--sans);
+  font-family: 'Inter', system-ui, sans-serif;
   background: var(--bg);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
@@ -134,9 +149,9 @@ body::before {
 ```css
 .btn-primary {
   height: 34px; padding: 0 14px; border: none; border-radius: 8px;
-  font: 600 13px var(--sans); color: #fff;
+  font: 600 13px 'Inter', system-ui, sans-serif; color: #fff;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  box-shadow: var(--glow-accent);
+  box-shadow: 0 2px 10px rgba(0,201,222,.30);
   cursor: pointer;
 }
 .btn-primary:hover { opacity: .88; }
@@ -146,7 +161,7 @@ body::before {
 ```css
 .btn {
   height: 34px; padding: 0 14px; border-radius: 8px;
-  font: 600 13px var(--sans);
+  font: 600 13px 'Inter', system-ui, sans-serif;
   background: var(--surface); color: var(--text-secondary);
   border: 1px solid var(--border-light);
   transition: border-color .18s, color .18s;
@@ -175,7 +190,7 @@ body::before {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-md);
+  box-shadow: 0 8px 24px rgba(26,31,74,.12);
 }
 ```
 
@@ -192,7 +207,7 @@ body::before {
 ### Beta / brand tag (pill)
 ```css
 .tag {
-  font: 600 10px var(--sans); text-transform: uppercase; letter-spacing: .4px;
+  font: 600 10px 'Inter', system-ui, sans-serif; text-transform: uppercase; letter-spacing: .4px;
   color: var(--accent); border: 1px solid var(--accent);
   border-radius: 999px; padding: 1px 7px;
 }

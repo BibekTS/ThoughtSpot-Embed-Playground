@@ -52,7 +52,13 @@ const usr = (id, name) => ({ type: 'USER', id, name, email: `${name}@example.com
 const SCHEDULE_USER_IDS = [T2, T3];
 
 // Shape matches the official LIVEBOARD_SCHEDULE payload (developers.thoughtspot.com/docs/webhooks-lb-payload).
-const HOST = 'https://ps-internal.thoughtspot.cloud';
+// The instance host only decorates the synthetic payload's URLs — it is never called. Read it from
+// the environment with NO default so no real instance hostname is baked into the repo.
+const HOST = (process.env.THOUGHTSPOT_HOST || '').trim().replace(/\/+$/, '');
+if (!HOST) {
+  console.error('THOUGHTSPOT_HOST is required (e.g. THOUGHTSPOT_HOST=https://my-instance.thoughtspot.cloud node scripts/simulate-webhook.mjs)');
+  process.exit(1);
+}
 const LB = 'lb-webhooks-testing';
 function makeBody(recipients, note) {
   return {

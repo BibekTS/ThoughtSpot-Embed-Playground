@@ -18,3 +18,9 @@ vendor/
 
 # Unused / archived material — kept locally, out of the repo
 misc/
+
+# Plan-mode dumps (superseded by docs/ts-watch-playbook.md)
+Plan/
+
+# Personal editor workspaces
+*.code-workspace

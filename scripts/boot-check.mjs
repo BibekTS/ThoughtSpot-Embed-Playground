@@ -9,8 +9,8 @@
  * Run with `npm run boot-check`. Pass criteria:
  *   ✓ page loads (HTTP 200) and the tool shell mounts (#embed-list / .rail-group / #inspector)
  *   ✓ zero JS console/page errors
- *   ✓ no non-favicon 4xx/5xx responses (the /favicon.ico 404 on the restricted static
- *     server is pre-existing and allowed)
+ *   ✓ NO 4xx/5xx responses at all — there is no exemption. index.html ships
+ *     <link rel="icon" href="data:,">, so the implicit /favicon.ico request is never made.
  *   ✓ XSS probe (BACKLOG S1): an <img onerror> payload in a #s=-hash group name renders as
  *     inert text in the auth chips and the Event Log — it must never execute
  *   ✓ URL-action scheme probe (BACKLOG S13): a `javascript:` urlTemplate from a #s= hash must be
@@ -371,7 +371,7 @@ try {
   }
 
   const errors = [];       // JS console errors (resource-load failures judged via responses)
-  const badResponses = []; // non-favicon 4xx/5xx
+  const badResponses = []; // any 4xx/5xx — no exemptions
 
   browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
   const page = await browser.newPage();
@@ -383,7 +383,7 @@ try {
   });
   page.on('pageerror', (e) => errors.push('PAGEERROR: ' + e.message));
   page.on('response', (r) => {
-    if (r.status() >= 400 && !/favicon\.ico/i.test(r.url())) badResponses.push(`${r.status()} ${r.url()}`);
+    if (r.status() >= 400) badResponses.push(`${r.status()} ${r.url()}`);
   });
 
   const resp = await page.goto(BASE + '/', { waitUntil: 'networkidle2', timeout: 60_000 });
@@ -395,7 +395,7 @@ try {
   console.log(`tool shell mounted: ${shellMounted}`);
   console.log(`JS console/page errors: ${errors.length}`);
   errors.forEach((e) => console.log('  -', e));
-  console.log(`non-favicon bad responses: ${badResponses.length}`);
+  console.log(`bad responses: ${badResponses.length}`);
   badResponses.forEach((e) => console.log('  -', e));
 
   const xss = await runXssProbe(browser);
