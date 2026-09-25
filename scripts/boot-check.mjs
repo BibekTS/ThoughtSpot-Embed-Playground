@@ -315,6 +315,8 @@ async function runDrillthroughProbe(browser) {
     enabled: true, summaryModelId: 'model-a', measureColumn: 'Meeting count', actionLabel: 'View meetings',
     detailModelId: 'model-b', detailColumns: ['Meeting Id', 'User Name', 'Booked at'], scopeColumn: 'Stage',
     drillLiveboardId: 'lb-detail', linkTemplate: 'https://example.invalid/m/{Meeting Id}', pageSize: 2,
+    // The paging/link legs below assert against the docked grid; the modal leg flips this at the end.
+    presentation: 'panel', recordNoun: 'meetings', periodLabel: 'This Year',
   };
   const hash = Buffer.from(JSON.stringify({ section: 'drillthrough', liveboardId: 'lb-summary', drill }), 'utf8').toString('base64url');
   const probe = await browser.newPage();
@@ -395,7 +397,28 @@ async function runDrillthroughProbe(browser) {
       await new Promise((r) => setTimeout(r, 300));
       const p3 = document.getElementById('dt-panel');
       const guard = { anchors: p3?.querySelectorAll('.dt-link').length, blocked: p3?.querySelectorAll('.dt-link-bad').length, pwned: window.__dtPwned === 1 };
-      return { bodies, first, after, mismatchShown, guard };
+
+      // Modal presentation: the record-list surface. Same `dt` state, different painter.
+      call = 0; // rewind the stub so this leg sees a FULL first page, not the tail of the last one
+      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', linkTemplate: 'https://example.invalid/m/{Meeting Id}' } });
+      await click(3);
+      await new Promise((r) => setTimeout(r, 300));
+      const mp = document.getElementById('dt-modal-panel');
+      const modal = {
+        mounted: !!mp,
+        panelGone: !document.getElementById('dt-panel'),
+        title: mp?.querySelector('.modal-title')?.textContent,
+        period: mp?.querySelector('.modal-sub')?.textContent,
+        summary: mp?.querySelector('.dt-summary')?.textContent,
+        records: mp?.querySelectorAll('.dt-rec').length,
+        chevrons: mp?.querySelectorAll('.dt-rec-chev').length,
+        href: mp?.querySelector('a.dt-rec')?.getAttribute('href'),
+        more: !!mp?.querySelector('.dt-more'),
+      };
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await new Promise((r) => setTimeout(r, 120));
+      modal.closedByEsc = !document.getElementById('dt-modal');
+      return { bodies, first, after, mismatchShown, guard, modal };
     });
 
     const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
@@ -410,7 +433,12 @@ async function runDrillthroughProbe(browser) {
       && /Meeting count: 3 · rows: 3/.test(run.after.badge || '') && !run.after.mismatch && run.mismatchShown;
     const linkOk = run.after.href === 'https://example.invalid/m/m1'
       && run.guard.anchors === 0 && run.guard.blocked > 0 && !run.guard.pwned;
-    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, probeErrors };
+    const m = run.modal;
+    const modalOk = m.mounted && m.panelGone && m.closedByEsc
+      && m.title === 'Meeting count' && m.period === 'This Year'
+      && /meetings/.test(m.summary || '') && /Meeting count: 3/.test(m.summary || '')
+      && m.records === 2 && m.chevrons === 2 && m.href === 'https://example.invalid/m/m1' && m.more;
+    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, probeErrors };
   } finally {
     await probe.close();
   }
@@ -569,9 +597,10 @@ try {
   console.log(`Drill-through probe (S22) — a FULL page keeps Load more alive; offset advances and appends: ${dtp.pagingOk}`);
   console.log(`Drill-through probe (S22) — badge stays neutral ("N+") until the count is known, then reconciles: ${dtp.badgeOk}`);
   console.log(`Drill-through probe (S22) — {Column} link resolves; javascript: template refused: ${dtp.linkOk}`);
+  console.log(`Drill-through probe (S22) — modal record list: title/period/summary, rows+chevrons, Esc closes: ${dtp.modalOk}`);
   dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
   const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
-    && dtp.badgeOk && dtp.linkOk && dtp.probeErrors.length === 0;
+    && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.probeErrors.length === 0;
 
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk

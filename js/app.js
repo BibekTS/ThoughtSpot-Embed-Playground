@@ -5321,7 +5321,12 @@ let dt = null;  // active detail view: { filters, kpi, columns, rows, reportedTo
 
 /** Build a TS search query string: the requested columns, then one equality clause per filter. */
 function dtQueryString(columns, filters) {
-  const cols = columns.map(c => `[${c}]`).join(' ');
+  // "Order Date.daily" → "[Order Date].daily". Without a suffix ThoughtSpot picks its own bucketing
+  // and will happily hand back Month(Order Date) when the rows you want are per-day.
+  const cols = columns.map(c => {
+    const m = /^(.*)\.([a-z_]+)$/.exec(c);
+    return m ? `[${m[1]}].${m[2]}` : `[${c}]`;
+  }).join(' ');
   // TS search literals are single-quoted, so a value containing a quote would break the query.
   // Drop those characters rather than risk a malformed clause — the caller logs what was sent.
   const clauses = filters.map(f => {
@@ -5363,6 +5368,10 @@ window.__onVizPointClick = async (payload) => {
   const d = s.drill || {};
   if (s.section !== 'drillthrough' || !d.enabled) return;
   logEvent('VizPointClick', JSON.stringify(payload?.data ?? payload).slice(0, 300));
+  // Trigger = 'click': a plain left-click on a cell/point opens the record list, the closest thing
+  // to the hover-reveal "View details" affordance a native app can put inside its own table. We
+  // cannot inject that link into the viz itself — it lives in a cross-origin iframe.
+  if (d.trigger === 'click') { await openDetailPanel(payload); return; }
   if (!d.drillLiveboardId) return;                       // panel-only setup: the action does the work
   if (drillParent) return;                               // already drilled — a click in the detail board is not a new drill
 
@@ -5406,7 +5415,7 @@ async function openDetailPanel(payload) {
   const kpi = dtClickedMeasure(payload);
 
   dt = { filters, kpi, columns: [], rows: [], reportedTotal: 0, exhausted: false, offset: 0, loading: true, error: '' };
-  renderDetailPanel();
+  renderDetail();
   await dtFetchPage(true);
 }
 
@@ -5416,7 +5425,7 @@ async function dtFetchPage(reset = false) {
   const d = s.drill || {};
   if (!dt) return;
   dt.loading = true; dt.error = '';
-  renderDetailPanel();
+  renderDetail();
   const query = dtQueryString(d.detailColumns, dt.filters);
   const offset = reset ? 0 : dt.offset;
   logEvent('Drill-through', `searchdata ← "${query}" (offset ${offset}, size ${d.pageSize})`);
@@ -5443,7 +5452,7 @@ async function dtFetchPage(reset = false) {
     const known = dtKnownTotal();
     logEvent('Drill-through', `✓ ${res.rows.length} row(s) · ${dt.rows.length} loaded${known === null ? ' (more available)' : ` of ${known}`}`);
   }
-  renderDetailPanel();
+  renderDetail();
 }
 
 /**
@@ -5460,9 +5469,154 @@ function dtKnownTotal() {
   return null;
 }
 
+let dtKeyHandler = null;   // Esc-to-close, bound only while the modal is mounted
+
 function dtClosePanel() {
   dt = null;
   document.getElementById('dt-panel')?.remove();
+  document.getElementById('dt-modal')?.remove();
+  if (dtKeyHandler) { document.removeEventListener('keydown', dtKeyHandler); dtKeyHandler = null; }
+}
+
+/** Paint whichever surface the setup asks for. Both read the same `dt` state. */
+function renderDetail() {
+  const pres = (getState().drill || {}).presentation;
+  if (pres === 'panel') { document.getElementById('dt-modal')?.remove(); renderDetailPanel(); return; }
+  document.getElementById('dt-panel')?.remove();
+  renderDetailModal();
+}
+
+/**
+ * One cell, ready to display. COMPACT search results carry date columns as RAW EPOCH NUMBERS with no
+ * type metadata (the same constraint the custom filter bar hit), so `Month(Order Date)` arrives as
+ * 1733011200 and would render as a meaningless integer. Reuse the filter bar's name heuristic +
+ * epoch formatter rather than inventing a second one.
+ */
+function dtCell(rowObj, col) {
+  const v = rowObj[col];
+  if (v === null || v === undefined || v === '') return '';
+  if (CFB_DATE_NAME_RE.test(col)) { const iso = cfbFmtDate(v); if (iso) return iso; }
+  return String(v);
+}
+
+/** title = first column · date-ish column to the right · everything else in the meta line. */
+function dtSplitColumns(cols) {
+  const title = cols[0];
+  const dateCol = cols.slice(1).find(c => CFB_DATE_NAME_RE.test(c)) || '';
+  return { title, dateCol, meta: cols.filter(c => c !== title && c !== dateCol) };
+}
+
+/** "12 orders · Total Sales Amount: 4,291 — Jae Pak · Europe" */
+function dtSummaryLine(d) {
+  const known = dtKnownTotal();
+  const count = dt.loading && !dt.rows.length ? '…' : (known === null ? `${dt.rows.length}+` : String(known));
+  const scope = dt.filters.map(f => f.values.join(' / ')).join(' · ');
+  const measure = dt.kpi ? `${dt.kpi.label}: ${dt.kpi.value}` : '';
+  return `${count} ${d.recordNoun || 'records'}${measure ? ` · ${measure}` : ''}${scope ? ` — ${scope}` : ''}`;
+}
+
+/** One record row: icon · title + meta · date · chevron. The whole row is the link when one resolves. */
+function dtRecordEl(rowObj, cols, d) {
+  const { title, dateCol, meta } = dtSplitColumns(cols);
+  const cell = (c) => dtCell(rowObj, c);
+  const href = dtResolveLink(d.linkTemplate, rowObj);
+  const row = el(href ? 'a' : 'div', `dt-rec${href ? '' : ' dt-rec--flat'}`);
+  if (href) { row.href = href; row.target = '_blank'; row.rel = 'noopener noreferrer'; }
+  else if (d.linkTemplate) row.title = 'Blocked: the link template did not resolve to a plain http(s) URL.';
+
+  const icon = el('span', 'dt-rec-icon'); icon.setAttribute('aria-hidden', 'true');
+  const main = el('div', 'dt-rec-main');
+  const t = el('div', 'dt-rec-title'); t.textContent = cell(title) || '—';
+  const m = el('div', 'dt-rec-meta'); m.textContent = meta.map(cell).filter(Boolean).join(' • ');
+  main.append(t, m);
+  const right = el('div', 'dt-rec-right');
+  if (dateCol) { const dd = el('div', 'dt-rec-date'); dd.textContent = cell(dateCol); right.appendChild(dd); }
+  const chev = el('span', 'dt-rec-chev'); chev.textContent = '›';
+  row.append(icon, main, right, chev);
+  return row;
+}
+
+/** Shimmer placeholders, so the modal has shape before the first page lands. */
+function dtSkeletonEl(n = 6) {
+  const wrap = el('div', 'dt-skel');
+  for (let i = 0; i < n; i++) {
+    const r = el('div', 'dt-skel-row');
+    r.append(el('span', 'dt-skel-dot'), el('span', 'dt-skel-line'), el('span', 'dt-skel-line dt-skel-line--short'));
+    wrap.appendChild(r);
+  }
+  return wrap;
+}
+
+// Centred record list over the board — the shape of the drill-through pattern customers recognise:
+// title = the measure you clicked, a period subtitle, a one-line summary, then the individual
+// records behind that number, each one clickable through to the system that owns it.
+function renderDetailModal() {
+  const s = getState();
+  const d = s.drill || {};
+  let modal = document.getElementById('dt-modal');
+  if (!dt) { modal?.remove(); return; }
+  if (!modal) {
+    modal = el('div', 'modal'); modal.id = 'dt-modal';
+    const scrim = el('div', 'modal-scrim');
+    scrim.addEventListener('click', dtClosePanel);
+    const panel = el('div', 'modal-panel modal-panel--center dt-modal-panel'); panel.id = 'dt-modal-panel';
+    modal.append(scrim, panel);
+    document.body.appendChild(modal);
+    dtKeyHandler = (ev) => { if (ev.key === 'Escape') dtClosePanel(); };
+    document.addEventListener('keydown', dtKeyHandler);
+  }
+  const panel = document.getElementById('dt-modal-panel');
+  panel.innerHTML = '';
+
+  const head = el('div', 'modal-head');
+  const heading = el('div');
+  const title = el('div', 'modal-title');
+  title.textContent = dt.kpi?.label || d.actionLabel || 'Detail';
+  heading.appendChild(title);
+  if (d.periodLabel) { const sub = el('div', 'modal-sub'); sub.textContent = d.periodLabel; heading.appendChild(sub); }
+  const x = el('button', 'modal-close'); x.type = 'button'; x.textContent = '✕';
+  x.setAttribute('aria-label', 'Close'); x.addEventListener('click', dtClosePanel);
+  head.append(heading, x);
+  panel.appendChild(head);
+
+  const body = el('div', 'modal-body dt-modal-body');
+  const summary = el('div', 'dt-summary'); summary.textContent = dtSummaryLine(d);
+  body.appendChild(summary);
+
+  if (dt.error) { const e = el('div', 'dt-error'); e.textContent = dt.error; body.appendChild(e); }
+
+  if (dt.loading && !dt.rows.length) {
+    body.appendChild(dtSkeletonEl());
+  } else if (dt.rows.length) {
+    const list = el('div', 'dt-reclist');
+    dt.rows.forEach(r => list.appendChild(dtRecordEl(dtRowObject(dt.columns, r), dt.columns, d)));
+    body.appendChild(list);
+  } else if (!dt.error) {
+    const empty = el('div', 'dt-empty'); empty.textContent = 'No detail rows behind this value.';
+    body.appendChild(empty);
+  }
+  panel.appendChild(body);
+
+  const foot = el('div', 'modal-foot dt-modal-foot');
+  const known = dtKnownTotal();
+  const count = el('span', 'dt-count');
+  count.textContent = dt.loading && !dt.rows.length ? 'Loading…'
+    : (known === null ? `Showing ${dt.rows.length} — more available` : `Showing ${dt.rows.length} of ${known}`);
+  foot.appendChild(count);
+  if (!dt.exhausted && !dt.error) {
+    const more = el('button', 'dt-more'); more.type = 'button';
+    more.textContent = dt.loading ? 'Loading…' : `Load more (${d.pageSize})`;
+    more.disabled = dt.loading;
+    more.addEventListener('click', () => { dtFetchPage(false); });
+    foot.appendChild(more);
+  }
+  const viewAll = safeNavUrl(d.viewAllUrl || '');
+  if (viewAll) {
+    const a = el('a', 'dt-viewall'); a.href = viewAll; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    a.textContent = `View all ${d.recordNoun || 'records'}`;
+    foot.appendChild(a);
+  }
+  panel.appendChild(foot);
 }
 
 function renderDetailPanel() {
@@ -5529,8 +5683,7 @@ function renderDetailPanel() {
       const tr = el('tr');
       dt.columns.forEach(name => {
         const td = el('td');
-        const v = rowObj[name];
-        td.textContent = (v === null || v === undefined || v === '') ? '—' : String(v);
+        td.textContent = dtCell(rowObj, name) || '—';
         tr.appendChild(td);
       });
       if (d.linkTemplate) {
@@ -5601,6 +5754,21 @@ function sectionDrillthrough(s) {
     'e.g. Meeting count'));
   c.appendChild(el('div', 'fld-hint', 'The action appears only in this column’s right-click menu — the SDK scopes it as "<modelGuid>::<column>". Leave either field blank and no action is injected at all.'));
   c.appendChild(textField('Action label', d.actionLabel, v => { set({ actionLabel: v }); render(); }, 'View detail'));
+  c.appendChild(enumSelect('Opened by', d.trigger, [
+    { value: 'action', label: 'Right-click → menu item' },
+    { value: 'click', label: 'Plain left-click on the value' },
+  ], v => { set({ trigger: v }); renderInspector(); render(); },
+  'A native app can reveal a "View details" link on hover; inside a cross-origin iframe the closest equivalents are the right-click menu item (most reliable, works on table cells) or a plain left-click, which also opens ThoughtSpot\u2019s own menu.'));
+
+  c.appendChild(el('div', 'insp-group-lbl', 'The record list'));
+  c.appendChild(enumSelect('Show as', d.presentation, [
+    { value: 'modal', label: 'Modal over the board' },
+    { value: 'panel', label: 'Docked grid below' },
+  ], v => { set({ presentation: v }); renderInspector(); }, 'Modal = a record list, one row per record. Panel = a dense table docked under the embed.'));
+  c.appendChild(textField('Period label', d.periodLabel, v => set({ periodLabel: v }), 'This Year'));
+  c.appendChild(textField('A row is a…', d.recordNoun, v => set({ recordNoun: v }), 'orders'));
+  c.appendChild(textField('“View all” link', d.viewAllUrl, v => set({ viewAllUrl: v }), 'https://…'));
+  c.appendChild(el('div', 'fld-hint', 'Optional footer CTA, like the “View all Conversations” button on the reference design. http(s) only.'));
 
   c.appendChild(el('div', 'insp-group-lbl', 'The detail rows'));
   c.appendChild(labeledSelect('Detail Model', d.detailModelId, wsOpts, v => { set({ detailModelId: v }); renderInspector(); },

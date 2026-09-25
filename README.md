@@ -66,11 +66,26 @@ Two independent moves:
    attributes. Those merge with the host's own filters and with whatever the user set *inside* the
    iframe (`HostEvent.GetFilters`, which returns a promise directly), and the detail Liveboard renders
    with them as runtime filters. Clicked attributes win on any column that appears in both.
-2. **"View detail" → your own paged grid.** A `CONTEXTMENU`/`VIZ` custom action scoped with
+2. **"View detail" → your own record list.** A `CONTEXTMENU`/`VIZ` custom action scoped with
    `dataModelIds.modelColumnNames: ['<modelGuid>::<column>']` appears on **one measure column only**.
    It fetches event-grain rows with `POST /api/rest/2.0/searchdata`, pages them with `record_offset`
    (which is how you get past the 1,000-row response cap), and renders them outside the iframe — with
    per-row `{Column}` deep links into whatever system owns the record.
+
+   Two presentations: **Modal** (default) is a centred record list — measure name as the title, a
+   period subtitle, a summary line, skeleton while loading, one row per record with a chevron through
+   to the owning system, and an optional "View all …" footer. **Panel** is a dense grid docked under
+   the embed. Both read the same state.
+
+   The action opens on **right-click** by default; "Opened by → plain left-click" is also available.
+   A native app can reveal a *View details* link on cell hover — inside a cross-origin iframe that is
+   not possible, so these two are the closest equivalents (and left-click also raises ThoughtSpot's
+   own menu alongside yours).
+
+   A detail column may carry a granularity suffix — `Order Date.daily` emits `[Order Date].daily`, so
+   you get per-day rows instead of whatever bucketing ThoughtSpot picks. Date columns come back as raw
+   epochs with no type metadata, so cells in date-named columns are formatted through the same
+   heuristic the custom filter bar uses.
 
 A badge reconciles the measure the user clicked against the detail row count and turns amber when
 they disagree — i.e. when the summary and detail models are not counting the same grain.

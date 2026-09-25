@@ -105,6 +105,12 @@ export function defaultState() {
       drillLiveboardId: '',           // detail Liveboard opened on a point click ('' = stay, panel only)
       linkTemplate: '',               // per-row deep link, e.g. https://app.salesloft.com/app/meetings/{Meeting Id}
       pageSize: 100,                  // record_size per searchdata page
+      // — presentation, modelled on the Salesloft "View details" drill-through —
+      presentation: 'modal',          // 'modal' = centred record list over the board | 'panel' = docked grid
+      trigger: 'action',              // 'action' = right-click menu item | 'click' = plain left-click on the point
+      periodLabel: '',                // subtitle under the modal title, e.g. 'This Year'
+      recordNoun: 'records',          // what one detail row IS, for the summary line ("57 Conversations")
+      viewAllUrl: '',                 // optional footer CTA target ("View all …")
     },
     styles: { variables: {}, rules: {}, cssUrl: '', strings: {}, stringIDs: {}, exposeIds: false }, // cssUrl → customizations.style.customCSSUrl; strings/stringIDs/exposeIds → customizations.content (Beta)
     // trusted-auth claims (NON-secret) — the token-claims playground
@@ -365,6 +371,11 @@ function sanitize(raw) {
       drillLiveboardId: str(d.drillLiveboardId, 128),
       linkTemplate: str(d.linkTemplate, 1024),
       pageSize: Math.min(1000, Math.max(1, Math.round(num(d.pageSize, 100)))),
+      presentation: d.presentation === 'panel' ? 'panel' : 'modal',
+      trigger: d.trigger === 'click' ? 'click' : 'action',
+      periodLabel: str(d.periodLabel, 120),
+      recordNoun: str(d.recordNoun, 60) || 'records',
+      viewAllUrl: validHost(d.viewAllUrl), // http(s) only — it is a navigation target from a shared link
     };
   }
 
