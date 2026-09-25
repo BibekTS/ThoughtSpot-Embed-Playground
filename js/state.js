@@ -103,6 +103,7 @@ export function defaultState() {
       detailColumns: [],              // columns to request/show, in order
       scopeColumn: '',                // attribute carried from a point click, e.g. 'Stage'
       drillLiveboardId: '',           // detail Liveboard opened on a point click ('' = stay, panel only)
+      drillVizId: '',                 // only THIS viz's point clicks drill ('' = any viz on the board)
       linkTemplate: '',               // per-row deep link, e.g. https://app.salesloft.com/app/meetings/{Meeting Id}
       pageSize: 100,                  // record_size per searchdata page
       // — presentation, modelled on the Salesloft "View details" drill-through —
@@ -369,6 +370,7 @@ function sanitize(raw) {
       detailColumns: strArr(d.detailColumns).slice(0, 50).map(c => str(c, 256)),
       scopeColumn: str(d.scopeColumn, 256),
       drillLiveboardId: str(d.drillLiveboardId, 128),
+      drillVizId: str(d.drillVizId, 128),
       linkTemplate: str(d.linkTemplate, 1024),
       pageSize: Math.min(1000, Math.max(1, Math.round(num(d.pageSize, 100)))),
       presentation: d.presentation === 'panel' ? 'panel' : 'modal',

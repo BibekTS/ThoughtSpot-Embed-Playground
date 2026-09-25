@@ -5371,9 +5371,20 @@ window.__onVizPointClick = async (payload) => {
   // Trigger = 'click': a plain left-click on a cell/point opens the record list, the closest thing
   // to the hover-reveal "View details" affordance a native app can put inside its own table. We
   // cannot inject that link into the viz itself — it lives in a cross-origin iframe.
-  if (d.trigger === 'click') { await openDetailPanel(payload); return; }
+  if (d.trigger === 'click') {
+    // Left-click is claimed by the record list, so a configured drill board would never fire.
+    // Say so rather than leaving a set-but-dead setting.
+    if (d.drillLiveboardId) logEvent('Drill', 'ℹ Opened-by is "left-click", so the point-click drill is off — the record list owns the click. Switch to right-click to use both.');
+    await openDetailPanel(payload);
+    return;
+  }
   if (!d.drillLiveboardId) return;                       // panel-only setup: the action does the work
   if (drillParent) return;                               // already drilled — a click in the detail board is not a new drill
+  // A Liveboard has many vizzes, and VizPointClick fires for all of them. Without this, clicking a
+  // cell in the detail TABLE would drill away to the other board mid-demo. Scoping the drill to one
+  // viz lets a chart drill AND a table open the record list on the same Liveboard.
+  const clickedVizId = payload?.data?.vizId || payload?.vizId || '';
+  if (d.drillVizId && clickedVizId && clickedVizId !== d.drillVizId) return;
 
   const clicked = clickedAttributes(payload);
   if (!clicked.length) {
@@ -5786,8 +5797,22 @@ function sectionDrillthrough(s) {
   c.appendChild(el('div', 'fld-hint', 'Per-row deep link. {Column} is replaced with that row’s value (URL-encoded). Only plain http(s) links are opened.'));
 
   c.appendChild(el('div', 'insp-group-lbl', 'The point click'));
-  c.appendChild(labeledSelect('Detail Liveboard', d.drillLiveboardId, lbOpts, v => set({ drillLiveboardId: v }),
-    'Opened, filtered, when a point is clicked. Leave unset to demo the detail panel alone.', !connected));
+  c.appendChild(labeledSelect('Detail Liveboard', d.drillLiveboardId, lbOpts, v => { set({ drillLiveboardId: v }); renderInspector(); },
+    'Opened, filtered, when a point is clicked. Leave unset to demo the record list alone.', !connected));
+  if (d.drillLiveboardId) {
+    if (s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
+      loadViz(s.liveboardId).then(() => renderInspector());
+    }
+    const vizzes = vizCache[s.liveboardId] || [];
+    c.appendChild(labeledSelect('Drill only from', d.drillVizId, vizzes, v => set({ drillVizId: v }),
+      _vizLoading.has(s.liveboardId) ? 'Loading…' : '', !connected));
+    c.appendChild(el('div', 'fld-hint', 'VizPointClick fires for every viz on the board. Pick one so a chart can drill while a table opens the record list — leave blank and any click drills.'));
+    if (d.trigger === 'click') {
+      const warn = el('div', 'sec-note sec-note--warn');
+      warn.textContent = 'Opened by is set to left-click, so the record list owns the click and this drill will not fire. Switch to right-click to run both on one board.';
+      c.appendChild(warn);
+    }
+  }
 
   const sec = el('div', 'sec-note sec-note--warn');
   sec.textContent = 'Runtime filters are not a security boundary — they are visible and editable in the URL. The detail rows are safe because searchdata runs under the viewer’s own token, so RLS applies to them.';

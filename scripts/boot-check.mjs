@@ -418,7 +418,15 @@ async function runDrillthroughProbe(browser) {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
       await new Promise((r) => setTimeout(r, 120));
       modal.closedByEsc = !document.getElementById('dt-modal');
-      return { bodies, first, after, mismatchShown, guard, modal };
+      // Drill scoping: VizPointClick fires for EVERY viz on the board, so a click from a viz other
+      // than the configured one must not drill away. Only the negative case is asserted here — the
+      // positive case re-renders a real embed, which this stubbed page has no business doing.
+      st.setState({ drill: { ...st.getState().drill, trigger: 'action', drillLiveboardId: 'lb-detail', drillVizId: 'viz-CHART' } });
+      document.getElementById('dt-modal')?.remove();
+      await window.__onVizPointClick({ data: { vizId: 'viz-TABLE', clickedPoint: { selectedAttributes: [{ column: { name: 'Stage' }, value: 'Prospecting' }] } } });
+      await new Promise((r) => setTimeout(r, 200));
+      const scoping = { otherVizDrilled: !!document.getElementById('drill-bar') };
+      return { bodies, first, after, mismatchShown, guard, modal, scoping };
     });
 
     const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
@@ -438,7 +446,8 @@ async function runDrillthroughProbe(browser) {
       && m.title === 'Meeting count' && m.period === 'This Year'
       && /meetings/.test(m.summary || '') && /Meeting count: 3/.test(m.summary || '')
       && m.records === 2 && m.chevrons === 2 && m.href === 'https://example.invalid/m/m1' && m.more;
-    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, probeErrors };
+    const drillScopeOk = run.scoping.otherVizDrilled === false;
+    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, drillScopeOk, probeErrors };
   } finally {
     await probe.close();
   }
@@ -598,9 +607,10 @@ try {
   console.log(`Drill-through probe (S22) — badge stays neutral ("N+") until the count is known, then reconciles: ${dtp.badgeOk}`);
   console.log(`Drill-through probe (S22) — {Column} link resolves; javascript: template refused: ${dtp.linkOk}`);
   console.log(`Drill-through probe (S22) — modal record list: title/period/summary, rows+chevrons, Esc closes: ${dtp.modalOk}`);
+  console.log(`Drill-through probe (S22) — a click from a DIFFERENT viz does not drill away: ${dtp.drillScopeOk}`);
   dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
   const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
-    && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.probeErrors.length === 0;
+    && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.drillScopeOk && dtp.probeErrors.length === 0;
 
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
