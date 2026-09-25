@@ -5427,8 +5427,15 @@ function dtClickedMeasure(payload) {
       if (m) return pick(m);
     }
   }
+  // Fallback order: the clicked cell's own measure, then any other measure on the row. Skip nulls
+  // throughout — a modal titled "<measure>: {Null}" tells the viewer nothing and reconciles against
+  // nothing, so an adjacent real measure is strictly more useful than the empty cell they hit.
   for (const p of points) {
     const m = (p.selectedMeasures || []).find(x => !dtIsNull(x.value ?? x.dataValue));
+    if (m) return pick(m);
+  }
+  for (const p of points) {
+    const m = (p.deselectedMeasures || []).find(x => !dtIsNull(x.value ?? x.dataValue));
     if (m) return pick(m);
   }
   return null;
