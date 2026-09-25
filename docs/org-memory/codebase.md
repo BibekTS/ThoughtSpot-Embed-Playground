@@ -379,3 +379,15 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   400s on every body shape tried. Objects in another org return "Logical Table not found". For
   ps-internal content living in the `Bibek` org, verify through the playground's own
   `/api/ts-rest` relay instead — same cluster, same user, correct org.
+- 2026-09-25 (S22, precise): **ThoughtSpot reports the exact CELL, not just the row.** Captured live
+  on 26.8.0.cl by right-clicking two cells of the same table row:
+  clicking the `Total Sales Amount` cell → `selectedMeasures=[Total Sales Amount 134280.9824]`,
+  `selectedAttributes=[]`, `deselectedAttributes=[Employee Name, Territory, Day(Order Date)]`,
+  `deselectedMeasures=[Quota, Quota %]`.
+  Clicking the `Employee Name` cell on that same row → `selectedAttributes=[Employee Name
+  'Lynn Tsoflias']`, `selectedMeasures=[]`, `deselectedAttributes=[Territory, Day(Order Date)]`,
+  `deselectedMeasures=[all three measures]`.
+  So the rule is: **`selected*` is the cell that was clicked; `deselected*` is the rest of that row;
+  their union is the full row.** That is why a measure-cell click leaves selectedAttributes empty —
+  no attribute was the target. Anything needing "the whole row" must read both buckets; anything
+  needing "what did they actually click" reads `selected*` alone.
