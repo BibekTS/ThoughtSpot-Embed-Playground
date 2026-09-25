@@ -403,3 +403,49 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `payload.data.vizId` is present on VizPointClick for both viz types, so scoping a drill to one
   visualization is reliable (confirmed: a left-click on the table did not drill while the drill was
   pinned to the chart).
+- 2026-09-25 (S29–S32, this PR): **the SDK-code generator had no mechanical link between what it
+  EMITS and what it IMPORTS.** `generateCode()` built `importNames` from a hand-written list of
+  conditions (`js/app.js:6345-6360`) while the emitters are hundreds of lines further down, so the
+  drill-through section emitted `CustomActionsPosition.CONTEXTMENU`, `CustomActionTarget.VIZ`,
+  `HostEvent.GetFilters` and `RuntimeFilterOp.IN` that were never imported — a `ReferenceError` on
+  the first paste. The fix is the gating PLUS a generator-wide gate:
+  `runCodeGenImportProbe()` in `scripts/boot-check.mjs` walks every rail item, extracts the SDK
+  identifiers from each emitted body (comments stripped) and asserts each one appears in that same
+  snippet's import line. Any NEW emitter that reaches for an SDK name now fails the gate unless the
+  import gating is updated with it. Corollary learned while writing it: a helper emitted
+  unconditionally must not reference a conditionally-imported name — `tsFilter` (which uses
+  `RuntimeFilterOp`) had to move inside the point-drill branch.
+- 2026-09-25 (S30/S31): **a clicked attribute is NOT a carryable runtime filter, and not a search
+  token either.** ThoughtSpot reports a bucketed date as `Day(Order Date)` / `Month(Order Date)`
+  with a RAW EPOCH value, so three separate coercions are needed and they differ by destination:
+  (a) carrying into another Liveboard needs the UNWRAPPED column and NUMERIC epochs — a string
+  epoch on `Day(Order Date)` matches nothing and loses the day scope silently;
+  (b) a non-Day bucket must become a RANGE — as a runtime filter a `BW_INC` over
+  [bucket start, bucket end] (UTC), as a search clause two space-joined comparison clauses
+  (`[Order Date] >= '12/01/2024' [Order Date] <= '12/31/2024'`); emitting only the bucket's start
+  lists the 1st of the month while the KPI covers the whole month, and `dtReconcile()` then flags a
+  mismatch that is not real;
+  (c) DISPLAY wants the ISO day. `dtBucket`/`dtEpochSec`/`dtBucketEndSec`/`dtMDY`/`dtCarryFilter`
+  in `js/app.js` encode all of this; `dtSearchColumn()` is now just `dtBucket().column`.
+  Consequence for any column comparison: normalise BOTH sides — a user configuring `scopeColumn`
+  types `Order Date` while the click reports `Month(Order Date)`.
+- 2026-09-25 (S32): **every `await` in the drill-through path is a suspension point over
+  module-level state.** `dt` (the active detail view) is REPLACED wholesale by `openDetailPanel`,
+  so `dtFetchPage`'s post-await `if (!dt) return` was not enough — a slow first click's rows landed
+  in a second click's panel. The pattern that fixes it is `const mine = dt` before the await and
+  `if (dt !== mine) return` after, and the same shape applies to `__onVizPointClick` around
+  `await embed.trigger(HostEvent.GetFilters)` (capture `currentEmbed`, then re-check the embed ref,
+  `getState().section` and `drillParent` before navigating). A boot-check leg with a deliberately
+  SLOW first response and a fast second is what proves it; asserting only on the final row count
+  passes either way, so assert on the first row's IDENTITY.
+- 2026-09-25 (regression guard): **`EmbedEvent.VizPointClick` was subscribed on EVERY embed**
+  (`js/embed.js`). Subscribing it makes a LEFT click fire the host event and ThoughtSpot show no
+  menu of its own, so plain Liveboard/Viz/Search embeds silently lost their native left-click
+  behaviour. It is now opt-in via `config._vizPointClick`, set in `buildConfig()` only for
+  `section === 'drillthrough' && drill.enabled` and explicitly cleared in `enterDrill()` (a click
+  inside the DETAIL board is not a new drill). `_vizPointClick` is a derived CONFIG field, not a
+  state key — no `js/state.js` change, so the PR stays off the guard-protected paths.
+- 2026-09-25 (S29 review): in `js/embed.js`'s constructors the explicit ids
+  (`liveboardId`/`vizId`/`answerId`/`hideSearchBar`) now spread AFTER `...flags`, so a shared
+  link's flags cannot re-point an embed at a different object. The `search`/`spotter` cases still
+  spread `dataSources`/`worksheetId` BEFORE `...flags` — same latent shape, not yet closed.

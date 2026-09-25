@@ -479,6 +479,9 @@ function buildConfig() {
   // exposeTranslationIDs is a per-embed ViewConfig flag (not customizations.content) — carried on the
   // config and applied per embed in doRender. On: every label renders as <string[stringID]> for ID discovery.
   if (s.styles.exposeIds) cfg._exposeTranslationIDs = true;
+  // Opt IN to EmbedEvent.VizPointClick. Subscribing it suppresses ThoughtSpot's own left-click
+  // behaviour inside the iframe, so only the drill-through demo (with drill on) asks for it.
+  if (s.section === 'drillthrough' && s.drill?.enabled) cfg._vizPointClick = true;
   if (s.authType !== 'None') cfg.trustedAuth = buildTrustedAuthConfig(s.auth);
   window.TS_CONFIG = cfg; // keep a single consistent config object around
   return cfg;
@@ -5249,25 +5252,38 @@ function clickedPoints(payload) {
 // (verified live on 26.8.0.cl: Employee Name='Lynn Tsoflias', Territory='Pacific'). Without that
 // fallback a table action produces no scope at all and the detail query returns the whole model.
 // The fallback only applies when selectedAttributes is empty, so chart clicks are unaffected.
+let dtDroppedAttrs = [];   // attribute columns the last click carried as {Null} — see dtSummaryLine
+
 function clickedAttributes(payload) {
   for (const p of clickedPoints(payload)) {
     const attrs = (p.selectedAttributes?.length ? p.selectedAttributes : p.deselectedAttributes) || [];
     const out = [];
+    const dropped = [];
     attrs.forEach(a => {
       const name = a?.column?.name ?? a?.columnName;
       const val = a?.value ?? a?.dataValue;
-      if (name != null && val != null && val !== '' && val !== '{Null}') {
+      if (name == null) return;
+      if (val != null && val !== '' && val !== '{Null}') {
         out.push({ columnName: name, operator: RuntimeFilterOp.IN, values: [String(val)] });
+      } else {
+        // An empty attribute cannot be turned into a filter, but dropping it SILENTLY widens the
+        // detail query without saying so — surface it on the summary line instead.
+        dropped.push(String(name));
       }
     });
-    if (out.length) return out;
+    if (out.length) { dtDroppedAttrs = dropped; return out; }
   }
+  dtDroppedAttrs = [];
   return [];
 }
 
 // Render the curated drill liveboard in place, carrying the merged filters; show a Back bar.
 function enterDrill(drillId, filters) {
   drillParent = { liveboardId: getState().liveboardId };
+  // Diagnostic surface for the headless gate: the carried filters are already visible in the drill
+  // bar and the event log, so this exposes nothing new — it just lets a probe assert their TYPES
+  // (date epochs must be NUMBERS) without rendering a real embed.
+  window.__lastDrillFilters = filters;
   const cfb = $('#custom-filter-bar'); if (cfb) cfb.hidden = true;   // the bar's columns belong to the parent board
   applyConfig();
   if (currentEmbed) { try { currentEmbed.destroy(); } catch (_) {} currentEmbed = null; }
@@ -5279,12 +5295,16 @@ function enterDrill(drillId, filters) {
   logEvent('Drill', `→ ${drillId} with ${filters.length} carried filter(s): ${filters.map(f => `${f.columnName}=[${f.values.join(',')}]`).join('; ') || 'none'}`);
   const fallback = setTimeout(() => setOverlay('hidden'), 4000);
   authFailed = false;
+  appliedRuntimeCols = new Set(); // fresh iframe carries no runtime filters yet (same as render())
+  cfg._vizPointClick = false;     // a click inside the DETAIL board is not a new drill
   currentEmbed = doRender('liveboard', cfg, {
     onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); },
     onError(msg) { clearTimeout(fallback); const str = typeof msg === 'string' ? msg : JSON.stringify(msg); if (str === '__NO_COOKIE__' || str === '__AUTH_FAILURE__') { authFailed = true; setOverlay('not-logged-in'); return; } showRenderError(str); },
     onEvent: logEvent,
   }, {
-    hiddenActions: getState().hiddenActions.map(k => Action[k]).filter(Boolean),
+    // hiddenActionKeys() — not the raw list — so the derived/implied hides render() applies are
+    // applied here too; the drill board would otherwise show actions the parent board hides.
+    hiddenActions: hiddenActionKeys(getState()).map(k => Action[k]).filter(Boolean),
     disabledActions: getState().disabledActions.map(k => Action[k]).filter(Boolean),
     disabledActionReason: getState().disabledActionReason,
     customActions: [],
@@ -5310,8 +5330,10 @@ function showDrillBar(drillId, filters) {
     const stage = $('#stage'); const area = $('#embed-area');
     stage.insertBefore(bar, area);
   }
+  // Carried date filters hold NUMERIC epochs (dtCarryFilter) — render them as ISO days, or the
+  // bar reads "Order Date: 1769644800" and tells the viewer nothing.
   const summary = filters.length
-    ? filters.map(f => `${f.columnName}: ${f.values.join(' / ')}`).join('  ·  ')
+    ? filters.map(f => `${f.columnName}: ${f.values.map(v => dtDisplayValue(f.columnName, v)).join(' / ')}`).join('  ·  ')
     : 'no filters carried';
   bar.innerHTML = '';
   const back = el('button', 'drill-back', '← Back');
@@ -5352,9 +5374,77 @@ function dtDisplayValue(col, v) {
   return String(v);
 }
 
+const DT_BUCKET_RE = /^(Day|Week|Month|Quarter|Year|Hour|Minute|Second)\((.+)\)$/i;
+
+/** Split "Month(Order Date)" into its bucket and its underlying column. No wrapper → bucket ''. */
+function dtBucket(name) {
+  const m = DT_BUCKET_RE.exec(String(name).trim());
+  return m ? { bucket: m[1].toLowerCase(), column: m[2] } : { bucket: '', column: String(name) };
+}
+
 function dtSearchColumn(name) {
-  const m = /^(?:Day|Week|Month|Quarter|Year|Hour|Minute|Second)\((.+)\)$/i.exec(String(name));
-  return m ? m[1] : name;
+  return dtBucket(name).column;
+}
+
+/** Epoch SECONDS for an epoch-like value (seconds or milliseconds), else null. */
+function dtEpochSec(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return null;
+  if (n >= 1e8 && n < 1e11) return n;               // epoch seconds (~1973–5138)
+  if (n >= 1e11 && n < 1e14) return Math.floor(n / 1000);  // epoch milliseconds
+  return null;
+}
+
+/**
+ * The INCLUSIVE last second of the bucket that starts at `startSec`, computed in UTC (the same
+ * convention isoToEpochSec/isoToEndOfDayEpochSec use — local midnight offsets the value by the
+ * browser's tz and the filter silently misses).
+ */
+function dtBucketEndSec(bucket, startSec) {
+  const d = new Date(startSec * 1000);
+  const y = d.getUTCFullYear(), mo = d.getUTCMonth(), da = d.getUTCDate();
+  let next;
+  switch (bucket) {
+    case 'week': next = Date.UTC(y, mo, da + 7); break;
+    case 'month': next = Date.UTC(y, mo + 1, 1); break;
+    case 'quarter': next = Date.UTC(y, mo - (mo % 3) + 3, 1); break;
+    case 'year': next = Date.UTC(y + 1, 0, 1); break;
+    default: next = Date.UTC(y, mo, da + 1); break;   // day / hour / minute / second
+  }
+  return Math.floor(next / 1000) - 1;
+}
+
+/** MM/DD/YYYY for an epoch value — the one date literal ThoughtSpot's search parser accepts here. */
+function dtMDY(v) {
+  const iso = cfbFmtDate(v);
+  if (!iso) return '';
+  const [y, mo, d] = iso.split('-');
+  return `${mo}/${d}/${y}`;
+}
+
+/**
+ * Turn a clicked attribute into a runtime filter fit to CARRY into another Liveboard.
+ *   • the bucket wrapper is stripped — `Day(Order Date)` is a DISPLAY name, and a runtime filter
+ *     on it matches no column, so the day scope is silently lost;
+ *   • epoch values become NUMBERS (CLAUDE.md: date epochs sent as strings are ignored) in UTC;
+ *   • a non-Day bucket becomes a BW_INC range covering the whole bucket, because the bucket's
+ *     start alone would narrow a Month(...) click to the 1st of that month.
+ * Non-date columns pass through unchanged as IN over their string values.
+ */
+function dtCarryFilter(columnName, values, operator) {
+  const { bucket, column } = dtBucket(columnName);
+  const raw = Array.isArray(values) ? values : [];
+  const epochs = raw.map(dtEpochSec);
+  const dateish = raw.length && epochs.every(e => e !== null)
+    && (bucket || CFB_DATE_NAME_RE.test(column));
+  if (!dateish) {
+    return { columnName: column, operator: operator ?? RuntimeFilterOp.IN, values: raw.map(String) };
+  }
+  if (bucket && bucket !== 'day' && epochs.length === 1) {
+    return { columnName: column, operator: RuntimeFilterOp.BW_INC,
+      values: [epochs[0], dtBucketEndSec(bucket, epochs[0])] };
+  }
+  return { columnName: column, operator: operator ?? RuntimeFilterOp.IN, values: epochs };
 }
 
 /**
@@ -5363,10 +5453,7 @@ function dtSearchColumn(name) {
  * on 26.8.0.cl). That format is locale-shaped, so a non-US cluster may want DD/MM/YYYY.
  */
 function dtSearchLiteral(col, v) {
-  if (CFB_DATE_NAME_RE.test(col)) {
-    const iso = cfbFmtDate(v);
-    if (iso) { const [y, mo, d] = iso.split('-'); return `${mo}/${d}/${y}`; }
-  }
+  if (CFB_DATE_NAME_RE.test(col)) { const mdy = dtMDY(v); if (mdy) return mdy; }
   return String(v).replace(/'/g, '');
 }
 
@@ -5380,8 +5467,19 @@ function dtQueryString(columns, filters) {
   // TS search literals are single-quoted, so a value containing a quote would break the query.
   // Drop those characters rather than risk a malformed clause — the caller logs what was sent.
   const clauses = filters.map(f => {
-    const col = dtSearchColumn(f.columnName);
-    const vals = (f.values || []).map(v => dtSearchLiteral(f.columnName, v)).filter(Boolean);
+    const { bucket, column: col } = dtBucket(f.columnName);
+    const raw = f.values || [];
+    // Month/Quarter/Year/Week buckets cover a RANGE of days. Emitting only the bucket's start as a
+    // single MM/DD/YYYY literal lists the 1st of the month while the KPI covers the whole month —
+    // dtReconcile then flags a mismatch that is not real. Two space-joined clauses (TS search ANDs
+    // them implicitly) in the same token syntax the Day clause uses; keyword forms are avoided
+    // deliberately — `[Order Date].daily = '…'` silently returned the WRONG rows on 26.8.0.cl.
+    const start = raw.length === 1 ? dtEpochSec(raw[0]) : null;
+    if (bucket && bucket !== 'day' && start !== null) {
+      const lo = dtMDY(start), hi = dtMDY(dtBucketEndSec(bucket, start));
+      if (lo && hi) return `[${col}] >= '${lo}' [${col}] <= '${hi}'`;
+    }
+    const vals = raw.map(v => dtSearchLiteral(f.columnName, v)).filter(Boolean);
     if (!vals.length) return '';
     return vals.length === 1
       ? `[${col}] = '${vals[0]}'`
@@ -5465,23 +5563,35 @@ window.__onVizPointClick = async (payload) => {
   const clickedVizId = payload?.data?.vizId || payload?.vizId || '';
   if (d.drillVizId && clickedVizId && clickedVizId !== d.drillVizId) return;
 
-  const clicked = clickedAttributes(payload);
-  if (!clicked.length) {
+  const raw = clickedAttributes(payload);
+  if (!raw.length) {
     logEvent('Drill', '⚠ point click carried no dimensional attributes — nothing to filter by.');
     return;
   }
+  // A carried filter is not the same object as a search token: strip the bucket wrapper and coerce
+  // epochs to NUMBERS, or the detail board receives `Day(Order Date)=['1769644800']` — a string
+  // epoch on a display-bucket name — and silently drops the whole day scope.
+  const clicked = raw.map(f => dtCarryFilter(f.columnName, f.values, f.operator));
   // Also carry what the user set INSIDE the iframe. GetFilters returns a promise directly (no
   // callback arg); it is unsupported on some builds, so a failure degrades to host-side filters only.
+  const mine = currentEmbed;   // the embed this click came from — see the staleness check below
   let fromEmbed = [];
   try {
-    const res = await currentEmbed?.trigger(HostEvent.GetFilters);
+    const res = await mine?.trigger(HostEvent.GetFilters);
     const list = Array.isArray(res) ? res : (res?.filters || res?.data || []);
     fromEmbed = (Array.isArray(list) ? list : [])
       .filter(f => f?.column && Array.isArray(f.values) && f.values.length)
-      .map(f => ({ columnName: f.column, operator: RuntimeFilterOp[f.operator] ?? RuntimeFilterOp.IN, values: f.values.map(String) }));
+      .map(f => dtCarryFilter(f.column, f.values, RuntimeFilterOp[f.operator]));
     logEvent('HostEvent', `GetFilters → ${fromEmbed.length} Liveboard filter(s) carried`);
   } catch (e) {
     logEvent('HostEvent', `GetFilters unavailable (${e.message}) — carrying host-side filters only`);
+  }
+  // The await above is a suspension point: the user may have switched section, already drilled, or
+  // caused a re-render in the meantime. Re-check every precondition against the CURRENT state
+  // before navigating, or a stale click drills the board that replaced it.
+  if (currentEmbed !== mine || getState().section !== 'drillthrough' || drillParent) {
+    logEvent('Drill', 'ℹ point click went stale while awaiting GetFilters — not drilling.');
+    return;
   }
   // Clicked attributes win: they are the point the user actually selected. De-dupe by column so a
   // board filter on the same column can't AND itself against the click into an empty result.
@@ -5500,11 +5610,15 @@ async function openDetailPanel(payload) {
   // Scope the detail query to the clicked point. Prefer the configured scope column when the click
   // carries it; otherwise fall back to every dimensional attribute on the point.
   const attrs = clickedAttributes(payload);
-  const scoped = d.scopeColumn ? attrs.filter(f => f.columnName === d.scopeColumn) : attrs;
+  // Compare the UNDERLYING columns: the click reports `Day(Order Date)` while a user configuring
+  // the scope naturally types `Order Date`, and a raw string compare would never match.
+  const wantScope = dtSearchColumn(d.scopeColumn || '');
+  const scoped = d.scopeColumn ? attrs.filter(f => dtSearchColumn(f.columnName) === wantScope) : attrs;
   const filters = scoped.length ? scoped : attrs;
   const kpi = dtClickedMeasure(payload);
+  const dropped = dtDroppedAttrs.slice();
 
-  dt = { filters, kpi, columns: [], rows: [], reportedTotal: 0, exhausted: false, offset: 0, loading: true, error: '' };
+  dt = { filters, kpi, dropped, columns: [], rows: [], reportedTotal: 0, exhausted: false, offset: 0, loading: true, error: '' };
   renderDetail();
   await dtFetchPage(true);
 }
@@ -5514,15 +5628,18 @@ async function dtFetchPage(reset = false) {
   const s = getState();
   const d = s.drill || {};
   if (!dt) return;
-  dt.loading = true; dt.error = '';
+  const mine = dt;   // the view this fetch belongs to; openDetailPanel REPLACES `dt` on every click
+  mine.loading = true; mine.error = '';
   renderDetail();
-  const query = dtQueryString(d.detailColumns, dt.filters);
-  const offset = reset ? 0 : dt.offset;
+  const query = dtQueryString(d.detailColumns, mine.filters);
+  const offset = reset ? 0 : mine.offset;
   logEvent('Drill-through', `searchdata ← "${query}" (offset ${offset}, size ${d.pageSize})`);
   const res = await Discovery.searchDataPage(s.host, {
     queryString: query, modelId: d.detailModelId, offset, size: d.pageSize,
   });
-  if (!dt) return;                                        // the panel was closed while the fetch was in flight
+  // Closed, or superseded by a later click, while the fetch was in flight. Writing into a view that
+  // is no longer `dt` would append one click's page 2 onto another click's rows (last write wins).
+  if (!dt || dt !== mine) return;
   dt.loading = false;
   if (!res.ok) {
     dt.error = res.error || 'searchdata failed';
@@ -5646,7 +5763,10 @@ function dtSplitColumns(cols) {
 function dtSummaryLine() {
   const r = dtReconcile();
   const scope = dt.filters.map(f => `${f.columnName}: ${f.values.map(dtDisplayValue.bind(null, f.columnName)).join(' / ')}`).join(' · ');
-  return `${r.text}${scope ? ` — ${scope}` : ''}`;
+  // An attribute the clicked row carried as {Null} cannot become a filter, so the detail query is
+  // WIDER than the cell the user clicked. Say which ones rather than dropping them silently.
+  const skipped = (dt.dropped || []).length ? ` · not scoped ({Null}): ${dt.dropped.join(', ')}` : '';
+  return `${r.text}${scope ? ` — ${scope}` : ''}${skipped}`;
 }
 
 /** One record row: icon · title + meta · date · chevron. The whole row is the link when one resolves. */
@@ -5696,6 +5816,9 @@ function renderDetailModal() {
     const panel = el('div', 'modal-panel modal-panel--center dt-modal-panel'); panel.id = 'dt-modal-panel';
     modal.append(scrim, panel);
     document.body.appendChild(modal);
+    // Toggling panel ↔ modal re-mounts the modal, so remove any previous binding before adding —
+    // otherwise each toggle leaves another live Esc listener behind.
+    if (dtKeyHandler) document.removeEventListener('keydown', dtKeyHandler);
     dtKeyHandler = (ev) => { if (ev.key === 'Escape') dtClosePanel(); };
     document.addEventListener('keydown', dtKeyHandler);
   }
@@ -5773,9 +5896,10 @@ function renderDetailPanel() {
   const title = el('div', 'dt-title');
   const strong = el('strong'); strong.textContent = d.actionLabel || 'View detail';
   const scope = el('span', 'dt-scope');
-  scope.textContent = dt.filters.length
+  scope.textContent = (dt.filters.length
     ? dt.filters.map(f => `${f.columnName}: ${f.values.map(dtDisplayValue.bind(null, f.columnName)).join(' / ')}`).join('  ·  ')
-    : 'no scope carried from the click';
+    : 'no scope carried from the click')
+    + ((dt.dropped || []).length ? `  ·  not scoped ({Null}): ${dt.dropped.join(', ')}` : '');
   title.append(strong, document.createTextNode(' · '), scope);
 
   // The point of the badge: the KPI the user clicked and the number of detail rows behind it should
@@ -6223,13 +6347,21 @@ function generateCode() {
   const pickerMenu = lbishSection && s.exportOpts?.pickerAction;
   const dateBtn = lbishSection && s.dateBtn?.enabled;
   const plbOn = ['liveboard', 'liveboard-custom', 'ai-highlights'].includes(s.section) && s.personalLb?.enabled;
+  // The drill-through demo emits its own custom action AND its own handlers, so it must be part of
+  // the import gating — without it the snippet references CustomActionsPosition / CustomActionTarget
+  // / HostEvent / RuntimeFilterOp that were never imported and throws ReferenceError on paste.
+  const dtOn = s.section === 'drillthrough' && s.drill?.enabled;
+  const dtAction = dtOn && s.drill.summaryModelId && s.drill.measureColumn ? s.drill : null;
+  // The VizPointClick drill leg only exists when a left-click is NOT already claimed by the record
+  // list and a detail board is configured — mirror the runtime condition exactly.
+  const dtPointDrill = dtOn && s.drill.trigger !== 'click' && !!s.drill.drillLiveboardId;
   const importNames = ['init', 'AuthType', embedCls, 'EmbedEvent'];
-  if (s.customActions.length || exportMenu || pickerMenu || dateBtn) importNames.push('CustomActionsPosition', 'CustomActionTarget');
+  if (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction) importNames.push('CustomActionsPosition', 'CustomActionTarget');
   const cfbActiveFilters = s.section === 'liveboard-custom'
     ? Object.entries(cfbSelected).filter(([, v]) => v && v.length)
     : [];
   const drillAction = s.customActions.find(a => a.type === 'drill');
-  if (s.activeFilters.length || cfbActiveFilters.length || drillAction || dateBtn) importNames.push('HostEvent', 'RuntimeFilterOp');
+  if (s.activeFilters.length || cfbActiveFilters.length || drillAction || dateBtn || dtPointDrill) importNames.push('HostEvent', 'RuntimeFilterOp');
   if (hiddenActionKeys(s).length || s.disabledActions.length) importNames.push('Action');
   if (s.section === 'fullapp') importNames.push('Page');
   if (s.section === 'ai-highlights') importNames.push('HostEvent');
@@ -6298,7 +6430,6 @@ function generateCode() {
   if (hiddenKeys.length) opt.push(`  hiddenActions: [${hiddenKeys.map(a => `Action.${a}`).join(', ')}],`);
   if (s.disabledActions.length) opt.push(`  disabledActions: [${s.disabledActions.map(a => `Action.${a}`).join(', ')}],`);
   if (s.disabledActions.length && s.disabledActionReason) opt.push(`  disabledActionReason: '${esc(s.disabledActionReason)}',`);
-  const dtAction = s.section === 'drillthrough' && s.drill?.enabled && s.drill.summaryModelId && s.drill.measureColumn ? s.drill : null;
   if (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction) {
     opt.push('  customActions: [');
     s.customActions.forEach(a => opt.push(`    { id: '${esc(a.id)}', name: '${esc(a.label)}', position: CustomActionsPosition.${a.pos || 'PRIMARY'}, target: CustomActionTarget.${a.target || 'LIVEBOARD'} },`));
@@ -6315,52 +6446,151 @@ function generateCode() {
 
   // `let` when Personal liveboards is on so switchBoard() can reassign `embed` on a tab click.
   L.push(`${plbOn ? 'let' : 'const'} embed = new ${embedCls}('#ts-embed-container', {\n${opt.join('\n')}\n});`);
-  if (s.section === 'drillthrough' && s.drill?.enabled) {
+  if (dtOn) {
     const d = s.drill;
     L.push('');
-    L.push('// ── Drill-through: a point click carries the clicked attributes + the board\'s own filters ──');
-    L.push('// HostEvent.GetFilters returns a promise directly (no callback argument).');
-    L.push('embed.on(EmbedEvent.VizPointClick, async ({ data }) => {');
-    L.push('  const clicked = (data.clickedPoint?.selectedAttributes ?? [])');
-    L.push('    .map(a => ({ columnName: a.column.name, operator: RuntimeFilterOp.IN, values: [a.value] }));');
-    L.push('  let boardFilters = [];');
-    L.push('  try {');
-    L.push('    const res = await embed.trigger(HostEvent.GetFilters);');
-    L.push('    boardFilters = (Array.isArray(res) ? res : res?.filters ?? [])');
-    L.push('      .filter(f => f.column && f.values?.length)');
-    L.push('      .map(f => ({ columnName: f.column, operator: RuntimeFilterOp[f.operator] ?? RuntimeFilterOp.IN, values: f.values }));');
-    L.push('  } catch (_) { /* unsupported on this build — carry the click alone */ }');
-    L.push('  embed.destroy();');
-    L.push(`  new ${embedCls}('#ts-embed-container', {`);
-    L.push('    frameParams: {}, liveboardV2: true,');
-    L.push(`    liveboardId: '${esc(d.drillLiveboardId || 'detail-liveboard-guid')}',`);
-    L.push('    // Clicked attributes last so they win on a column the board also filters.');
-    L.push('    runtimeFilters: [...boardFilters, ...clicked],');
-    L.push('  }).render();');
-    L.push('});');
+    L.push('// -- Drill-through helpers ---------------------------------------------------');
+    L.push('// ThoughtSpot reports a bucketed attribute wrapped in its bucket - "Day(Order Date)" - with a RAW');
+    L.push('// EPOCH value. The wrapper is a DISPLAY name: it is neither a search token (the query is rejected');
+    L.push('// as "Bad tokens") nor a filterable column, so it must be stripped before either use.');
+    L.push('const tsBucket = (name) => {');
+    L.push('  const m = /^(Day|Week|Month|Quarter|Year|Hour|Minute|Second)\\((.+)\\)$/i.exec(String(name).trim());');
+    L.push('  return m ? { bucket: m[1].toLowerCase(), column: m[2] } : { bucket: \'\', column: String(name) };');
+    L.push('};');
+    L.push('const tsDateName = (c) => /(^|[^a-z])(date|time|day|month|year|quarter|week)([^a-z]|$)/i.test(c);');
+    L.push('const tsEpochSec = (v) => {');
+    L.push('  const n = Number(v);');
+    L.push('  if (!Number.isInteger(n)) return null;');
+    L.push('  if (n >= 1e8 && n < 1e11) return n;                      // epoch seconds');
+    L.push('  if (n >= 1e11 && n < 1e14) return Math.floor(n / 1000);  // epoch milliseconds');
+    L.push('  return null;');
+    L.push('};');
+    L.push('// Inclusive last second of the bucket, in UTC - local midnight offsets the value by the viewer\'s');
+    L.push('// timezone and the filter silently misses.');
+    L.push('const tsBucketEnd = (bucket, sec) => {');
+    L.push('  const d = new Date(sec * 1000), y = d.getUTCFullYear(), mo = d.getUTCMonth(), da = d.getUTCDate();');
+    L.push('  const next = bucket === \'week\' ? Date.UTC(y, mo, da + 7)');
+    L.push('    : bucket === \'month\' ? Date.UTC(y, mo + 1, 1)');
+    L.push('    : bucket === \'quarter\' ? Date.UTC(y, mo - (mo % 3) + 3, 1)');
+    L.push('    : bucket === \'year\' ? Date.UTC(y + 1, 0, 1)');
+    L.push('    : Date.UTC(y, mo, da + 1);');
+    L.push('  return Math.floor(next / 1000) - 1;');
+    L.push('};');
+    L.push('// The search parser wants MM/DD/YYYY here: \'2026-01-29\' and a bare 2026-01-29 are both rejected,');
+    L.push('// and [Order Date].daily = \'2026-01-29\' silently returns the WRONG rows. (Locale-shaped - a');
+    L.push('// non-US cluster may want DD/MM/YYYY.)');
+    L.push('const tsMDY = (sec) => {');
+    L.push('  const d = new Date(sec * 1000), p = (n) => String(n).padStart(2, \'0\');');
+    L.push('  return p(d.getUTCMonth() + 1) + \'/\' + p(d.getUTCDate()) + \'/\' + d.getUTCFullYear();');
+    L.push('};');
+    L.push('// The clicked CELL is in selected*; the REST of the row is in deselected*. A measure-cell click on');
+    L.push('// a TABLE therefore leaves selectedAttributes EMPTY - without this fallback the query carries no');
+    L.push('// scope at all and silently returns the whole model.');
+    L.push('const tsAttrs = (data) => {');
+    L.push('  const p = data.clickedPoint ?? data.contextMenuPoints?.clickedPoint ?? {};');
+    L.push('  const a = p.selectedAttributes?.length ? p.selectedAttributes : (p.deselectedAttributes ?? []);');
+    L.push('  return a.filter((x) => x?.value != null && x.value !== \'\' && x.value !== \'{Null}\');');
+    L.push('};');
+    L.push('// One search clause. A bucketed date becomes a RANGE in the same token syntax the day clause uses.');
+    L.push('const tsClause = (name, values) => {');
+    L.push('  const { bucket, column } = tsBucket(name);');
+    L.push('  const one = values.length === 1 ? tsEpochSec(values[0]) : null;');
+    L.push('  if (bucket && bucket !== \'day\' && one !== null) {');
+    L.push('    return \'[\' + column + "] >= \'" + tsMDY(one) + "\' [" + column + "] <= \'" + tsMDY(tsBucketEnd(bucket, one)) + "\'";');
+    L.push('  }');
+    L.push('  const lit = (v) => {');
+    L.push('    const e = tsEpochSec(v);');
+    L.push('    return e !== null && (bucket || tsDateName(column)) ? tsMDY(e) : String(v).replace(/\'/g, \'\');');
+    L.push('  };');
+    L.push('  return values.length === 1');
+    L.push('    ? \'[\' + column + "] = \'" + lit(values[0]) + "\'"');
+    L.push('    : \'[\' + column + \'] = \' + values.map((v) => "\'" + lit(v) + "\'").join(\' \');');
+    L.push('};');
+    if (dtPointDrill) {
+      L.push('// A runtime filter needs the UNDERLYING column and NUMERIC epochs (date epochs sent as strings are');
+      L.push('// silently ignored). A non-Day bucket becomes a BW_INC range so a Month(...) click covers the');
+      L.push('// whole month instead of collapsing to the 1st.');
+      L.push('const tsFilter = (name, values, op) => {');
+      L.push('  const { bucket, column } = tsBucket(name);');
+      L.push('  const secs = values.map(tsEpochSec);');
+      L.push('  if (!values.length || !secs.every((x) => x !== null) || !(bucket || tsDateName(column))) {');
+      L.push('    return { columnName: column, operator: op ?? RuntimeFilterOp.IN, values: values.map(String) };');
+      L.push('  }');
+      L.push('  if (bucket && bucket !== \'day\' && secs.length === 1) {');
+      L.push('    return { columnName: column, operator: RuntimeFilterOp.BW_INC, values: [secs[0], tsBucketEnd(bucket, secs[0])] };');
+      L.push('  }');
+      L.push('  return { columnName: column, operator: op ?? RuntimeFilterOp.IN, values: secs };');
+      L.push('};');
+      L.push('');
+      L.push('// -- Point click -> detail Liveboard, carrying the clicked point + the board\'s own filters --');
+      L.push('// HostEvent.GetFilters returns a promise directly (no callback argument).');
+      L.push('embed.on(EmbedEvent.VizPointClick, async ({ data }) => {');
+      if (d.drillVizId) {
+        L.push('  // VizPointClick fires for EVERY viz on the board - scope the drill to one.');
+        L.push(`  if (data.vizId && data.vizId !== '${esc(d.drillVizId)}') return;`);
+      }
+      L.push('  const clicked = tsAttrs(data).map(a => tsFilter(a.column.name, [a.value]));');
+      L.push('  if (!clicked.length) return;');
+      L.push('  let boardFilters = [];');
+      L.push('  try {');
+      L.push('    const res = await embed.trigger(HostEvent.GetFilters);');
+      L.push('    boardFilters = (Array.isArray(res) ? res : res?.filters ?? [])');
+      L.push('      .filter(f => f.column && f.values?.length)');
+      L.push('      .map(f => tsFilter(f.column, f.values, RuntimeFilterOp[f.operator]));');
+      L.push('  } catch (_) { /* unsupported on this build - carry the click alone */ }');
+      L.push('  embed.destroy();');
+      L.push(`  new ${embedCls}('#ts-embed-container', {`);
+      L.push('    frameParams: {}, liveboardV2: true,');
+      L.push(`    liveboardId: '${esc(d.drillLiveboardId)}',`);
+      L.push('    // Clicked attributes last so they win on a column the board also filters.');
+      L.push('    runtimeFilters: [...boardFilters, ...clicked],');
+      L.push('  }).render();');
+      L.push('});');
+    }
     L.push('');
-    L.push('// ── "' + (d.actionLabel || 'View detail') + '": event-grain rows for the clicked point ──');
+    L.push('// -- "' + (d.actionLabel || 'View detail') + '": event-grain rows for the clicked point --');
     L.push('// searchdata runs under the VIEWER\'S token, so RLS applies to the detail rows.');
     L.push('// record_offset is what pages past the 1,000-row response cap.');
     L.push('embed.on(EmbedEvent.CustomAction, async (payload) => {');
     L.push(`  if (payload.id !== '${DT_ACTION_ID}') return;`);
-    L.push('  const attrs = payload.data?.clickedPoint?.selectedAttributes ?? [];');
-    L.push(`  const scope = attrs${d.scopeColumn ? `.filter(a => a.column.name === '${esc(d.scopeColumn)}')` : ''};`);
+    L.push('  const data = payload.data ?? {};');
+    L.push('  const attrs = tsAttrs(data);');
+    if (d.scopeColumn) {
+      L.push(`  const scoped = attrs.filter(a => tsBucket(a.column.name).column === '${esc(dtSearchColumn(d.scopeColumn))}');`);
+      L.push('  const scope = scoped.length ? scoped : attrs;');
+    } else {
+      L.push('  const scope = attrs;');
+    }
     L.push(`  const cols = ${JSON.stringify(d.detailColumns || [])}.map(c => \`[\${c}]\`).join(' ');`);
-    L.push('  const where = scope.map(a => `[${a.column.name}] = \'${a.value}\'`).join(\' \');');
+    L.push('  const where = scope.map(a => tsClause(a.column.name, [a.value])).join(\' \');');
+    L.push('  // dataModelIds.modelColumnNames scopes the action to the VISUALIZATION, not to one column,');
+    L.push('  // so the cell the user clicked may be a different measure than the one this drill is about.');
+    L.push('  // Take the CONFIGURED measure wherever it sits on the clicked point (selected + deselected).');
+    L.push('  const point = data.clickedPoint ?? data.contextMenuPoints?.clickedPoint ?? {};');
+    L.push('  const kpi = [...(point.selectedMeasures ?? []), ...(point.deselectedMeasures ?? [])]');
+    L.push(`    .find(m => m.column?.name === '${esc(d.measureColumn)}' && m.value !== '{Null}');`);
+    L.push(`  const PAGE = ${Number(d.pageSize) || 100};`);
     L.push(`  const page = async (offset) => (await fetch('${esc(s.host)}/api/rest/2.0/searchdata', {`);
     L.push('    method: \'POST\', credentials: \'include\',');
     L.push('    headers: { \'Content-Type\': \'application/json\', Accept: \'application/json\' },');
     L.push('    body: JSON.stringify({');
     L.push('      query_string: `${cols} ${where}`.trim(),');
     L.push(`      logical_table_identifier: '${esc(d.detailModelId || 'detail-model-guid')}',`);
-    L.push(`      data_format: 'COMPACT', record_size: ${Number(d.pageSize) || 100}, record_offset: offset,`);
+    L.push('      data_format: \'COMPACT\', record_size: PAGE, record_offset: offset,');
     L.push('    }),');
     L.push('  })).json();');
-    L.push('  const first = (await page(0)).contents?.[0] ?? {};');
-    L.push('  // first.available_data_row_count is the FULL match count — reconcile it against the');
-    L.push('  // measure the user clicked (payload.data.clickedPoint.selectedMeasures[0].value).');
-    L.push('  renderYourGrid(first.column_names, first.data_rows, first.available_data_row_count);');
+    L.push('  // available_data_row_count is NOT the total: on 26.8.0.cl it comes back equal to the rows');
+    L.push('  // in THIS page, so a FULL page tells you nothing. The only reliable end-of-data signal is a');
+    L.push('  // SHORT page - page until one arrives, then reconcile against the CONFIGURED measure above.');
+    L.push('  const rows = []; let columnNames = [];');
+    L.push('  for (let offset = 0; ; offset += PAGE) {');
+    L.push('    const c = (await page(offset)).contents?.[0] ?? {};');
+    L.push('    columnNames = c.column_names ?? columnNames;');
+    L.push('    const got = c.data_rows ?? [];');
+    L.push('    rows.push(...got);');
+    L.push('    if (got.length < PAGE) break;');
+    L.push('  }');
+    L.push('  renderYourGrid(columnNames, rows, kpi ? Number(kpi.value) : null);');
     L.push('});');
   }
   if (drillAction) {
