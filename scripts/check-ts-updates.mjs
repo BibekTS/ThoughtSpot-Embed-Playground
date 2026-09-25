@@ -13,9 +13,10 @@
  *   10 → changes detected; the routine follows docs/ts-watch-playbook.md
  *   1  → an INTEGRITY error only (pin drift, unreadable pin/watermark/embed.js) — report and stop
  *
- * Transient network failures (npm 5xx, GitHub 403/429 rate-limit, doc timeouts) are WARNINGS, not
- * errors: they must never convert a real "drift detected" into exit 1, and a fully-failed run just
- * reports exit 0 with warnings — the weekly cadence tolerates a missed week.
+ * Transient network failures (npm 5xx, GitHub 403/429 rate-limit, doc 5xx/429, doc timeouts) are
+ * WARNINGS, not errors — and they are not CHANGES either: only a 404/410 on a watched doc counts
+ * as drift. They must never convert a real "drift detected" into exit 1, and a fully-failed run
+ * just reports exit 0 with warnings — the weekly cadence tolerates a missed week.
  *
  * Flags:  --json  emit a machine-readable block in addition to the human summary.
  * Zero dependencies, Node ≥18 (global fetch). Matches the style of the other scripts/*.mjs.
@@ -166,9 +167,17 @@ async function main() {
   for (const url of watched) {
     try {
       const r = await fetchText(url);
+      // Only a GONE page is drift. A 5xx/429/403 is the doc host having a bad minute — treating it
+      // as a change turns every transient blip into exit 10 and sends the routine off to write a PR
+      // about nothing. Soft-fail those as warnings, exactly as the npm/GitHub branches above do.
       if (!r.ok) {
-        result.docs[url] = { status: r.status, moved: r.status === 404 };
-        result.changes.push(`DOC ${r.status}${r.status === 404 ? ' (moved? WebSearch for the successor page)' : ''}: ${url}`);
+        const moved = r.status === 404 || r.status === 410;
+        result.docs[url] = { status: r.status, moved };
+        if (moved) {
+          result.changes.push(`DOC ${r.status} (moved? WebSearch for the successor page): ${url}`);
+        } else {
+          result.warnings.push(`doc fetch returned ${r.status} (${url}) — skipped this run`);
+        }
         continue;
       }
       const h = contentHash(r.text);
@@ -217,7 +226,12 @@ async function main() {
   return 0;
 }
 
-main().then((code) => process.exit(code)).catch((e) => {
-  console.error('ts-watch detector crashed:', e);
-  process.exit(1);
-});
+export { main };
+
+// Run only when invoked as a script — importing this module (the unit test does) must not fetch.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().then((code) => process.exit(code)).catch((e) => {
+    console.error('ts-watch detector crashed:', e);
+    process.exit(1);
+  });
+}

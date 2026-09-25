@@ -29,6 +29,10 @@ function fmtUSD(v) {
    capture the column schema (name + type) for column resolution.
 ------------------------------------------------------------ */
 
+// Upper bound on rows pulled into a single client-side PDF — a guard against a viz with millions
+// of rows, not a business rule. Paging stops here and the export says so.
+const MAX_PDF_ROWS = 50_000;
+
 // Pull every row from the viz behind the action. Returns { rows, schema }.
 // answerService.fetchData(offset, size) → { columns, data } (column-oriented `columnDataLite`).
 export async function fetchAllRows(answerService, pageSize = 1000) {
@@ -40,7 +44,17 @@ export async function fetchAllRows(answerService, pageSize = 1000) {
     if (!schema) schema = extractSchema(res);
     const rows = normalizeRows(res);
     all = all.concat(rows);
+    // An EMPTY page is end-of-data. Checked on its own because `rows.length < pageSize` cannot
+    // catch it if a caller passes a non-positive pageSize — the loop would then re-fetch the same
+    // offset forever against a viz that answers past-the-end with `[]`.
+    if (rows.length === 0) break;
     if (rows.length < pageSize) break; // last (partial) page
+    if (all.length >= MAX_PDF_ROWS) {
+      // Ceiling, not a silent truncation: a runaway viz would otherwise pull the whole table into
+      // memory and hang the tab building a PDF nobody can read.
+      console.warn(`[invoice-pdf] row ceiling reached (${MAX_PDF_ROWS.toLocaleString()} rows) — the PDF covers the first ${all.length.toLocaleString()} rows only.`);
+      break;
+    }
     offset += pageSize;
   }
   return { rows: all, schema: schema || [] };
@@ -53,9 +67,6 @@ function extractSchema(res) {
     return { name: col.name || col.id || col.columnId, type: col.type, dataType: col.dataType };
   });
 }
-
-let _shapeLogged = false;
-let _rowLogged = false;
 
 function firstArray(candidates) {
   for (const c of candidates) if (Array.isArray(c)) return c;
@@ -71,25 +82,9 @@ function cellValue(v) {
   return v;
 }
 
-// One-time copy-pasteable dump of the response shape.
-function logShapeOnce(res, lite) {
-  if (_shapeLogged) return;
-  _shapeLogged = true;
-  try {
-    const cols = (res && res.columns) || [];
-    console.log('[invoice-pdf] columns:', JSON.stringify(cols.map((c) => {
-      const col = c.column || c; return { id: col.id || col.columnId, name: col.name, type: col.type };
-    })));
-    const d = (res && res.data) || {};
-    console.log('[invoice-pdf] data is', Array.isArray(d) ? `array[${d.length}]` : `${typeof d} keys=${JSON.stringify(Object.keys(d))}`);
-    const probe = Array.isArray(lite) ? lite[0] : (Array.isArray(d) ? d[0] : d);
-    console.log('[invoice-pdf] data sample:', JSON.stringify(probe, (k, v) => (Array.isArray(v) && v.length > 3 ? v.slice(0, 3) : v))?.slice(0, 2000));
-  } catch (e) { console.warn('[invoice-pdf] shape log failed', e); }
-}
-
 // Turn a fetchData() response into an array of plain objects keyed by column display name.
 function normalizeRows(res) {
-  if (!res || typeof res !== 'object') { logShapeOnce(res); return []; }
+  if (!res || typeof res !== 'object') return [];
 
   const cols = res.columns || [];
   const nameByIdx = [];
@@ -109,8 +104,6 @@ function normalizeRows(res) {
     Array.isArray(d) && d,
     d.data && Array.isArray(d.data) && d.data,
   ]);
-
-  logShapeOnce(res, lite);
 
   // A column entry's values may be a real array OR a JSON-stringified array (TS returns e.g.
   // dataValue: "[8.04505969823E7]" for some viz types) — parse both to an array.
@@ -151,11 +144,6 @@ function normalizeRows(res) {
     }
   }
 
-  if (!_rowLogged && out.length) {
-    _rowLogged = true;
-    console.log('[invoice-pdf] first row keys:', JSON.stringify(Object.keys(out[0])));
-    console.log('[invoice-pdf] first row sample:', JSON.stringify(out[0]).slice(0, 1500));
-  }
   return out;
 }
 
@@ -203,13 +191,16 @@ export function groupStatements(rows, schema = []) {
 
   const getVal = (row, colName) => { if (!colName) return ''; const v = row[colName]; return v == null ? '' : v; };
 
-  const statements = {};
+  // A Map, NOT a plain object: the key is live TS row data, so a group value of `__proto__`,
+  // `constructor` or `toString` against `{}` either hits an inherited truthy member (skipping the
+  // init) or throws on assignment — aborting the whole export over one row's text.
+  const statements = new Map();
   rows.forEach((r) => {
     const key = String(getVal(r, GROUP) || '—');
-    if (!statements[key]) {
-      statements[key] = { region: key, country: getVal(r, COL_COUNTRY), employees: new Set(), products: new Set(), items: [] };
+    if (!statements.has(key)) {
+      statements.set(key, { region: key, country: getVal(r, COL_COUNTRY), employees: new Set(), products: new Set(), items: [] });
     }
-    const s = statements[key];
+    const s = statements.get(key);
     const emp = COL_EMP ? String(getVal(r, COL_EMP)) : '';
     const prod = COL_PRODUCT ? String(getVal(r, COL_PRODUCT)) : '';
     if (emp) s.employees.add(emp);
@@ -218,8 +209,7 @@ export function groupStatements(rows, schema = []) {
   });
 
   // Normalize a grouped statement into the generic "document" shape the PDF builder consumes.
-  return Object.keys(statements).map((k) => {
-    const s = statements[k];
+  return [...statements.values()].map((s) => {
     return {
       heading: s.region,
       sub: [COL_COUNTRY ? String(s.country || '') : ''].filter(Boolean),

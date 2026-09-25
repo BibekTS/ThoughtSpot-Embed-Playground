@@ -104,7 +104,20 @@ export async function discoverOrg(host) {
   try {
     const resp = await api(host, '/api/rest/2.0/auth/session/user');
     if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}`, status: resp.status };
-    const data = await resp.json();
+    // A 200 that isn't JSON is an SSO/proxy login page standing in front of the cluster, NOT a CORS
+    // block — we plainly READ the response. Handled here because a throw from resp.json() would
+    // otherwise fall into the catch below and be misreported as 'cors' (or, worse, as 'network').
+    let data;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'proxy',
+        status: resp.status,
+        error: 'not a ThoughtSpot JSON response — check for an SSO/proxy login page in front of the cluster',
+      };
+    }
     return {
       ok: true,
       userName: data.display_name || data.name || 'User',
@@ -562,29 +575,3 @@ export async function aiSearchData(host, { queryString, worksheetId, recordSize 
   }
 }
 
-/** Distinct column values for a liveboard column (for filter helpers). */
-export async function discoverColumnValues(host, liveboardId, column) {
-  try {
-    const resp = await api(host, '/api/rest/2.0/metadata/liveboard/data', {
-      method: 'POST',
-      body: JSON.stringify({ metadata_identifier: liveboardId, record_size: 10000, record_offset: 0 }),
-    });
-    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
-    const contents = (await resp.json()).contents ?? [];
-    const allCols = new Set();
-    contents.forEach(ct => (ct.column_names ?? []).forEach(cn => allCols.add(cn)));
-    const columns = [...allCols].sort();
-    if (!column) return { ok: true, columns, values: [] };
-    const content = contents.find(ct => (ct.column_names ?? []).includes(column));
-    const idx = content ? (content.column_names ?? []).indexOf(column) : -1;
-    const values = content
-      ? [...new Set((content.data_rows ?? []).map(r => {
-          const v = r[idx];
-          return v === null || v === undefined ? '{Null}' : String(v);
-        }))].sort()
-      : [];
-    return { ok: true, columns, values };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-}

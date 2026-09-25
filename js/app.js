@@ -202,6 +202,12 @@ const RANGE_OPERATORS = new Set(['BW_INC', 'BW', 'BW_INC_MIN', 'BW_INC_MAX']);
 // ── Runtime (non-shared) state ────────────────────────────────────────────────
 let currentEmbed = null;
 let connected = false;
+// Monotonic connect ticket. Each connect() takes the next number; after every await it checks that
+// it is still the newest attempt (and that the host it captured is still the state's host) before
+// writing any of the module globals below. Without it a slow probe of a mistyped host lands after a
+// good connection and marks the live session "Unreachable" / fills the pickers with the wrong
+// instance's objects. Same fence loadAnswers() uses, widened to the whole connect sequence.
+let connectSeq = 0;
 let discovered = { worksheets: [], liveboards: [] };
 let vizCache = {};      // liveboardId -> [{id,name}] | null (failed) | undefined (not loaded)
 const _vizLoading = new Set(); // liveboardIds with a fetch in flight
@@ -487,6 +493,8 @@ async function connect({ silent = false } = {}) {
   pendingHostConfirm = false; // an explicit Connect trusts this host for the session
   holdHostPersist(false);     // lift the localStorage suppression now that host is confirmed
   setState({ host });
+  const seq = ++connectSeq;                       // this attempt's ticket
+  const isStale = () => seq !== connectSeq || getState().host !== host;
   setStatus('connecting', 'Connecting…');
   // Show a prominent connecting state on the main stage immediately — discovery below can take a
   // few seconds, and until now the stage kept showing the "not connected" walkthrough (only the
@@ -496,10 +504,14 @@ async function connect({ silent = false } = {}) {
   applyConfig();
 
   const org = await Discovery.discoverOrg(host);
+  if (isStale()) return; // a newer connect() owns the UI now — drop this response entirely
   if (!org.ok) {
     connected = false;
     const isCors = org.reason === 'cors';
-    const label = org.status === 401 ? 'Not logged in' : isCors ? 'CORS blocked' : 'Unreachable';
+    // 'proxy' = the host answered 200 with something that is not ThoughtSpot JSON (an SSO or
+    // corporate-proxy login page). Reporting that as "Unreachable" sent people debugging DNS.
+    const isProxy = org.reason === 'proxy';
+    const label = org.status === 401 ? 'Not logged in' : isCors ? 'CORS blocked' : isProxy ? 'Not ThoughtSpot' : 'Unreachable';
     const detail = isCors
       ? `Host is reachable, but the browser blocked the cross-origin REST call. Add ${location.origin} to ThoughtSpot’s CORS allowlist (Develop → Customizations → Security Settings). The embed iframe is unaffected.`
       : org.error;
@@ -529,6 +541,7 @@ async function connect({ silent = false } = {}) {
   currentUserLogin = ''; // re-resolved (scoped to this session's identity) by refreshPersonalCopies()
   setConnectPhase(1); // session verified — now loading the object catalog (the slow metadata searches)
   const objs = await Discovery.discoverObjects(host);
+  if (isStale()) return; // ditto — never let a stale catalog overwrite the newer host's objects
   if (objs.ok) discovered = { worksheets: objs.worksheets, liveboards: objs.liveboards };
   // Standalone saved Answers are cached in a flat session global (not keyed by host), so clear it
   // on (re)connect — otherwise a host switch keeps showing the prior host's answers and the picker's
@@ -4073,13 +4086,123 @@ function findRulesUnstable(obj) {
   return null;
 }
 // Parse a pasted object literal into the same { selector: { prop: 'value' } } shape parseCssText
-// returns. Evaluated as an expression (wrapped in parens) so single quotes, unquoted keys, and
-// trailing commas all work. When there's no rules_UNSTABLE key, the object IS the rules map.
+// returns. When there's no rules_UNSTABLE key, the object IS the rules map.
+//
+// This is a NON-EXECUTING parser. It used to be `new Function('return (' + raw + ')')()`, i.e. the
+// paste box ran arbitrary pasted JavaScript in the page's origin — with no CSP to fall back on, a
+// "copy this snippet from a colleague" flow was remote code execution. The tolerant JS-literal
+// grammar (single quotes, unquoted keys, trailing commas, comments) is reproduced by hand below and
+// converted to strict JSON, so nothing is ever evaluated.
+//
+// Grammar accepted: { key: value, … } where a key is a quoted string or a bare JS identifier, and a
+// value is a nested object, a quoted string, a number, or true/false/null. Anything else — a call,
+// a template literal, an expression, an array — is a parse error and takes the existing error path.
+// Advance past whitespace and // or /* */ comments — all three are legal in the shape people paste.
+// Standalone so the wrapping decision below can look past a leading comment too.
+function skipTrivia(s, i) {
+  for (;;) {
+    const c = s[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+    if (c === '/' && s[i + 1] === '/') { while (i < s.length && s[i] !== '\n') i++; continue; }
+    if (c === '/' && s[i + 1] === '*') {
+      const e = s.indexOf('*/', i + 2);
+      if (e === -1) return s.length; // unterminated — the caller's parse fails on the missing '{'
+      i = e + 2;
+      continue;
+    }
+    return i;
+  }
+}
+function jsObjectLiteralToJson(text) {
+  // A bare `rules_UNSTABLE: { … }` fragment gets braces; a full `{ … }` literal does not. The
+  // decision looks PAST leading trivia, or a paste that opens with a comment gets wrapped twice.
+  const s = text[skipTrivia(text, 0)] === '{' ? text : `{${text}}`;
+  let i = 0;
+  const fail = (m) => { throw new Error(`${m} at character ${i + 1}`); };
+  const ws = () => { i = skipTrivia(s, i); };
+
+  // Read a quoted string into its VALUE; the caller re-emits it with JSON.stringify, which is what
+  // normalises single quotes and any escape JSON would otherwise reject.
+  const readString = () => {
+    const quote = s[i++];
+    let out = '';
+    for (;;) {
+      const c = s[i];
+      if (c === undefined) fail('unterminated string');
+      if (c === '\\') {
+        const n = s[i + 1];
+        if (n === undefined) fail('unterminated escape');
+        if (n === 'u' && /^[0-9a-fA-F]{4}$/.test(s.slice(i + 2, i + 6))) {
+          out += String.fromCharCode(parseInt(s.slice(i + 2, i + 6), 16));
+          i += 6;
+          continue;
+        }
+        out += ({ n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', 0: '\0' })[n] ?? n;
+        i += 2;
+        continue;
+      }
+      if (c === quote) { i++; return out; }
+      out += c;
+      i++;
+    }
+  };
+
+  const IDENT = /[A-Za-z_$][A-Za-z0-9_$-]*/y; // bare keys: rules_UNSTABLE, display, backgroundColor
+  const readKey = () => {
+    ws();
+    const c = s[i];
+    if (c === '"' || c === "'") return readString();
+    IDENT.lastIndex = i;
+    const m = IDENT.exec(s);
+    if (!m) fail('expected a property name (quote a selector that is not a plain identifier)');
+    i = IDENT.lastIndex;
+    return m[0];
+  };
+
+  const LITERAL = /-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|true|false|null/y;
+  const readValue = () => {
+    ws();
+    const c = s[i];
+    if (c === '{') return readObject();
+    if (c === '"' || c === "'") return JSON.stringify(readString());
+    LITERAL.lastIndex = i;
+    const m = LITERAL.exec(s);
+    if (!m) fail('unsupported value — only strings, numbers, true/false/null and nested objects are allowed');
+    i = LITERAL.lastIndex;
+    return m[0];
+  };
+
+  const readObject = () => {
+    if (s[i] !== '{') fail("expected '{'");
+    i++;
+    const parts = [];
+    for (;;) {
+      ws();
+      if (s[i] === '}') { i++; break; } // also how a trailing comma lands here
+      if (s[i] === undefined) fail("unterminated object — missing '}'");
+      const key = readKey();
+      ws();
+      if (s[i] !== ':') fail("expected ':' after the property name");
+      i++;
+      const val = readValue();
+      parts.push(JSON.stringify(key) + ':' + val);
+      ws();
+      if (s[i] === ',') { i++; continue; }
+      if (s[i] === '}') { i++; break; }
+      fail("expected ',' or '}'");
+    }
+    return '{' + parts.join(',') + '}';
+  };
+
+  ws();
+  const json = readObject();
+  ws();
+  if (i < s.length) fail('unexpected trailing input');
+  return json;
+}
 function parseRulesObject(raw) {
-  const t = raw.trim();
-  const expr = t.startsWith('{') ? `(${t})` : `({${t}})`;
   let obj;
-  try { obj = new Function(`return ${expr};`)(); }
+  try { obj = JSON.parse(jsObjectLiteralToJson(raw.trim())); }
   catch (e) { return { rules: {}, error: e.message }; }
   if (!obj || typeof obj !== 'object') return { rules: {}, error: 'Not an object literal.' };
   return { rules: normalizeRulesMap(findRulesUnstable(obj) || obj) };
@@ -5137,10 +5260,7 @@ async function handleInvoicePdf(payload) {
 async function resolveAnswerService(payload) {
   // 1) If the event already carries a usable session, use it as-is (viz-context invocation).
   const fromEvent = payload?.answerService || payload?.data?.answerService;
-  if (fromEvent && fromEvent.getSession?.()?.sessionId) {
-    console.log('[invoice-pdf] using answerService from the event payload');
-    return fromEvent;
-  }
+  if (fromEvent && fromEvent.getSession?.()?.sessionId) return fromEvent;
 
   if (!currentEmbed?.getAnswerService) {
     console.warn('[invoice-pdf] no embed.getAnswerService available');
@@ -5153,16 +5273,12 @@ async function resolveAnswerService(payload) {
   const ids = [];
   containers.forEach((c) => { [c.id, c.refVizId, c.answerId].forEach((x) => { if (x && !ids.includes(x)) ids.push(x); }); });
   ids.push(undefined); // last resort: let the host pick (works when the board has one viz)
-  console.log('[invoice-pdf] candidate viz ids for getAnswerService:', ids);
 
   for (const vizId of ids) {
     try {
       const svc = await currentEmbed.getAnswerService(vizId);
       const sid = svc?.getSession?.()?.sessionId;
-      if (sid) {
-        console.log(`[invoice-pdf] got answer session via getAnswerService(${vizId ?? 'no-vizId'}) → session ${sid}`);
-        return svc;
-      }
+      if (sid) return svc;
       console.warn(`[invoice-pdf] getAnswerService(${vizId ?? 'no-vizId'}) returned no session`);
     } catch (e) {
       console.warn(`[invoice-pdf] getAnswerService(${vizId ?? 'no-vizId'}) failed:`, e?.message || e);

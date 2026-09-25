@@ -15,6 +15,10 @@
  *     inert text in the auth chips and the Event Log — it must never execute
  *   ✓ URL-action scheme probe (BACKLOG S13): a `javascript:` urlTemplate from a #s= hash must be
  *     refused at window.open, while a plain https template still opens with placeholders resolved
+ *   ✓ Custom-styles paste probe (BACKLOG S37): a pasted rules object is PARSED, never evaluated —
+ *     an embedded expression must not run, while a plain rules object still adds its rule
+ *   ✓ Connect-race probe (BACKLOG S33): a slow connect to host A that resolves after a connect to
+ *     host B must not overwrite B's status pill, overlay or discovered objects
  *
  * Chrome resolution: $CHROME_PATH, then the standard macOS / Linux install locations
  * (GitHub's ubuntu runners ship google-chrome). Requires devDependency puppeteer-core.
@@ -48,10 +52,11 @@ if (!CHROME) {
 }
 
 // Whole-run watchdog: a hung CDN fetch or navigation must not stall CI indefinitely.
+const WATCHDOG_MS = 180_000; // raised from 120s when the S33/S37 probes landed (S33 alone holds 6s)
 const watchdog = setTimeout(() => {
-  console.error('boot-check: watchdog timeout (120s) — treating as failure.');
+  console.error(`boot-check: watchdog timeout (${WATCHDOG_MS / 1000}s) — treating as failure.`);
   process.exit(1);
-}, 120_000);
+}, WATCHDOG_MS);
 
 // Clean env like smoke-test: the frontend boot must not depend on the developer's .env.
 const env = { ...process.env, PORT: String(PORT), THOUGHTSPOT_HOST: '', TS_SECRET_KEY: '' };
@@ -362,6 +367,163 @@ async function runUrlActionSchemeProbe(browser) {
   }
 }
 
+// Connect race probe (BACKLOG S33): connect() awaits two discovery round-trips and then writes
+// module globals (connected, the status pill, the overlay, `discovered`). Without an in-flight
+// fence, a SLOW probe of a mistyped host that resolves AFTER a good connection overwrites the live
+// session — the pill flips to that host's result and the pickers fill with the wrong instance's
+// objects. The guard is app.js's `connectSeq` ticket + the captured-host check after every await.
+//
+// Both "clusters" are SAME-ORIGIN paths on the gate's own server (`/s33a`, `/s33b`), which is what
+// lets the probe stub REST responses with plain request interception — a cross-origin stub would
+// need a CORS preflight that interception does not reliably surface. Host A's session call is held
+// for 2.5s; host B's answers immediately. We connect A, then B, then wait past A's delay and assert
+// nothing of A's ever lands.
+//   Positive control (mandatory): B's own result must actually arrive — otherwise "A did not win"
+//   would be vacuously true on a page where connect() is broken outright.
+async function runConnectRaceProbe(browser) {
+  const HOST_A = `${BASE}/s33a`;
+  const HOST_B = `${BASE}/s33b`;
+  const SESSION = '/api/rest/2.0/auth/session/user';
+  const SEARCH = '/api/rest/2.0/metadata/search';
+  const json = (body) => ({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(body),
+  });
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.setRequestInterception(true);
+    probe.on('request', async (r) => {
+      const u = r.url();
+      try {
+        if (u.includes('/s33a' + SESSION)) {
+          await sleep(2500); // the hung probe of the mistyped host
+          return void r.respond(json({ display_name: 'USER_A', current_org: { name: 'ORG_A' } }));
+        }
+        if (u.includes('/s33b' + SESSION)) {
+          return void r.respond(json({ display_name: 'USER_B', current_org: { name: 'ORG_B' } }));
+        }
+        if (u.includes('/s33a' + SEARCH)) {
+          return void r.respond(json([{ metadata_type: 'LOGICAL_TABLE', metadata_id: 'ws-a', metadata_name: 'WS_A' }]));
+        }
+        if (u.includes('/s33b' + SEARCH)) {
+          return void r.respond(json([{ metadata_type: 'LOGICAL_TABLE', metadata_id: 'ws-b', metadata_name: 'WS_B' }]));
+        }
+        return void r.continue();
+      } catch { /* page torn down mid-flight */ }
+    });
+
+    await probe.goto(`${BASE}/`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    const connectTo = (h) => probe.evaluate((host) => {
+      document.getElementById('host-input').value = host;
+      document.getElementById('connect-btn').click();
+    }, h);
+    await connectTo(HOST_A);
+    await sleep(300);      // A is now parked inside its first await
+    await connectTo(HOST_B); // …and the user retypes the correct host
+    const statusText = () => probe.evaluate(
+      () => document.querySelector('#conn-status .tb-status-txt')?.textContent || '');
+    // Positive control: B's connect must complete on its own merits.
+    const bConnected = await probe.waitForFunction(
+      () => (document.querySelector('#conn-status .tb-status-txt')?.textContent || '').includes('USER_B'),
+      { polling: 200, timeout: 20_000 },
+    ).then(() => true, () => false);
+    await sleep(3500); // well past A's 2.5s hold — A's late response lands in here, or nowhere
+
+    const finalStatus = await statusText();
+    const overlay = await probe.evaluate(() => {
+      const on = [...document.querySelectorAll('#state-overlay .active')];
+      return on.map((e) => e.className).join(' ');
+    });
+    // Read the worksheet picker's options — this is `discovered.worksheets` rendered.
+    const worksheets = await probe.evaluate(() => {
+      const btn = [...document.querySelectorAll('#insp-body .fld')]
+        .find((f) => f.querySelector('.fld-lbl')?.textContent.trim() === 'Worksheet / Model')
+        ?.querySelector('.sel-btn');
+      if (!btn || btn.disabled) return null;
+      btn.click(); // the list renders lazily on open
+      return [...document.querySelectorAll('.sel-item')].map((i) => i.textContent);
+    });
+    return {
+      bConnected,
+      statusIsB: finalStatus.includes('USER_B') && !finalStatus.includes('USER_A'),
+      finalStatus,
+      overlayOk: !/st-not-connected|st-error/.test(overlay),
+      overlay,
+      objectsAreB: Array.isArray(worksheets) && worksheets.includes('WS_B') && !worksheets.includes('WS_A'),
+      worksheets,
+      probeErrors,
+    };
+  } finally {
+    await probe.close();
+  }
+}
+
+// Custom-styles paste probe (BACKLOG S37): the "→ Add" box used to run `new Function` on whatever
+// was pasted — arbitrary JS in the page's origin, with no CSP behind it. parseRulesObject is now a
+// non-executing tokenizer (js/app.js jsObjectLiteralToJson) that converts the tolerant JS-literal
+// grammar to JSON. The probe pastes an expression that WOULD set a flag if evaluated.
+//   Negative: `rules_UNSTABLE: { '.a': (window.__pwned = 1, {}) }` → __pwned unset AND no rule added.
+//   Positive control (mandatory): `rules_UNSTABLE: { '.a': { display: 'none' } }` → exactly one rule
+//     lands, so a broken button or a collapsed accordion can't make the negative leg vacuous.
+// Runs LAST: it writes state, and the persistence probes above must not inherit it.
+async function runStylePasteProbe(browser) {
+  const HOSTILE = "rules_UNSTABLE: { '.a': (window.__pwned = 1, {}) }";
+  const GOOD = "rules_UNSTABLE: { '.a': { display: 'none' } }";
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.goto(`${BASE}/`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    // Open the "CSS rules (rules_UNSTABLE)" accordion — the paste box lives inside it.
+    const boxReady = await probe.waitForFunction(() => {
+      const ta = [...document.querySelectorAll('#insp-body textarea')]
+        .find((t) => (t.placeholder || '').includes('rules_UNSTABLE'));
+      if (ta) return true;
+      [...document.querySelectorAll('#insp-body .acc-head')]
+        .find((h) => h.textContent.includes('CSS rules'))?.click();
+      return false;
+    }, { polling: 400, timeout: 20_000 }).then(() => true, () => false);
+    if (!boxReady) {
+      return { boxReady: false, pwned: false, hostileRejected: false, ruleCount: -1, goodAccepted: false, probeErrors };
+    }
+    const paste = (text) => probe.evaluate((t) => {
+      const ta = [...document.querySelectorAll('#insp-body textarea')]
+        .find((x) => (x.placeholder || '').includes('rules_UNSTABLE'));
+      ta.value = t;
+      // The "→ Add" button is the paste box's sibling.
+      [...ta.parentElement.querySelectorAll('button')].find((b) => b.textContent.includes('Add'))?.click();
+    }, text);
+    await paste(HOSTILE);
+    await sleep(500);
+    const pwned = await probe.evaluate(() => window.__pwned !== undefined);
+    const afterHostile = await probe.evaluate(
+      () => [...document.querySelectorAll('#insp-body .sty-row')].length);
+    const toasted = await probe.evaluate(
+      () => [...document.querySelectorAll('#toast-container .toast')].some((t) => /Could not parse/i.test(t.textContent)));
+
+    await paste(GOOD);
+    await sleep(500);
+    const rows = await probe.evaluate(() => [...document.querySelectorAll('#insp-body .sty-row')].length);
+    const goodAccepted = await probe.evaluate(() => [...document.querySelectorAll('#insp-body .sty-row input.inp-sm')]
+      .some((i) => i.value === '.a'));
+    return {
+      boxReady,
+      pwned,
+      hostileRejected: afterHostile === 0 && toasted,
+      hostileRows: afterHostile,
+      hostileToast: toasted,
+      ruleCount: rows,
+      goodAccepted,
+      probeErrors,
+    };
+  } finally {
+    await probe.close();
+  }
+}
+
 let ok = false;
 let browser;
 try {
@@ -446,9 +608,27 @@ try {
   const urlActOk = urlAct.dispatcherReady && !urlAct.pwned && urlAct.hostileOpened.length === 0
     && urlAct.goodOpened && urlAct.probeErrors.length === 0;
 
+  // Ordered LAST of the state-writing probes: the paste probe persists styles, and the connect
+  // probe persists a host — neither must be inherited by the persistence assertions above.
+  const paste = await runStylePasteProbe(browser);
+  console.log(`Style-paste probe (S37) — paste box reachable: ${paste.boxReady}`);
+  console.log(`Style-paste probe (S37) — pasted expression did NOT execute: ${!paste.pwned}`);
+  console.log(`Style-paste probe (S37) — hostile paste rejected (0 rules + parse error): ${paste.hostileRejected} (rows=${paste.hostileRows}, toast=${paste.hostileToast})`);
+  console.log(`Style-paste probe (S37) — plain rules object still adds its rule: ${paste.goodAccepted} (rows=${paste.ruleCount})`);
+  paste.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const pasteOk = paste.boxReady && !paste.pwned && paste.hostileRejected && paste.goodAccepted && paste.ruleCount === 1;
+
+  const race = await runConnectRaceProbe(browser);
+  console.log(`Connect-race probe (S33) — host B connected (positive control): ${race.bConnected}`);
+  console.log(`Connect-race probe (S33) — final status is host B's: ${race.statusIsB} (“${race.finalStatus}”)`);
+  console.log(`Connect-race probe (S33) — overlay not reset to not-connected/error: ${race.overlayOk} (${race.overlay || 'none'})`);
+  console.log(`Connect-race probe (S33) — discovered objects are host B's: ${race.objectsAreB} (${JSON.stringify(race.worksheets)})`);
+  race.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const raceOk = race.bConnected && race.statusIsB && race.overlayOk && race.objectsAreB;
+
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
-    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk;
+    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk && pasteOk && raceOk;
   console.log(ok ? '\nBOOT CHECK: PASS' : '\nBOOT CHECK: FAIL');
 } finally {
   try { await browser?.close(); } catch { /* already gone */ }
