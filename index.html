@@ -14,13 +14,17 @@
 </head>
 <body>
 
+<!-- Mobile-only: drives the inspector bottom sheet at <=860px, CSS-only (see
+     .mobile-opt-cb in css/styles.css). Must stay a sibling BEFORE #app. -->
+<input type="checkbox" id="mobile-options-toggle" class="mobile-opt-cb" aria-label="Show the options panel">
+
 <div id="app">
 
   <!-- ── Top connection bar ───────────────────────────────────────────── -->
   <header id="topbar">
     <div class="tb-brand" title="ThoughtSpot Embed Playground">
       <span class="tb-mark">◆</span>
-      <span class="tb-name">Embed Playground</span>
+      <h1 class="tb-name">Embed Playground</h1>
       <span class="tb-beta">beta</span>
     </div>
 
@@ -54,6 +58,7 @@
           </label>
         </div>
       </div>
+      <label id="mobile-options-btn" class="mobile-opt-btn" for="mobile-options-toggle" title="Show or hide the options panel">⚙ Options</label>
       <button id="share-btn" class="tb-icon-btn" title="Copy a shareable link to the current setup" hidden>Share</button>
       <span class="tb-div" aria-hidden="true"></span>
       <button id="reset-btn" class="tb-icon-btn tb-reset" title="Reset all applied options">Reset</button>
@@ -109,7 +114,7 @@
         <div id="state-overlay">
           <div class="st st-not-connected">
             <div class="st-icon">⚓</div>
-            <div class="st-title">Connect a ThoughtSpot instance</div>
+            <h2 class="st-title">Connect a ThoughtSpot instance</h2>
             <div class="st-sub">Browser-session auth uses your existing ThoughtSpot login — no keys needed.</div>
             <div class="st-steps">
               <div class="st-step st-step--current">
@@ -137,7 +142,7 @@
           </div>
           <div class="st st-not-logged-in">
             <div class="st-icon">🔒</div>
-            <div class="st-title" id="not-logged-in-title">Not authenticated</div>
+            <h2 class="st-title" id="not-logged-in-title">Not authenticated</h2>
             <div class="st-sub" id="not-logged-in-sub">Browser-session auth needs an active login at the host. Open ThoughtSpot, sign in, then retry.</div>
             <div class="st-actions">
               <button id="open-claims-btn" class="st-btn" data-act="open-claims" hidden>Open Token claims…</button>
@@ -147,7 +152,7 @@
           </div>
           <div class="st st-confirm-host">
             <div class="st-icon">🔗</div>
-            <div class="st-title">Connect to this shared host?</div>
+            <h2 class="st-title">Connect to this shared host?</h2>
             <div class="st-sub">This shared link wants to connect to <strong id="confirm-host-name"></strong>. Connecting sends requests to that host from your browser — only continue if you trust whoever sent the link.</div>
             <div class="st-actions">
               <button id="confirm-host-go" class="st-btn">Connect</button>
@@ -155,7 +160,7 @@
           </div>
           <div class="st st-needs">
             <div class="st-icon">◎</div>
-            <div class="st-title" id="needs-title">Pick a data object</div>
+            <h2 class="st-title" id="needs-title">Pick a data object</h2>
             <div class="st-sub" id="needs-sub">Choose what to display from the Object section in the inspector.</div>
             <div class="st-steps">
               <div class="st-step st-step--done">
@@ -183,7 +188,7 @@
           </div>
           <div class="st st-connecting">
             <div class="st-spinner"></div>
-            <div class="st-title">Connecting to ThoughtSpot…</div>
+            <h2 class="st-title">Connecting to ThoughtSpot…</h2>
             <div class="st-sub" id="connecting-sub"></div>
             <!-- Live phase checklist so the (potentially slow) REST discovery in connect() visibly
                  shows progress instead of leaving the stage on the "not connected" walkthrough. -->
@@ -191,7 +196,7 @@
           </div>
           <div class="st st-loading">
             <div class="st-spinner"></div>
-            <div class="st-title">Loading embed…</div>
+            <h2 class="st-title">Loading embed…</h2>
             <div class="st-sub" id="loading-sub"></div>
             <!-- Live lifecycle progress so a slow switch visibly shows it's working (driven by
                  SDK events via renderLoadingProgress → flowMark). -->
@@ -199,7 +204,7 @@
           </div>
           <div class="st st-error">
             <div class="st-icon">⚠</div>
-            <div class="st-title" id="error-title">Could not render</div>
+            <h2 class="st-title" id="error-title">Could not render</h2>
             <div class="st-sub" id="error-sub"></div>
             <div class="st-actions">
               <button class="st-btn" data-act="retry">Retry</button>
@@ -248,7 +253,7 @@
     <aside id="inspector" aria-label="Options">
       <div class="insp-head">
         <div>
-          <div id="insp-title" class="insp-title">Search Data</div>
+          <h2 id="insp-title" class="insp-title">Search Data</h2>
           <div id="insp-badge" class="insp-badge">SearchEmbed</div>
         </div>
         <button id="insp-reset" class="insp-reset" title="Reset options for this embed" aria-label="Reset options for this embed">↺</button>
@@ -265,7 +270,7 @@
   <div class="modal-panel auth-panel">
     <div class="modal-head">
       <div>
-        <div id="auth-modal-title" class="modal-title">Trusted Auth — token claims</div>
+        <h2 id="auth-modal-title" class="modal-title">Trusted Auth — token claims</h2>
         <div class="modal-sub">Mint tokens with groups, JIT provisioning, and ABAC/RLS entitlements. The secret_key stays on the server.</div>
       </div>
       <button class="modal-close" data-close="auth" aria-label="Close">✕</button>
@@ -280,7 +285,7 @@
   <div class="modal-panel modal-panel--center wh-payload-panel">
     <div class="modal-head">
       <div>
-        <div id="payload-modal-title" class="modal-title">Raw webhook payload</div>
+        <h2 id="payload-modal-title" class="modal-title">Raw webhook payload</h2>
         <div id="wh-payload-sub" class="modal-sub"></div>
       </div>
       <div class="wh-payload-head-actions">
@@ -297,7 +302,7 @@
   <div class="modal-panel modal-panel--center wh-email-panel">
     <div class="modal-head">
       <div>
-        <div id="email-modal-title" class="modal-title">Compose per-recipient email</div>
+        <h2 id="email-modal-title" class="modal-title">Compose per-recipient email</h2>
         <div id="wh-email-sub" class="modal-sub"></div>
       </div>
       <button class="modal-close" data-close="email" aria-label="Close">✕</button>

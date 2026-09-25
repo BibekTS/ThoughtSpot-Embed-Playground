@@ -17,7 +17,9 @@ These five moves are what make the theme recognizable. Preserve them; everything
    (cyan → violet at 135°). Use it on the primary button, the logo mark, and brand chips.
 2. **A fixed 3px accent stripe runs down the far left of the viewport** (vertical cyan→violet).
 3. **Focus is a soft cyan halo, not a browser outline:** `box-shadow: 0 0 0 3px var(--accent-soft)`
-   + `border-color: var(--accent)`.
+   + `border-color: var(--accent)`. The halo alone is decorative — `--accent-soft` cannot carry
+   the 3:1 that WCAG 1.4.11 asks of a focus indicator — so the global `:focus-visible` pairs it
+   with a `2px solid var(--accent-ink)` outline (see §8).
 4. **Shadows are navy-tinted, never pure black:** `rgba(26,31,74, …)`. Brand buttons get a cyan glow.
 5. **Status is a traffic-light dot + soft-background pill:** idle / connecting / success / danger,
    each a `color` + matching `*-soft` background.
@@ -47,6 +49,12 @@ never hardcode the hexes in components.
   --accent-2:      #6366f1;   /* violet/indigo — gradient partner */
   --accent-soft:   #ecf7f9;   /* cyan tint — focus halos, soft fills */
   --accent-border: #b8e0dd;   /* cyan-tinted border */
+
+  /* Ink twins of the accent pair — the ONLY accent values allowed to carry text.
+     #00c9de is 2.02:1 on white; these are 5.07:1 and 6.29:1. See §8. */
+  --accent-ink:    #067a87;   /* cyan-ink — accent TEXT, focus outlines */
+  --accent-2-ink:  #4f46e5;   /* violet-ink — gradient partner for white-on-fill */
+
   --violet-soft:   #eef0fe;   /* violet tint fill */
   --violet-border: #c7cbf5;   /* violet-tinted border */
 
@@ -246,7 +254,8 @@ body::before {
 ## 6. Rules of thumb for the implementing agent
 
 - **Never hardcode a hex** in a component — always go through a `var(--token)`.
-- **Accent = gradient** on filled brand elements; **solid `--accent`** only for text/borders/dots.
+- **Accent = gradient** on filled brand elements; **solid `--accent`** only for borders, dots,
+  glows and decorative fills — **never for text**. Text uses `--accent-ink` (see §8).
 - **Every focusable control** gets `border-color: var(--accent)` + `0 0 0 3px var(--accent-soft)` on
   `:focus` (or `:focus-visible`). No default browser outlines.
 - **Shadows use `rgba(26,31,74, …)`**, never `rgba(0,0,0, …)`, except cyan glows on brand buttons.
@@ -256,7 +265,44 @@ body::before {
 
 ---
 
-## 7. Optional: dark mode
+## 8. Accessible accent: `--accent-ink` and the focus halo
+
+`--accent` (`#00c9de`) is a **fill colour, not an ink**. Measured against white it is **2.02:1** —
+under the 4.5:1 AA floor for text *and* under the 3:1 non-text floor for focus indicators and
+control boundaries. Every accent-coloured label in the original sheet failed AA.
+
+**The rule:** `--accent` paints; `--accent-ink` writes.
+
+| Use | Token | Ratio |
+|---|---|---|
+| Accent-coloured TEXT (section labels, badges, tags, code-ish labels) | `--accent-ink` `#067a87` | 5.07:1 on `#fff` |
+| Focus outline | `--accent-ink` | 5.07:1 (≥3:1, WCAG 1.4.11) |
+| White text on a filled brand control (primary button, step marker) | `linear-gradient(135deg, var(--accent-ink), var(--accent-2-ink))` | 5.07:1 worst stop |
+| Dots, borders, glows, `accent-color`, hairlines, soft fills | `--accent` / `--accent-soft` / `--accent-border` | n/a (decorative) |
+
+`--accent-ink` is 4.65:1 on `--accent-soft` and 4.82:1 on `--bg`, so it also clears AA on the
+soft-tinted surfaces. It is **4.45:1 on `--surface-3` (`#eaf1f7`)** — don't put accent text there.
+
+### The focus indicator
+
+The halo is the theme's signature, but a `#ecf7f9` halo on a white page is invisible to a contrast
+meter. Ship both: a 3:1-clearing outline in the ink, with the halo just outside it.
+
+```css
+:focus-visible {
+  outline: 2px solid var(--accent-ink);   /* 5.07:1 — satisfies WCAG 1.4.11 */
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--accent-soft);  /* the signature halo, outside the outline */
+}
+```
+
+Controls that paint their own focus (inputs, the select buttons) keep
+`border-color: var(--accent)` + `box-shadow: 0 0 0 3px var(--accent-soft)`. **Never** write
+`outline: none` without a replacement indicator.
+
+---
+
+## 9. Optional: dark mode
 
 Not part of the original app. If the target needs it, add this and the tokens auto-swap. Values are
 a faithful dark translation of the palette (accent hues unchanged so the brand reads the same).
@@ -275,6 +321,8 @@ a faithful dark translation of the palette (accent hues unchanged so the brand r
     --accent-2:      #818cf8;   /* lifted for contrast on dark */
     --accent-soft:   #0e2b33;
     --accent-border: #1c4a52;
+    --accent-ink:    #3fd9ea;   /* on dark the ink LIGHTENS — 10.2:1 on --surface */
+    --accent-2-ink:  #a5b0ff;
     --violet-soft:   #1e2150;
     --violet-border: #3a3f7a;
     --text-primary:  #e8ecff;
