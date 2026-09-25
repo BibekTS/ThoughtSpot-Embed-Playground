@@ -5867,7 +5867,7 @@ function sectionDrillthrough(s) {
     'Summary Liveboard → detail rows, entirely host-side.',
     'Pick the Liveboard above as your summary board. A click on a data point carries that point’s '
     + 'attributes (plus any filters set inside the iframe, via HostEvent.GetFilters) into the detail '
-    + 'Liveboard. Separately, a right-click action scoped to one measure column opens a paged grid of '
+    + 'Liveboard. Separately, a right-click action scoped to the summary Model\u2019s measure column opens a paged grid of '
     + 'event-grain rows fetched with POST searchdata against a finer-grained Model. Needs SDK 1.43.0+ / '
     + 'cluster 10.14.0.cl+ for the column scoping.'));
 
@@ -5882,7 +5882,7 @@ function sectionDrillthrough(s) {
     'The Model behind the summary Liveboard. Its GUID is half of the modelColumnNames scoping key.', !connected));
   c.appendChild(textField('Measure column', d.measureColumn, v => { set({ measureColumn: v }); render(); },
     'e.g. Meeting count'));
-  c.appendChild(el('div', 'fld-hint', 'The action appears only in this column’s right-click menu — the SDK scopes it as "<modelGuid>::<column>". Leave either field blank and no action is injected at all.'));
+  c.appendChild(el('div', 'fld-hint', 'The SDK scopes the action as "<modelGuid>::<column>", which limits it to VISUALIZATIONS built on that column — not to that column’s cells, so it shows on every cell of a matching viz. The record list always reports THIS measure, wherever on the row you right-click. Leave either field blank and no action is injected at all.'));
   c.appendChild(textField('Action label', d.actionLabel, v => { set({ actionLabel: v }); render(); }, 'View detail'));
   c.appendChild(enumSelect('Opened by', d.trigger, [
     { value: 'action', label: 'Right-click → menu item' },
