@@ -43,9 +43,13 @@ CI (`.github/workflows/ci.yml`) runs the same three plus a `guard` job (protecte
 - `js/embed.js` — SDK wrapper `initSDK()` + `doRender()`. SDK pinned at `visual-embed-sdk@1.49.0`.
 - `js/auth.js` — trusted-auth token-claims playground + live inspector.
 - `js/invoice-pdf.js` — Callback-action handler: viz rows → paginated client-side PDF.
-- `js/app.js` — the controller (~5.5k lines): connection, rail, render, the single contextual
+- `js/spotter-mcp.js` — the Spotter Chat (MCP) rail section: streams `/api/spotter-mcp/chat` (SSE).
+- `js/app.js` — the controller (~6.4k lines): connection, rail, render, the single contextual
   inspector, SDK-code generator, event log. **This monolith is a standing refactor target.**
-- `server.js` — token service + filter proxy + static host. **Fail-closed** (see rules).
+- `server.js` — token service + filter proxy + webhook sink + static host. **Fail-closed** (see rules).
+- `lib/multipart.js` — dependency-free multipart/form-data parser for webhook deliveries (CommonJS).
+- `lib/spotter-mcp/` — the MCP relay (ESM: `router.mjs`, `mcp-client.mjs`, `customize.mjs` + their
+  `*.test.mjs`, run by `npm run test:spotter-mcp`). ESM-only, so server.js dynamic-`import()`s it.
 - `scripts/` — `smoke-test.mjs` (security gate), `boot-check.mjs` (frontend gate), `doctor.mjs`,
   `setup.mjs`, `vendor-sdk.mjs`.
 
@@ -65,7 +69,10 @@ CI (`.github/workflows/ci.yml`) runs the same three plus a `guard` job (protecte
 - **Server is fail-closed:** JIT (`auto_create`) refused unless `TS_ALLOW_JIT=true`; browser
   `group_identifiers` refused unless allowlisted; `/api/filter-values` forwards the caller's bearer
   and never mints; static serving is restricted to frontend assets. `npm test` asserts all of this.
-- `window.TS_CONFIG` is a `let` seed in `config.js`, not a const.
+- **An empty username allowlist refuses ALL mints** (403) — it is not "no restriction". The
+  allowlist also applies when `auto_create` is set: `TS_ALLOW_JIT` governs CREATION only.
+- `window.TS_CONFIG` is a plain `window` property set in `config.js` (`window.TS_CONFIG = {…}`) —
+  an object literal, not a `const`, so a later script can replace or extend it.
 
 ## How the organization works (see BACKLOG.md for the queue)
 

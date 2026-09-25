@@ -280,3 +280,33 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `ba27a041aaf037086be5c0f17b215494bb6ca4dc` at f927b9c). But byte-identity is wrong for any line
   carrying a cross-reference: `# see step 3's commit rule` pointed into SKILL.md while `qa-verifier.md`
   has its own step 3 (`npm run boot-check`) — a reader of the agent file alone resolves it wrongly.
+- 2026-09-25 (S25–S28, S38/S39): **`fetch` (undici) silently DROPS a caller-supplied `Host` header.**
+  Any smoke assertion about the Host allowlist written with `fetch` tests nothing — it passes a
+  loopback Host and the guard never fires. `scripts/smoke-test.mjs:~90` now has a `rawRequest()`
+  helper built on `node:http`, which does honour an explicit `Host`. Verified empirically both ways.
+- 2026-09-25 (S27): **`app.set('trust proxy', true)` is a rate-limiter bypass, not a convenience.**
+  With it on, `req.ip` is the caller-supplied leftmost `X-Forwarded-For`, so rotating that header
+  makes every request look like a new client. `'loopback'` is no better *here*: the server binds to
+  127.0.0.1, so loopback is exactly the hop every real client arrives on. Default is now `false`
+  (`server.js:~240`, env `TS_TRUST_PROXY`). Measured: 16×429 in 71 rotating-XFF requests after the
+  fix, 0 before.
+- 2026-09-25 (S26): **`if (SET.size && !SET.has(x))` is a fail-OPEN idiom.** An empty allowlist
+  skipped the guard entirely, so a server with neither `TS_USERNAME_ALLOWLIST` nor
+  `TS_DEFAULT_USERNAME` minted for any username (`server.js:~296` before the fix). Separately,
+  `!autoCreate &&` on the same line meant `auto_create:true` bypassed the allowlist for EXISTING
+  users — JIT must govern creation only. Both now explicit branches at `server.js:~330`.
+- 2026-09-25 (S25): **`/api/webhook/file/*` shares an origin with the token mint endpoint.** A
+  multipart part's `Content-Type` is sender-controlled, so serving it back `inline` made a
+  `text/html` attachment stored XSS against `POST /api/auth/token`. Fixed with an allowlisted
+  Content-Type + `attachment` + `nosniff` (`server.js:~560`). The same reasoning is why the Host
+  allowlist exempts ONLY `POST /api/webhook`, not the `/api/webhook/*` prefix.
+- 2026-09-25 (S39): **`state.flags[section]` is spread LAST into every embed constructor**
+  (`js/embed.js:~253`), so before the per-section key allowlist a crafted `#s=` link could set any
+  constructor option — `flags.viz.answerId` silently overriding the explicit one. `FLAG_KEYS` in
+  `js/state.js:~28` mirrors app.js's `DISPLAY` table by hand (state.js must not import the
+  controller); **a new DISPLAY flag that isn't added there is silently dropped from shared links.**
+- 2026-09-25 (CI): **`node --test <directory>` fails on Node 22.17** with
+  `MODULE_NOT_FOUND: Cannot find module '<dir>'` — it tries to run the directory as a module. The
+  glob form works: `node --test "lib/spotter-mcp/*.test.mjs"` (quoted, so node expands it, not the
+  shell). `package.json` `test:spotter-mcp` used to name only `customize.test.mjs`, so
+  `router.test.mjs`'s 11 tests had never run in CI; both files pass (23 tests).

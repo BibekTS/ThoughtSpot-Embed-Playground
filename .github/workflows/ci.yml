@@ -24,6 +24,8 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Smoke test (security guards + static restrictions)
         run: npm test
+      - name: Unit tests (lib/spotter-mcp)
+        run: npm run test:spotter-mcp
 
   esm-parse:
     name: esm-parse
@@ -45,6 +47,12 @@ jobs:
             echo "OK $f"
           done
           for f in scripts/*.mjs server.js config.js; do
+            node --check "$f"
+            echo "OK $f"
+          done
+          # lib/ — the CommonJS helpers plus the ESM spotter-mcp modules (.mjs parses as ESM
+          # already, so these need no copy). `find` rather than `**` so no shell globstar is needed.
+          for f in $(find lib -name '*.js' -o -name '*.mjs' | sort); do
             node --check "$f"
             echo "OK $f"
           done

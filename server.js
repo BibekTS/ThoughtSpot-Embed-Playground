@@ -18,9 +18,15 @@
  *   browser ◀──────────── { token } ────────────────────  this server ◀────────── { token } ──────────────  ThoughtSpot
  *
  * Fail-closed dev guards (override with env flags only when you understand them):
- *   • Username allowlist — the browser can only mint for known users (TS_USERNAME_ALLOWLIST).
- *   • JIT provisioning (auto_create) is REFUSED unless TS_ALLOW_JIT=true. Otherwise the browser
- *     could provision a brand-new user and side-step the allowlist entirely.
+ *   • Username allowlist — the browser can only mint for known users (TS_USERNAME_ALLOWLIST, seeded
+ *     from TS_DEFAULT_USERNAME). An EMPTY allowlist refuses EVERY mint, and the allowlist applies
+ *     even when auto_create is requested.
+ *   • JIT provisioning (auto_create) is REFUSED unless TS_ALLOW_JIT=true. It governs whether user
+ *     CREATION is permitted — it is never a way around the allowlist.
+ *   • Host allowlist — every route except the /api/webhook receiver refuses a Host that is not
+ *     loopback or TS_PUBLIC_HOST, so a tunnel/DNS-rebind can't reach the mint endpoint.
+ *   • Webhook attachments are served as `attachment` + nosniff with an allowlisted Content-Type,
+ *     and the retained bytes are capped (TS_WEBHOOK_MAX_BYTES).
  *   • group_identifiers are refused unless each group is in TS_GROUP_ALLOWLIST (or it is '*').
  *     Otherwise the browser could mint a token into a privileged group (e.g. Administrator).
  *   • /api/filter-values forwards the CALLER'S OWN token — it never mints an admin token on the
@@ -87,13 +93,32 @@ const WEBHOOK_SIG_HEADER = (process.env.TS_WEBHOOK_SIG_HEADER || 'x-ts-signature
 // binary attachment — cap the whole POST so a delivery can't exhaust memory (a Liveboard PDF is a
 // few MB; 30mb is generous). Override with TS_WEBHOOK_MAX_MB.
 const WEBHOOK_MULTIPART_LIMIT = `${Number(process.env.TS_WEBHOOK_MAX_MB) || 30}mb`;
+// The PER-REQUEST cap above is not a memory bound: 50 buffered events × 30mb is ~1.5 GB resident,
+// all of it from senders we may not have verified. Bound the AGGREGATE retained attachment bytes
+// and evict oldest-first when a new delivery pushes past it. Override with TS_WEBHOOK_MAX_BYTES.
+const WEBHOOK_MAX_BYTES = Number(process.env.TS_WEBHOOK_MAX_BYTES) || 100 * 1024 * 1024;
+// A single delivery can also carry an unbounded number of parts — cap the files we retain per event.
+const WEBHOOK_MAX_FILES = Number(process.env.TS_WEBHOOK_MAX_FILES) || 10;
+// The inbox read/clear endpoints are a localhost debugging surface. When the sink is reachable
+// through a tunnel (see docs/webhook-inbox-demo.md), they stay loopback-only unless opted in.
+const WEBHOOK_PUBLIC = truthy(process.env.TS_WEBHOOK_PUBLIC);
+// Host header allowlist — the only non-loopback Host this server answers to (blank = none). Keeps a
+// tunnel (ngrok) or a DNS-rebinding target from reaching the mint endpoint through the browser.
+const PUBLIC_HOST = (process.env.TS_PUBLIC_HOST || '').trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+// Express's `trust proxy` decides what req.ip is. With `true`, req.ip becomes the CLIENT-SUPPLIED
+// leftmost X-Forwarded-For — which lets any caller rotate a header to walk straight past the rate
+// limiter. Default OFF: this server binds to 127.0.0.1, so 'loopback' would trust exactly the hop
+// every real client arrives on and change nothing. Set TS_TRUST_PROXY only behind a real proxy.
+const TRUST_PROXY_RAW = (process.env.TS_TRUST_PROXY || '').trim();
 // '*' opts out of the group guard entirely (back to "any group"); otherwise an explicit set.
 const GROUP_ALLOWLIST_RAW = (process.env.TS_GROUP_ALLOWLIST || '').split(',').map((g) => g.trim()).filter(Boolean);
 const GROUP_WILDCARD = GROUP_ALLOWLIST_RAW.includes('*');
 const GROUP_ALLOWLIST = new Set(GROUP_ALLOWLIST_RAW);
 
 // Allowlist of usernames this server is willing to mint tokens for.
-// Fail-closed: if the env var is empty, only the default username is allowed.
+// Fail-closed in BOTH directions: the default username seeds the list, and an EMPTY list refuses
+// every mint (it used to fail OPEN — `ALLOWLIST.size &&` skipped the guard entirely, so a server
+// with neither TS_USERNAME_ALLOWLIST nor TS_DEFAULT_USERNAME set would mint for any username).
 const ALLOWLIST = new Set(
   (process.env.TS_USERNAME_ALLOWLIST || '')
     .split(',')
@@ -107,10 +132,22 @@ const secretConfigured = Boolean(TS_SECRET_KEY);
 // ── Tiny in-memory fixed-window rate limiter (per IP) ─────────────────────────────────────────
 // Not a substitute for a real gateway, but it stops a runaway loop or a local script from
 // hammering the mint endpoint. Window + ceiling are deliberately generous for interactive use.
+const RATE_LIMIT_MAX_KEYS = 10_000; // hard ceiling so the map itself can't be grown without bound
 function rateLimiter({ windowMs, max }) {
   const hits = new Map(); // ip -> { count, resetAt }
+  let lastPrune = 0;
   return (req, res, next) => {
     const now = Date.now();
+    // Drop expired windows periodically — without this the map grows forever (one entry per distinct
+    // client IP, and a proxied deployment sees an unbounded number of them).
+    if (now - lastPrune > windowMs) {
+      lastPrune = now;
+      for (const [k, v] of hits) if (now > v.resetAt) hits.delete(k);
+      // Still oversized (a burst inside one window)? Evict oldest-first — Map preserves insertion order.
+      if (hits.size > RATE_LIMIT_MAX_KEYS) {
+        for (const k of hits.keys()) { hits.delete(k); if (hits.size <= RATE_LIMIT_MAX_KEYS) break; }
+      }
+    }
     const ip = req.ip || req.socket?.remoteAddress || 'unknown';
     let rec = hits.get(ip);
     if (!rec || now > rec.resetAt) { rec = { count: 0, resetAt: now + windowMs }; hits.set(ip, rec); }
@@ -216,15 +253,51 @@ async function mintToken(params) {
 
 // ── App ────────────────────────────────────────────────────────────────────────────────────
 const app = express();
-app.set('trust proxy', true); // so req.ip reflects X-Forwarded-For when fronted by a proxy
+app.disable('x-powered-by'); // don't advertise the stack
+
+// `trust proxy` comes from the environment, and defaults to OFF — NOT `true`. With `true`, req.ip
+// is whatever the caller put in the leftmost X-Forwarded-For, so rotating that header walks straight
+// past every rateLimiter() below. Accepts express's own syntax: 'false'/'0' → off, 'true'/'1' →
+// trust every hop (only behind a proxy that strips client XFF), 'loopback', a hop count, or a
+// comma-separated list of trusted proxy IPs/subnets.
+const TRUST_PROXY = !TRUST_PROXY_RAW ? false
+  : /^(0|false|no|off)$/i.test(TRUST_PROXY_RAW) ? false
+  : /^(1|true|yes|on)$/i.test(TRUST_PROXY_RAW) ? true
+  : /^\d+$/.test(TRUST_PROXY_RAW) ? Number(TRUST_PROXY_RAW)
+  : TRUST_PROXY_RAW;
+app.set('trust proxy', TRUST_PROXY);
+
+// Default security headers on every response. nosniff matters most for /api/webhook/file/* (a
+// sender-supplied Content-Type must never be re-sniffed into something scriptable).
+app.use((_req, res, next) => { res.setHeader('X-Content-Type-Options', 'nosniff'); next(); });
+
+// ── Host allowlist ────────────────────────────────────────────────────────────────────────────
+// The server binds to 127.0.0.1, but a tunnel (ngrok, see docs/webhook-inbox-demo.md) or a
+// DNS-rebinding page can still reach it through a foreign Host. The webhook RECEIVER has to accept
+// whatever Host the tunnel presents; nothing else does — least of all the mint endpoint.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0']);
+/** The Host header's hostname, lowercased, with any :port and IPv6 brackets stripped. */
+function hostnameOf(req) {
+  const raw = String(req.get('host') || '').trim().toLowerCase();
+  if (!raw) return '';
+  const m = /^\[([^\]]+)\]/.exec(raw);          // [::1]:3000 → ::1
+  return m ? m[1] : raw.replace(/:\d+$/, '');
+}
+const isLoopbackHost = (req) => LOOPBACK_HOSTS.has(hostnameOf(req));
+const hostAllowed = (req) => isLoopbackHost(req) || (!!PUBLIC_HOST && hostnameOf(req) === PUBLIC_HOST.toLowerCase());
+app.use((req, res, next) => {
+  if (req.path === '/api/webhook') return next(); // the receiver is the one public-by-design route
+  if (hostAllowed(req)) return next();
+  res.status(403).json({ error: 'Host not permitted. This server answers on localhost only (set TS_PUBLIC_HOST to add one).' });
+});
+
 // Capture the raw request bytes so the webhook receiver can verify ThoughtSpot's HMAC_SHA256
 // signature — the HMAC is computed over the exact payload bytes, not the re-serialized JSON.
 app.use(express.json({ limit: '256kb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
-// If you prefer to keep the static frontend on VS Code Live Server (different origin), uncomment
-// the CORS block below and set `window.TS_API_BASE = 'http://localhost:3000'` in config.js.
-// const cors = require('cors');
-// app.use(cors({ origin: ['http://localhost:5500', 'http://localhost:5501'] }));
+// No CORS: the frontend is served from this same origin. If you ever run it elsewhere (VS Code Live
+// Server), add an explicit, narrow origin allowlist here and set window.TS_API_BASE in config.js —
+// never a wildcard, this origin mints tokens.
 
 // ── GET /api/auth/config — non-sensitive bootstrap for the UI ────────────────────────────────
 app.get('/api/auth/config', (_req, res) => {
@@ -232,6 +305,9 @@ app.get('/api/auth/config', (_req, res) => {
     thoughtSpotHost: TS_HOST,
     defaultUsername: DEFAULT_USERNAME,
     allowlist: [...ALLOWLIST],
+    // An EMPTY allowlist is fail-closed: no username can be minted for at all. Surfaced so the UI
+    // can say why minting is refused instead of showing a bare 403.
+    allowlistEmpty: ALLOWLIST.size === 0,
     orgId: DEFAULT_ORG_ID || null,
     secretConfigured,            // boolean only — the secret itself is never sent
     webhookSink: ALLOW_WEBHOOK_SINK, // is the /api/webhook demo receiver enabled? (UI decides whether to poll)
@@ -292,8 +368,19 @@ app.post('/api/auth/token', rateLimiter({ windowMs: 60_000, max: 60 }), async (r
       }
     }
 
-    // Allowlist safeguard — prevents browser-driven impersonation of arbitrary EXISTING users.
-    if (!autoCreate && ALLOWLIST.size && !ALLOWLIST.has(requested)) {
+    // Allowlist safeguard — prevents browser-driven impersonation of arbitrary users.
+    // Fail-closed on BOTH edges:
+    //   • An EMPTY allowlist refuses everything. It used to be skipped (`ALLOWLIST.size &&`), so a
+    //     server with neither TS_USERNAME_ALLOWLIST nor TS_DEFAULT_USERNAME minted for any username.
+    //   • It applies even when autoCreate is set. TS_ALLOW_JIT governs whether CREATION is permitted;
+    //     it is not a licence to mint for an arbitrary EXISTING user.
+    if (ALLOWLIST.size === 0) {
+      return res.status(403).json({
+        error: 'No usernames are permitted: TS_USERNAME_ALLOWLIST and TS_DEFAULT_USERNAME are both empty. Set one and restart.',
+        allowed: [],
+      });
+    }
+    if (!ALLOWLIST.has(requested)) {
       return res.status(403).json({
         error: `username '${requested}' is not in TS_USERNAME_ALLOWLIST`,
         allowed: [...ALLOWLIST],
@@ -384,6 +471,43 @@ const webhookEvents = []; // newest first, capped at WEBHOOK_BUFFER_MAX
 // Attachment bytes live out-of-band so /api/webhook/events stays a small JSON response. Keyed by
 // `${recId}/${fileId}`; entries are dropped when their event falls out of the ring buffer.
 const webhookFiles = new Map(); // key -> { filename, contentType, buffer }
+let webhookBytes = 0;           // running total of retained attachment bytes (see WEBHOOK_MAX_BYTES)
+
+/** Forget one attachment and give its bytes back to the budget. */
+function dropWebhookFile(key) {
+  const entry = webhookFiles.get(key);
+  if (!entry) return;
+  webhookBytes -= entry.buffer.length;
+  webhookFiles.delete(key);
+}
+
+/**
+ * Evict oldest-first until the retained attachment bytes fit the budget. `webhookEvents` is
+ * newest-first, so we walk it backwards and strip whole events' attachments. An event whose bytes
+ * were reclaimed keeps its metadata row (the UI shows the delivery; the download just 404s).
+ */
+function enforceWebhookByteBudget() {
+  for (let i = webhookEvents.length - 1; i >= 0 && webhookBytes > WEBHOOK_MAX_BYTES; i -= 1) {
+    const old = webhookEvents[i];
+    (old.files || []).forEach((f) => {
+      if (webhookFiles.has(`${old.id}/${f.fileId}`)) { dropWebhookFile(`${old.id}/${f.fileId}`); f.evicted = true; }
+    });
+  }
+}
+
+/**
+ * Content types we are willing to serve back from the webhook inbox. Everything else is coerced to
+ * application/octet-stream: the part header is attacker-controlled, and this origin also mints
+ * tokens, so a `text/html` attachment would be stored XSS on the mint origin.
+ */
+const WEBHOOK_SERVABLE_TYPES = new Set([
+  'application/pdf',
+  'text/csv',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'image/png',
+  'application/octet-stream',
+]);
 
 /** Verify ThoughtSpot's HMAC_SHA256 signature over the raw body bytes. Tolerant of hex/base64 + `sha256=` prefix. */
 function verifyWebhookSignature(req, raw) {
@@ -425,19 +549,27 @@ app.post('/api/webhook', requireWebhookSink, captureMultipart, (req, res) => {
     const parts = parseMultipart(req.body, boundaryOf(ctype));
     const split = splitMultipart(parts);
     payload = split.meta || {};
-    files = split.files.map((f, i) => {
+    // When a shared secret IS configured, an unverified delivery is somebody else's traffic — keep
+    // the metadata row so the operator can see the rejected attempt, but never retain its bytes.
+    const sigEarly = verifyWebhookSignature(req, rawBytes);
+    const retain = !WEBHOOK_SECRET || sigEarly.verified;
+    files = split.files.slice(0, WEBHOOK_MAX_FILES).map((f, i) => {
       const fileId = String(i);
-      webhookFiles.set(`${recId}/${fileId}`, {
-        filename: f.filename || `attachment-${i}`,
-        contentType: f.contentType || 'application/octet-stream',
-        buffer: f.data,
-      });
+      if (retain) {
+        webhookFiles.set(`${recId}/${fileId}`, {
+          filename: f.filename || `attachment-${i}`,
+          contentType: f.contentType || 'application/octet-stream',
+          buffer: f.data,
+        });
+        webhookBytes += f.data.length;
+      }
       return {
         fileId,
         field: f.name || null,
         filename: f.filename || `attachment-${i}`,
         contentType: f.contentType || 'application/octet-stream',
         size: f.data.length,
+        retained: retain,
         href: `/api/webhook/file/${encodeURIComponent(recId)}/${fileId}`,
       };
     });
@@ -463,15 +595,25 @@ app.post('/api/webhook', requireWebhookSink, captureMultipart, (req, res) => {
   // Evict overflow and free the attachment bytes of dropped events.
   if (webhookEvents.length > WEBHOOK_BUFFER_MAX) {
     webhookEvents.splice(WEBHOOK_BUFFER_MAX).forEach((old) => {
-      (old.files || []).forEach((f) => webhookFiles.delete(`${old.id}/${f.fileId}`));
+      (old.files || []).forEach((f) => dropWebhookFile(`${old.id}/${f.fileId}`));
     });
   }
+  // Count-based eviction alone is not a memory bound (50 events × the per-request cap). Enforce the
+  // aggregate byte budget too, oldest-first.
+  enforceWebhookByteBudget();
   console.log(`[webhook] received ${rec.notificationType || '(event)'} (${rec.delivery}, ${files.length} file(s)) @ ${rec.receivedAt} — ${sig.reason}`);
   res.json({ ok: true, verified: sig.verified, files: files.length });
 });
 
+// The inbox read/clear surface is for the local operator, not for whoever found the tunnel. The
+// global Host guard already keeps foreign Hosts out; this additionally excludes TS_PUBLIC_HOST.
+function requireLocalInbox(req, res, next) {
+  if (WEBHOOK_PUBLIC || isLoopbackHost(req)) return next();
+  res.status(403).json({ error: 'The webhook inbox is loopback-only. Set TS_WEBHOOK_PUBLIC=true to expose it.' });
+}
+
 // Read-back for the UI's Webhook Inbox (localhost-only; returns empty when the sink is disabled).
-app.get('/api/webhook/events', (_req, res) => {
+app.get('/api/webhook/events', requireLocalInbox, (_req, res) => {
   res.json({
     enabled: ALLOW_WEBHOOK_SINK,
     secretConfigured: Boolean(WEBHOOK_SECRET),
@@ -480,22 +622,28 @@ app.get('/api/webhook/events', (_req, res) => {
 });
 
 // Download a delivered report attachment — this is "what that recipient actually got".
-app.get('/api/webhook/file/:recId/:fileId', (req, res) => {
+app.get('/api/webhook/file/:recId/:fileId', requireLocalInbox, (req, res) => {
   if (!ALLOW_WEBHOOK_SINK) return res.status(403).json({ error: 'Webhook sink is disabled.' });
   const entry = webhookFiles.get(`${req.params.recId}/${req.params.fileId}`);
   if (!entry) return res.status(404).json({ error: 'No such attachment (it may have aged out of the buffer).' });
-  res.setHeader('Content-Type', entry.contentType);
+  // The part's Content-Type came from the (possibly unverified) SENDER, and this origin also mints
+  // trusted-auth tokens — an inline `text/html` attachment would be stored XSS right on it. So:
+  // allowlist the type, force a download, and forbid MIME sniffing.
+  const declared = String(entry.contentType || '').split(';')[0].trim().toLowerCase();
+  res.setHeader('Content-Type', WEBHOOK_SERVABLE_TYPES.has(declared) ? declared : 'application/octet-stream');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   // Quote the filename and strip control/quote chars so the header can't be broken by a crafted name.
   const safeName = String(entry.filename).replace(/[^\w.\- ]+/g, '_');
-  res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
   res.send(entry.buffer);
 });
 
 // Clear the in-memory buffer (the UI's "Clear" button on the Webhooks tab).
-app.delete('/api/webhook/events', (_req, res) => {
+app.delete('/api/webhook/events', requireLocalInbox, (_req, res) => {
   if (!ALLOW_WEBHOOK_SINK) return res.status(403).json({ error: 'Webhook sink is disabled.' });
   webhookEvents.length = 0;
   webhookFiles.clear();
+  webhookBytes = 0;
   res.json({ ok: true });
 });
 
@@ -570,6 +718,11 @@ app.post('/api/ts-rest', rateLimiter({ windowMs: 60_000, max: 120 }), async (req
     const method = String(req.body?.method || 'POST').toUpperCase();
     if (!REST_RELAY_ALLOW.has(relayPath)) {
       return res.status(400).json({ error: `path not allowlisted for relay: ${relayPath || '(none)'}` });
+    }
+    // The allowlisted paths only ever need GET or POST. Anything else (PUT/DELETE/PATCH…) would be
+    // the caller choosing an upstream verb we never intended to relay.
+    if (method !== 'GET' && method !== 'POST') {
+      return res.status(400).json({ error: `method not permitted for relay: ${method}. Use GET or POST.` });
     }
 
     const auth = req.get('authorization') || '';
@@ -648,11 +801,14 @@ app.listen(PORT, '127.0.0.1', () => {
   console.log(`     ThoughtSpot host : ${TS_HOST || '(not set — only needed for Trusted Auth)'}`);
   console.log(`     Trusted-auth key : ${secretConfigured ? 'configured ✓' : 'not set (Trusted Auth disabled)'}`);
   console.log(`     Default username : ${DEFAULT_USERNAME || '(none)'}`);
-  console.log(`     Allowlist        : ${[...ALLOWLIST].join(', ') || '(empty)'}`);
+  console.log(`     Allowlist        : ${[...ALLOWLIST].join(', ') || 'EMPTY — every mint is refused (set TS_DEFAULT_USERNAME or TS_USERNAME_ALLOWLIST)'}`);
   console.log(`     JIT (auto_create): ${ALLOW_JIT ? 'ENABLED (TS_ALLOW_JIT)' : 'disabled (fail-closed)'}`);
   console.log(`     Group guard      : ${GROUP_WILDCARD ? 'ANY (TS_GROUP_ALLOWLIST=*)' : (GROUP_ALLOWLIST.size ? [...GROUP_ALLOWLIST].join(', ') : 'none allowed')}`);
   console.log(`     Write-back stub  : ${ALLOW_DEV_PROXY ? 'enabled' : 'disabled'}`);
   console.log(`     Webhook sink     : ${ALLOW_WEBHOOK_SINK ? `enabled${WEBHOOK_SECRET ? ' (HMAC_SHA256 verify on)' : ' (no secret — unverified)'}` : 'disabled (fail-closed)'}`);
+  console.log(`     Webhook budget   : ${Math.round(WEBHOOK_MAX_BYTES / 1024 / 1024)} MB of attachments, ${WEBHOOK_MAX_FILES} file(s)/event${WEBHOOK_PUBLIC ? ' · inbox PUBLIC (TS_WEBHOOK_PUBLIC)' : ''}`);
+  console.log(`     Host allowlist   : localhost${PUBLIC_HOST ? `, ${PUBLIC_HOST} (TS_PUBLIC_HOST)` : ''} — /api/webhook exempt`);
+  console.log(`     Trust proxy      : ${JSON.stringify(TRUST_PROXY)}${TRUST_PROXY_RAW ? ' (TS_TRUST_PROXY)' : ' (default)'}`);
   console.log(`     Spotter MCP chat : relays your own token (never mints)\n`);
 });
 
