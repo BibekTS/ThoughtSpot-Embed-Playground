@@ -320,9 +320,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindStateOverlay();
   // When a trusted-auth token is minted & applied, feed it to REST discovery so object lists
   // populate for token-only users (no browser session), then re-discover against the host.
+  // A token applied from the modal must NOT be a back door around the confirm overlay: connect()
+  // is what clears pendingHostConfirm/holdHostPersist, so calling it here would trust an
+  // unconfirmed shared-link host without a click (S10). applyConfig() is itself a no-op on the
+  // host while unconfirmed; Confirm re-runs both.
   seedAuthHooks({ logEvent, onTokenApplied: (token) => {
     if (token) Discovery.setBearerToken(token);
     applyConfig();
+    if (pendingHostConfirm) { showHostConfirm(getState().host); return; }
     if (token && getState().host) connect({ silent: true });
     else render();
   } });
@@ -337,7 +342,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   pendingHostConfirm = !!(s.host && getHostSource() === 'hash');
   // While unconfirmed, keep the hash host out of localStorage so a dismissed shared link can't
   // auto-connect on the user's NEXT visit (the URL hash already carries it — no need to store it).
-  if (pendingHostConfirm) holdHostPersist(true);
+  // holdAllPersist() extends that to the REST of the payload (authType, auth.*, styles.cssUrl…).
+  if (pendingHostConfirm) { holdHostPersist(true); holdAllPersist(); }
 
   applyConfig();
   renderInspector();
@@ -379,13 +385,85 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
-// A shared link proposed a host. Show it and require a click before we touch it.
+// A shared link proposed a host. Show it — along with everything else the link carries that has
+// security weight — and require a click before we touch it. The Confirm button is the ONLY caller
+// that may trust the host (trustHost), because it is the only one the user reaches via this
+// disclosure (S10).
 function showHostConfirm(host) {
   setOverlay('confirm-host');
   const label = $('#confirm-host-name');
   if (label) label.textContent = host;
+  renderConfirmExtras();
   const btn = $('#confirm-host-go');
-  if (btn) btn.onclick = () => connect();
+  if (btn) btn.onclick = () => connect({ trustHost: true });
+}
+
+/**
+ * List the non-host parts of the shared link that decide what happens on Connect. The auth mode is
+ * the important one: a trusted-auth link makes THIS browser's token server mint a real token and
+ * hand it to the named host. All values are link-derived, so they go in via textContent only.
+ */
+function renderConfirmExtras() {
+  const ul = $('#confirm-host-extras');
+  if (!ul) return;
+  const s = getState();
+  const rows = [];
+  if (s.authType && s.authType !== 'None') {
+    rows.push(`Auth mode: ${s.authType} — connecting mints a sign-in token on your token server and sends it to that host.`);
+  } else {
+    rows.push('Auth mode: None (your existing browser session with that host).');
+  }
+  if (s.auth?.username) rows.push(`Mint tokens for user: ${s.auth.username}`);
+  if (s.auth?.orgId) rows.push(`Org: ${s.auth.orgId}`);
+  if (s.styles?.cssUrl) rows.push(`Loads a remote stylesheet: ${s.styles.cssUrl}`);
+  ul.textContent = '';
+  rows.forEach(t => { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
+  ul.hidden = rows.length === 0;
+}
+
+// ── Unconfirmed-link persistence hold ─────────────────────────────────────────
+// state.js's holdHostPersist() blanks only `host` from localStorage, so the rest of an unconfirmed
+// #s= payload (authType, auth.username/orgId, styles.cssUrl…) would still be written and outlive a
+// dismissed link. state.js is the guard-protected sanitize layer, so the hold is completed here:
+// snapshot whatever localStorage held BEFORE the link was opened and restore it after every
+// persist until the user confirms. schedulePersist() debounces 250ms, so the restore sits behind it.
+const LS_STATE_KEY = 'tsp_state_v1'; // must match STORAGE_KEY in js/state.js
+let preLinkStorage = null;           // the pre-link localStorage entry (null = there was none)
+let persistHoldTimer = null;
+let persistHoldOff = null;           // subscribe() teardown while the hold is armed
+
+function restorePreLinkStorage() {
+  try {
+    if (preLinkStorage === null) localStorage.removeItem(LS_STATE_KEY);
+    else localStorage.setItem(LS_STATE_KEY, preLinkStorage);
+  } catch (_) {}
+}
+function holdAllPersist() {
+  if (persistHoldOff) return;
+  try { preLinkStorage = localStorage.getItem(LS_STATE_KEY); } catch (_) { preLinkStorage = null; }
+  restorePreLinkStorage();
+  // loadState() already scheduled a persist before this ran — undo that one too.
+  clearTimeout(persistHoldTimer);
+  persistHoldTimer = setTimeout(restorePreLinkStorage, 400);
+  persistHoldOff = subscribe(() => {
+    clearTimeout(persistHoldTimer);
+    persistHoldTimer = setTimeout(restorePreLinkStorage, 400); // behind state.js's 250ms debounce
+  });
+}
+function releaseAllPersist() {
+  if (persistHoldOff) { persistHoldOff(); persistHoldOff = null; }
+  clearTimeout(persistHoldTimer);
+  preLinkStorage = null;
+}
+
+/** Open the trusted-auth modal — never while a shared-link host is unconfirmed (it can mint). */
+function openAuthModalGuarded() {
+  if (pendingHostConfirm) {
+    toast('Confirm the shared host first — token minting is blocked until you do.');
+    showHostConfirm(getState().host);
+    return;
+  }
+  openAuthModal();
 }
 
 // ── Trusted-auth availability ─────────────────────────────────────────────────
@@ -476,16 +554,33 @@ function buildConfig() {
   window.TS_CONFIG = cfg; // keep a single consistent config object around
   return cfg;
 }
-function applyConfig() { initSDK(buildConfig()); }
+function applyConfig() {
+  const cfg = buildConfig(); // always refresh window.TS_CONFIG — the code generator reads it
+  // S10: initSDK() must never see an unconfirmed (#s=-supplied) host. SDK init() authenticates
+  // IMMEDIATELY — under trusted auth it calls getAuthToken (minting a REAL token on this user's
+  // own token server) and ships it to thoughtSpotHost, with no embed render and no click. Every
+  // applyConfig() call site funnels through here, so the short-circuit covers all of them; Connect
+  // clears pendingHostConfirm and re-runs applyConfig(), so nothing is lost.
+  if (pendingHostConfirm) return;
+  initSDK(cfg);
+}
 
 // ── Connection ────────────────────────────────────────────────────────────────
-async function connect({ silent = false } = {}) {
+async function connect({ silent = false, trustHost = false } = {}) {
   let host = $('#host-input').value.trim().replace(/\/+$/, '');
   if (!host) { toast('Enter a host URL first.'); return; }
   // Auto-prefix https:// when the user omits the scheme (e.g. "my-co.thoughtspot.cloud").
   if (!/^https?:\/\//i.test(host)) { host = 'https://' + host; $('#host-input').value = host; }
+  // S10: only the confirm overlay's own button may trust a shared-link host. Any other route here
+  // — notably the token-applied auto-connect — must leave the overlay standing. Typing a DIFFERENT
+  // host and connecting is the user authoring their own host, so that is trusted as before.
+  if (pendingHostConfirm && !trustHost && host === getState().host) {
+    showHostConfirm(getState().host);
+    return;
+  }
   pendingHostConfirm = false; // an explicit Connect trusts this host for the session
   holdHostPersist(false);     // lift the localStorage suppression now that host is confirmed
+  releaseAllPersist();        // …and the whole-payload hold that rode along with it
   setState({ host });
   setStatus('connecting', 'Connecting…');
   // Show a prominent connecting state on the main stage immediately — discovery below can take a
@@ -878,7 +973,7 @@ function bindStateOverlay() {
     const act = ev.target.dataset.act;
     if (act === 'retry') connect();
     if (act === 'proceed') render();
-    if (act === 'open-claims') openAuthModal();
+    if (act === 'open-claims') openAuthModalGuarded();
   });
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
@@ -913,11 +1008,11 @@ function bindTopbar() {
     $('#auth-config-btn').hidden = e.target.value === 'None';
     // Modal first — it carries the setup guide, and must appear even if the SDK
     // re-init below throws (e.g. a malformed host typed into the top bar).
-    if (e.target.value !== 'None') openAuthModal();
+    if (e.target.value !== 'None') openAuthModalGuarded();
     applyConfig();
     render();
   });
-  $('#auth-config-btn').addEventListener('click', openAuthModal);
+  $('#auth-config-btn').addEventListener('click', openAuthModalGuarded);
   // Reset wipes every applied option — arm on first click, act on the second,
   // so a stray click next to "Best practices" can't silently destroy a setup.
   const resetBtn = $('#reset-btn');

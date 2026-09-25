@@ -15,6 +15,8 @@
  *     inert text in the auth chips and the Event Log — it must never execute
  *   ✓ URL-action scheme probe (BACKLOG S13): a `javascript:` urlTemplate from a #s= hash must be
  *     refused at window.open, while a plain https template still opens with placeholders resolved
+ *   ✓ Pre-confirm auth probe (BACKLOG S10): a #s= hash naming a trusted-auth mode must mint NO
+ *     token and contact the named host ZERO times before the user clicks Confirm
  *
  * Chrome resolution: $CHROME_PATH, then the standard macOS / Linux install locations
  * (GitHub's ubuntu runners ship google-chrome). Requires devDependency puppeteer-core.
@@ -123,18 +125,26 @@ async function runXssProbe(browser) {
 // (schedulePersist blanks the held host from localStorage) + app.js `pendingHostConfirm`.
 //
 // Two legs, both on the SAME browser (localStorage is shared per-origin across pages):
-//   Leg 1 — open `#s={host:EVIL, worksheetId:MARKER}`. Assert the confirm overlay names EVIL
-//           (positive control: the hash reached the app), the debounced persist wrote state with
-//           host BLANKED but the MARKER kept (proves a write happened, so the guard is meaningful),
-//           the status pill never reached connecting/connected, and NO request went to EVIL.
+//   Leg 1 — seed localStorage with a PRESEED entry (the user's own pre-link state), then open
+//           `#s={host:EVIL, worksheetId:MARKER}`. Assert the confirm overlay names EVIL (positive
+//           control: the hash reached the app), a persist cycle actually RAN (the URL hash got
+//           re-encoded by schedulePersist — the positive control that makes the storage assertion
+//           meaningful), localStorage still holds exactly PRESEED with NO host and NO MARKER, the
+//           status pill never reached connecting/connected, and NO request went to EVIL.
 //   Leg 2 — open the bare URL (no hash). It inherits Leg 1's localStorage. Assert it reads that
-//           storage (MARKER present → propagation confirmed) with host still '', shows the
-//           "not-connected" overlay (NOT confirm-host), never connects, and never contacts EVIL.
-// A regression that persists the hash host, or auto-connects to it, flips one of these to fail.
+//           storage (PRESEED present → propagation confirmed) with host still '' and the link's
+//           MARKER absent, shows the "not-connected" overlay (NOT confirm-host), never connects,
+//           and never contacts EVIL.
+// S10 widened this: the hold covers the WHOLE unconfirmed payload, not just `host` — an
+// unconfirmed link must leave the user's stored state byte-identical. A regression that persists
+// any part of the hash payload, or auto-connects to it, flips one of these to fail.
 async function runHostConfirmProbe(browser) {
   const EVIL = 'https://evil.s2probe.example';
-  const MARKER = 'ws_s2probe_marker';
+  const MARKER = 'ws_s2probe_marker';   // carried by the LINK — must never reach localStorage
+  const PRESEED = 'ws_s2probe_preseed'; // the user's own pre-link state — must survive untouched
   const KEY = 'tsp_state_v1';
+  const b64url = (o) => Buffer.from(JSON.stringify(o), 'utf8').toString('base64url');
+  const SEEDED = b64url({ worksheetId: PRESEED });
   const hash = Buffer.from(JSON.stringify({ host: EVIL, worksheetId: MARKER }), 'utf8').toString('base64url');
   const touchedEvil = (r) => r.url().includes('evil.s2probe.example');
   // Mirror state.js decode(): base64url → UTF-8 bytes → JSON. Returns null if storage is absent.
@@ -153,8 +163,10 @@ async function runHostConfirmProbe(browser) {
   const p1 = await browser.newPage();
   const evilUrls1 = [];
   p1.on('request', (r) => { if (touchedEvil(r)) evilUrls1.push(r.url()); });
-  let confirmShown, p1Stored, p1Status;
+  let confirmShown, p1Stored, p1Status, p1StoredRaw, p1HashReencoded;
   try {
+    // Seed the user's own pre-link state BEFORE any app module runs.
+    await p1.evaluateOnNewDocument((k, v) => { try { localStorage.setItem(k, v); } catch (_) {} }, KEY, SEEDED);
     await p1.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
     // Positive control: the hash host must surface as a pending confirmation naming EVIL.
     confirmShown = await p1.waitForFunction((evil) => {
@@ -162,8 +174,14 @@ async function runHostConfirmProbe(browser) {
       const name = document.getElementById('confirm-host-name')?.textContent || '';
       return !!active && name.includes(evil);
     }, { polling: 300, timeout: 20_000 }, EVIL).then(() => true, () => false);
-    await sleep(600); // let the 250ms debounced persist fire
+    await sleep(1200); // let the 250ms debounced persist fire AND app.js's 400ms restore land
     p1Stored = await p1.evaluate(readStored, KEY);
+    p1StoredRaw = await p1.evaluate((k) => localStorage.getItem(k), KEY);
+    // Positive control for the storage assertion: schedulePersist() rewrites the URL hash and
+    // localStorage in the SAME tick, so a hash that no longer equals the one we navigated with
+    // proves a persist cycle really ran — i.e. the untouched storage below is the hold working,
+    // not the app simply never persisting.
+    p1HashReencoded = await p1.evaluate((h) => location.hash !== `#s=${h}`, hash);
     p1Status = await p1.evaluate(() => document.getElementById('conn-status')?.dataset.state || '');
   } finally {
     await p1.close();
@@ -195,19 +213,23 @@ async function runHostConfirmProbe(browser) {
     // ── Gated (S2 acceptance criteria) ──
     // Leg 1 — hash host: confirm overlay, host blanked in storage, no auto-connect
     confirmShown,
+    p1PersistRan: p1HashReencoded === true,                  // positive control — a persist happened
     p1HostBlanked: (p1Stored?.host ?? '') === '',
-    p1MarkerKept: p1Stored?.worksheetId === MARKER,          // proves a persist actually happened
+    p1StorageUntouched: p1StoredRaw === SEEDED,              // S10 — the WHOLE payload is held
+    p1LinkStateNotPersisted: p1Stored?.worksheetId !== MARKER,
     p1ConnectSkipped: !CONNECT_STATES.includes(p1Status),
     // Leg 2 — plain revisit: not-connected, host still blank, no auto-connect
     notConnected,
     confirmAbsent,
-    p2StoragePropagated: p2Stored?.worksheetId === MARKER,   // proves Leg 2 read Leg 1's storage
+    p2StoragePropagated: p2Stored?.worksheetId === PRESEED,  // proves Leg 2 read Leg 1's storage
     p2HostBlanked: (p2Stored?.host ?? '') === '',
+    p2LinkStateAbsent: p2Stored?.worksheetId !== MARKER,
     p2ConnectSkipped: !CONNECT_STATES.includes(p2Status),
-    // ── Diagnostic (NOT gated) ── the SDK's init() fires preauth warm-up GETs at the unconfirmed
-    // host (e.g. /prism/preauth/info, /callosum/v1/session/info). That is outside S2's scope
-    // (persistence + auto-connect); it is tracked as its own follow-up backlog item.
-    sdkPreauthUrls: [...evilUrls1, ...evilUrls2],
+    // Gated since S10: the SDK's init() used to fire preauth warm-up GETs at the unconfirmed host
+    // (/prism/preauth/info, /callosum/v1/session/info) because applyConfig() called initSDK()
+    // before the Confirm click. applyConfig() now short-circuits while pendingHostConfirm, so an
+    // unconfirmed host must receive NOTHING.
+    hostContactUrls: [...evilUrls1, ...evilUrls2],
   };
 }
 
@@ -254,10 +276,10 @@ async function runAnswerPickerProbe(browser) {
 // NOT connected) and renders the Single-Viz inspector — so the auto-load condition
 // (`connected && answerList === undefined`) is genuinely evaluated pre-connect. Assert the confirm
 // overlay is up (positive control: we are in the pre-confirm state where the guard matters) AND that
-// the app fired NO discovery POST at the unconfirmed host. Match ONLY the discovery path
-// (/metadata/search); the SDK's own preauth GETs (/prism/preauth/info, /callosum/v1/session/info) at
-// an unconfirmed host are a SEPARATE, pre-existing, backlog-tracked issue (S10) and WILL still fire
-// here — conflating them would false-fail this probe. Runs on its own page like the other probes.
+// the app fired NO discovery POST at the unconfirmed host. It matches ONLY the discovery path
+// (/metadata/search); the SDK's own preauth GETs at an unconfirmed host were a separate issue,
+// fixed under S10 and now covered by runHostConfirmProbe/runPreauthExfilProbe — keeping this probe
+// narrow means a discovery regression is still attributable here. Runs on its own page.
 async function runAnswerPreconfirmProbe(browser) {
   const HOST = 'https://evil.s3probe.example';
   const hash = Buffer.from(
@@ -362,6 +384,126 @@ async function runUrlActionSchemeProbe(browser) {
   }
 }
 
+// Pre-confirm credential-exfiltration probe (BACKLOG S10, P1). A `#s=` link can name any host AND
+// any auth mode. SDK 1.49.0's init() authenticates IMMEDIATELY — no embed render, no click: under
+// TrustedAuthTokenCookieless it calls getAuthToken (POST /api/auth/token on the VICTIM'S OWN token
+// server, which mints a real token for the default user) and then GETs
+// `${host}/callosum/v1/session/isactive` with `Authorization: Bearer <token>`; under
+// TrustedAuthToken it mints and POSTs `${host}/callosum/v1/session/login/token`. So any path that
+// reaches initSDK() with an unconfirmed host hands the attacker a live token. The guard is
+// app.js's applyConfig() short-circuit while `pendingHostConfirm`.
+//
+// The gate server runs with TS_SECRET_KEY='' and would 503 the mint, which would make every
+// assertion here pass vacuously — so the probe STUBS POST /api/auth/token with a fake token via
+// request interception. Requests to the evil host are stubbed too (it must not resolve).
+//   Negative (hard failures): before Confirm — including across an #auth-select change — ZERO
+//     requests to the host and ZERO mint POSTs.
+//   Positive control (mandatory): clicking Confirm MUST produce a mint POST and at least one
+//     request to the host. Without it, a broken boot would make the negatives vacuous. The exact
+//     SDK path (isactive / login/token) is reported as a diagnostic rather than gated — it is an
+//     SDK-internal detail that a version bump may rename, and the gate should fail on a security
+//     regression, not on an SDK refactor.
+async function runPreauthExfilProbe(browser, authType, expectPath, testAuthChange = false) {
+  const HOST = 'https://evil.invalid';
+  const hash = Buffer.from(
+    JSON.stringify({ host: HOST, authType, auth: { validitySeconds: 3600 } }), 'utf8'
+  ).toString('base64url');
+  const page = await browser.newPage();
+  const probeErrors = [];
+  page.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  const hostHits = [];   // every request aimed at the attacker-named host
+  const mintHits = [];   // every POST at our own token endpoint
+  try {
+    await page.setRequestInterception(true);
+    page.on('request', (r) => {
+      const url = r.url();
+      const method = r.method();
+      if (url.startsWith(HOST)) hostHits.push(`${method} ${url}`);
+      const isMint = method === 'POST' && url.includes('/api/auth/token');
+      if (isMint) mintHits.push(url);
+      if (r.isInterceptResolutionHandled?.()) return;
+      // Stub the mint so the probe can't pass just because the gate server has no secret.
+      if (isMint) {
+        r.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ token: 'FAKE-TOKEN' }) })
+          .catch(() => {});
+        return;
+      }
+      // evil.invalid does not resolve — answer it ourselves so the SDK proceeds deterministically.
+      if (url.startsWith(HOST)) {
+        r.respond({ status: 200, contentType: 'application/json', body: '{}' }).catch(() => {});
+        return;
+      }
+      r.continue().catch(() => {});
+    });
+
+    await page.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    // Positive control for the pre-confirm state: the overlay must be up naming the host.
+    const confirmShown = await page.waitForFunction((h) => {
+      const active = document.querySelector('.st-confirm-host.active');
+      return !!active && (document.getElementById('confirm-host-name')?.textContent || '').includes(h);
+    }, { polling: 300, timeout: 20_000 }, HOST).then(() => true, () => false);
+    await sleep(800); // let any (guarded-away) init()/mint initiate before we tally
+
+    const preHostHits = [...hostHits];
+    const preMintHits = [...mintHits];
+
+    // Second pre-confirm route: changing the auth type re-runs applyConfig() (and opens the
+    // trusted-auth modal) — it must not mint either. Only exercised on the cookieless run: the
+    // #auth-select element offers no TrustedAuthToken option, so firing it on that run would
+    // rewrite state.authType and silently turn the post-Confirm positive control into a second
+    // cookieless test.
+    let authChangeFired = false;
+    if (testAuthChange) {
+      authChangeFired = await page.evaluate(() => {
+        const sel = document.getElementById('auth-select');
+        if (!sel) return false;
+        sel.value = 'TrustedAuthTokenCookieless';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      });
+      await sleep(800);
+    }
+    const afterSelectHostHits = hostHits.length;
+    const afterSelectMintHits = mintHits.length;
+
+    // Positive control: Confirm must actually set the whole chain in motion.
+    const confirmClicked = await page.evaluate(() => {
+      const btn = document.getElementById('confirm-host-go');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    });
+    const waitUntil = async (fn, ms = 20_000) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) { if (fn()) return true; await sleep(200); }
+      return false;
+    };
+    const mintedAfterConfirm = await waitUntil(() => mintHits.length > 0);
+    const contactedAfterConfirm = await waitUntil(() => hostHits.length > 0);
+    await sleep(600); // let the post-token SDK call land so the diagnostic path is observable
+
+    return {
+      authType,
+      confirmShown,
+      confirmClicked,
+      preConfirmHostHits: preHostHits,
+      preConfirmMintHits: preMintHits,
+      authChangeTested: testAuthChange,
+      authChangeFired,
+      noMintOnAuthChange: afterSelectMintHits === 0,
+      noHostContactOnAuthChange: afterSelectHostHits === 0,
+      mintedAfterConfirm,
+      contactedAfterConfirm,
+      expectPath,
+      expectedPathSeen: hostHits.some((u) => u.includes(expectPath)),
+      postConfirmHostHits: [...hostHits],
+      probeErrors,
+    };
+  } finally {
+    await page.close();
+  }
+}
+
 let ok = false;
 let browser;
 try {
@@ -406,19 +548,23 @@ try {
 
   const host = await runHostConfirmProbe(browser);
   console.log(`Host-confirm probe (S2) — hash host shows confirm overlay: ${host.confirmShown}`);
+  console.log(`Host-confirm probe (S2) — a persist cycle ran (positive control): ${host.p1PersistRan}`);
   console.log(`Host-confirm probe (S2) — hash host blanked in localStorage: ${host.p1HostBlanked}`);
-  console.log(`Host-confirm probe (S2) — non-host state still persisted (marker): ${host.p1MarkerKept}`);
+  console.log(`Host-confirm probe (S2/S10) — pre-link localStorage left byte-identical: ${host.p1StorageUntouched}`);
+  console.log(`Host-confirm probe (S2/S10) — link state not persisted: ${host.p1LinkStateNotPersisted}`);
   console.log(`Host-confirm probe (S2) — hash host not auto-connected: ${host.p1ConnectSkipped}`);
-  console.log(`Host-confirm probe (S2) — plain revisit inherits storage (marker): ${host.p2StoragePropagated}`);
+  console.log(`Host-confirm probe (S2) — plain revisit inherits storage (pre-link marker): ${host.p2StoragePropagated}`);
   console.log(`Host-confirm probe (S2) — plain revisit host still blank: ${host.p2HostBlanked}`);
+  console.log(`Host-confirm probe (S2/S10) — plain revisit carries no link state: ${host.p2LinkStateAbsent}`);
   console.log(`Host-confirm probe (S2) — plain revisit shows not-connected: ${host.notConnected}`);
   console.log(`Host-confirm probe (S2) — plain revisit hides confirm overlay: ${host.confirmAbsent}`);
   console.log(`Host-confirm probe (S2) — plain revisit does not auto-connect: ${host.p2ConnectSkipped}`);
-  console.log(`Host-confirm probe (S2) — [diagnostic, not gated] SDK init() preauth GETs at unconfirmed host: ${host.sdkPreauthUrls.length}`);
-  host.sdkPreauthUrls.forEach((u) => console.log('  -', u));
-  const hostOk = host.confirmShown && host.p1HostBlanked && host.p1MarkerKept && host.p1ConnectSkipped
+  console.log(`Host-confirm probe (S10) — zero requests to the unconfirmed host: ${host.hostContactUrls.length === 0}`);
+  host.hostContactUrls.forEach((u) => console.log('  - contacted unconfirmed host:', u));
+  const hostOk = host.confirmShown && host.p1PersistRan && host.p1HostBlanked && host.p1StorageUntouched
+    && host.p1LinkStateNotPersisted && host.p1ConnectSkipped
     && host.notConnected && host.confirmAbsent && host.p2StoragePropagated && host.p2HostBlanked
-    && host.p2ConnectSkipped;
+    && host.p2LinkStateAbsent && host.p2ConnectSkipped && host.hostContactUrls.length === 0;
 
   const answer = await runAnswerPickerProbe(browser);
   console.log(`Answer-picker probe (S3) — standalone-Answer picker renders: ${answer.pickerRendered}`);
@@ -446,9 +592,40 @@ try {
   const urlActOk = urlAct.dispatcherReady && !urlAct.pwned && urlAct.hostileOpened.length === 0
     && urlAct.goodOpened && urlAct.probeErrors.length === 0;
 
+  // S10 — one run per trusted auth mode; each is a distinct SDK authentication path.
+  const exfilResults = [];
+  for (const [authType, expectPath, testAuthChange] of [
+    ['TrustedAuthTokenCookieless', '/callosum/v1/session/isactive', true],
+    ['TrustedAuthToken', '/callosum/v1/session/login/token', false],
+  ]) {
+    exfilResults.push(await runPreauthExfilProbe(browser, authType, expectPath, testAuthChange));
+  }
+  let exfilOk = true;
+  for (const r of exfilResults) {
+    const tag = `Pre-confirm auth probe (S10, ${r.authType})`;
+    console.log(`${tag} — confirm overlay shown (pre-confirm state): ${r.confirmShown}`);
+    console.log(`${tag} — zero requests to the named host before Confirm: ${r.preConfirmHostHits.length === 0}`);
+    r.preConfirmHostHits.forEach((u) => console.log('  - pre-confirm host request:', u));
+    console.log(`${tag} — zero token mints before Confirm: ${r.preConfirmMintHits.length === 0}`);
+    r.preConfirmMintHits.forEach((u) => console.log('  - pre-confirm mint:', u));
+    console.log(`${tag} — #auth-select change exercised: ${r.authChangeTested && r.authChangeFired}`);
+    console.log(`${tag} — #auth-select change while unconfirmed mints nothing: ${r.noMintOnAuthChange}`);
+    console.log(`${tag} — #auth-select change while unconfirmed contacts nothing: ${r.noHostContactOnAuthChange}`);
+    console.log(`${tag} — positive control: Confirm clicked: ${r.confirmClicked}`);
+    console.log(`${tag} — positive control: token minted after Confirm: ${r.mintedAfterConfirm}`);
+    console.log(`${tag} — positive control: host contacted after Confirm: ${r.contactedAfterConfirm}`);
+    console.log(`${tag} — [diagnostic, not gated] expected SDK path ${r.expectPath} seen: ${r.expectedPathSeen}`);
+    r.postConfirmHostHits.forEach((u) => console.log('  - post-confirm host request:', u));
+    r.probeErrors.forEach((e) => console.log('  - probe page:', e));
+    exfilOk = exfilOk && r.confirmShown && r.preConfirmHostHits.length === 0
+      && r.preConfirmMintHits.length === 0 && r.noMintOnAuthChange && r.noHostContactOnAuthChange
+      && (!r.authChangeTested || r.authChangeFired)
+      && r.confirmClicked && r.mintedAfterConfirm && r.contactedAfterConfirm;
+  }
+
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
-    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk;
+    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk && exfilOk;
   console.log(ok ? '\nBOOT CHECK: PASS' : '\nBOOT CHECK: FAIL');
 } finally {
   try { await browser?.close(); } catch { /* already gone */ }

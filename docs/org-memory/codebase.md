@@ -280,3 +280,32 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `ba27a041aaf037086be5c0f17b215494bb6ca4dc` at f927b9c). But byte-identity is wrong for any line
   carrying a cross-reference: `# see step 3's commit rule` pointed into SKILL.md while `qa-verifier.md`
   has its own step 3 (`npm run boot-check`) — a reader of the agent file alone resolves it wrongly.
+- 2026-09-25 (S10, P1 credential exfiltration — fixed on this branch): **SDK `init()` authenticates
+  IMMEDIATELY; no embed render and no click are required.** On the pinned 1.49.0, calling
+  `init({authType: TrustedAuthTokenCookieless, autoLogin: true, getAuthToken})` makes the SDK invoke
+  `getAuthToken` at once — which is `fetchTrustedAuthToken` (`js/embed.js:71`, POST `/api/auth/token`
+  on the victim's OWN token server, minting a real token for the default user) — and then GET
+  `${thoughtSpotHost}/callosum/v1/session/isactive` with `Authorization: Bearer <token>`;
+  `TrustedAuthToken` mints and POSTs `${host}/callosum/v1/session/login/token`. So `initSDK()`
+  (`js/embed.js:104`, which guards only on an empty host) is a **credential sink**, not a passive
+  configuration step: any `applyConfig()` reached while a `#s=`-supplied host is unconfirmed hands
+  an attacker a live token with zero clicks. `applyConfig()` (`js/app.js`) now short-circuits before
+  `initSDK` while `pendingHostConfirm`; `buildConfig()` still runs so the code generator stays live.
+  Corollary: `pendingHostConfirm` must be cleared by the Confirm click ALONE — `connect()` used to
+  clear it for every caller, so `onTokenApplied`'s `connect({silent:true})` was a second, clickless
+  route to the same sink.
+- 2026-09-25 (S10, gates): **both gate servers run with `TS_SECRET_KEY=''`, so anything
+  mint-dependent 503s and a probe that merely asserts "no token leaked" passes vacuously.** A probe
+  covering a mint path MUST stub the route — puppeteer `setRequestInterception(true)` +
+  `r.respond({body: JSON.stringify({token:'FAKE-TOKEN'})})` on `POST /api/auth/token` — and pair it
+  with a positive control that the mint DOES happen once the guard is satisfied
+  (`runPreauthExfilProbe` in `scripts/boot-check.mjs`). Same interception answers the attacker host
+  (`https://evil.invalid` does not resolve, so without a stub the SDK's calls die in DNS and the
+  negative assertion is again vacuous).
+- 2026-09-25 (S10): `holdHostPersist()` (`js/state.js:150`/`:159`) blanks **only `host`** from
+  localStorage; the rest of an unconfirmed link payload (`authType`, `auth.username`/`orgId`,
+  `styles.cssUrl`) was still written and outlived a dismissed link. `js/state.js` is guard-protected,
+  so the hold is completed from `js/app.js` (`holdAllPersist()`): snapshot the pre-link
+  `tsp_state_v1` entry and restore it ~400ms behind `schedulePersist()`'s 250ms debounce on every
+  `subscribe()` notification until Confirm. Note the storage-key constant is now duplicated in
+  `js/app.js` (`LS_STATE_KEY`) — it must stay in lockstep with `STORAGE_KEY` (`js/state.js:20`).
