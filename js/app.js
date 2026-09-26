@@ -324,6 +324,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindTopbar();
   bindBottomPanel();
   bindDisplayMenu();
+  bindDemoMode();
   bindStateOverlay();
   // When a trusted-auth token is minted & applied, feed it to REST discovery so object lists
   // populate for token-only users (no browser session), then re-discover against the host.
@@ -993,6 +994,33 @@ function bindDisplayMenu() {
 
   const box = $('#toggle-wh-tab');
   if (box) box.addEventListener('change', () => applyWebhookTabVisibility(box.checked, { persist: true }));
+}
+
+// ── Demo mode ─────────────────────────────────────────────────────────────────
+// Presenter view: hides the top bar, the options inspector and the bottom panel so an
+// audience sees only the embed (plus the embed-type rail). Per-browser UI preference
+// (localStorage only — like the Webhooks tab, it is not part of the shareable state).
+const DEMO_PREF_KEY = 'ts-playground.demoMode';
+
+function applyDemoMode(on, { persist = false } = {}) {
+  document.body.classList.toggle('demo-mode', on);
+  $('#demo-exit').hidden = !on;
+  if (persist) { try { localStorage.setItem(DEMO_PREF_KEY, on ? '1' : '0'); } catch (_) {} }
+}
+
+function bindDemoMode() {
+  let saved = false;
+  try { saved = localStorage.getItem(DEMO_PREF_KEY) === '1'; } catch (_) {}
+  applyDemoMode(saved);
+  $('#demo-btn').addEventListener('click', () => applyDemoMode(true, { persist: true }));
+  $('#demo-exit').addEventListener('click', () => applyDemoMode(false, { persist: true }));
+  // Shift+D toggles — ignored while typing (keys inside the embed iframe never reach us).
+  document.addEventListener('keydown', (e) => {
+    if (!e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.key.toLowerCase() !== 'd') return;
+    if (e.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+    e.preventDefault();
+    applyDemoMode(!document.body.classList.contains('demo-mode'), { persist: true });
+  });
 }
 
 // ── Bottom panel ────────────────────────────────────────────────────────────
