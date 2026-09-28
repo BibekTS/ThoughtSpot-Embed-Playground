@@ -403,6 +403,102 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `payload.data.vizId` is present on VizPointClick for both viz types, so scoping a drill to one
   visualization is reliable (confirmed: a left-click on the table did not drill while the drill was
   pinned to the chart).
+- 2026-09-25 (S29–S32, this PR): **the SDK-code generator had no mechanical link between what it
+  EMITS and what it IMPORTS.** `generateCode()` built `importNames` from a hand-written list of
+  conditions (`js/app.js:6345-6360`) while the emitters are hundreds of lines further down, so the
+  drill-through section emitted `CustomActionsPosition.CONTEXTMENU`, `CustomActionTarget.VIZ`,
+  `HostEvent.GetFilters` and `RuntimeFilterOp.IN` that were never imported — a `ReferenceError` on
+  the first paste. The fix is the gating PLUS a generator-wide gate:
+  `runCodeGenImportProbe()` in `scripts/boot-check.mjs` walks every rail item, extracts the SDK
+  identifiers from each emitted body (comments stripped) and asserts each one appears in that same
+  snippet's import line. Any NEW emitter that reaches for an SDK name now fails the gate unless the
+  import gating is updated with it. Corollary learned while writing it: a helper emitted
+  unconditionally must not reference a conditionally-imported name — `tsFilter` (which uses
+  `RuntimeFilterOp`) had to move inside the point-drill branch.
+- 2026-09-25 (S30/S31): **a clicked attribute is NOT a carryable runtime filter, and not a search
+  token either.** ThoughtSpot reports a bucketed date as `Day(Order Date)` / `Month(Order Date)`
+  with a RAW EPOCH value, so three separate coercions are needed and they differ by destination:
+  (a) carrying into another Liveboard needs the UNWRAPPED column and NUMERIC epochs — a string
+  epoch on `Day(Order Date)` matches nothing and loses the day scope silently;
+  (b) a non-Day bucket must become a RANGE, but **the two destinations do not agree on which
+  buckets can express one.** A RUNTIME FILTER carries epoch seconds, so `BW_INC` over
+  [bucket start, bucket end] (UTC) works for ANY bucket, sub-day included. A SEARCH CLAUSE is
+  limited to `MM/DD/YYYY`, which is day-granular — so only Week/Month/Quarter/Year become a range
+  (`[Order Date] >= '12/01/2024' [Order Date] <= '12/31/2024'`, two space-joined clauses) and
+  Hour/Minute/Second fall back to the plain day-equality clause, the widest true statement the
+  literal can make. Emitting only the bucket's start lists the 1st of the month while the KPI covers
+  the whole month, and `dtReconcile()` then flags a mismatch that is not real;
+  (c) DISPLAY wants the ISO day. `dtBucket`/`dtEpochSec`/`dtBucketEndSec`/`dtMDY`/`dtCarryFilter`
+  in `js/app.js` encode all of this; `dtSearchColumn()` is now just `dtBucket().column`.
+  Consequence for any column comparison: normalise BOTH sides — a user configuring `scopeColumn`
+  types `Order Date` while the click reports `Month(Order Date)`.
+- 2026-09-25 (S32): **every `await` in the drill-through path is a suspension point over
+  module-level state.** `dt` (the active detail view) is REPLACED wholesale by `openDetailPanel`,
+  so `dtFetchPage`'s post-await `if (!dt) return` was not enough — a slow first click's rows landed
+  in a second click's panel. The pattern that fixes it is `const mine = dt` before the await and
+  `if (dt !== mine) return` after, and the same shape applies to `__onVizPointClick` around
+  `await embed.trigger(HostEvent.GetFilters)` (capture `currentEmbed`, then re-check the embed ref,
+  `getState().section` and `drillParent` before navigating). A boot-check leg with a deliberately
+  SLOW first response and a fast second is what proves it; asserting only on the final row count
+  passes either way, so assert on the first row's IDENTITY.
+- 2026-09-25 (regression guard): **`EmbedEvent.VizPointClick` was subscribed on EVERY embed**
+  (`js/embed.js`). Subscribing it makes a LEFT click fire the host event and ThoughtSpot show no
+  menu of its own, so plain Liveboard/Viz/Search embeds silently lost their native left-click
+  behaviour. It is now opt-in via `config._vizPointClick`, set in `buildConfig()` only for
+  `section === 'drillthrough' && drill.enabled` and explicitly cleared in `enterDrill()` (a click
+  inside the DETAIL board is not a new drill). `_vizPointClick` is a derived CONFIG field, not a
+  state key — no `js/state.js` change, so the PR stays off the guard-protected paths.
+- 2026-09-25 (S29 review): in `js/embed.js`'s constructors the explicit ids
+  (`liveboardId`/`vizId`/`answerId`/`hideSearchBar`) now spread AFTER `...flags`, so a shared
+  link's flags cannot re-point an embed at a different object. The `search`/`spotter` cases still
+  spread `dataSources`/`worksheetId` BEFORE `...flags` — same latent shape, not yet closed.
+- 2026-09-27 (S29–S32 round 2, review): **a bucket-end calculation must enumerate EVERY bucket the
+  range branch fires for.** `dtBucketEndSec` folded Hour/Minute/Second into the `day` arm while the
+  caller ranged over every non-day bucket, so an `Hour(Order Date)` click scoped the detail set to a
+  whole day — 24x too wide, 86400x for `Second(...)` — producing exactly the false `dtReconcile`
+  mismatch the range work was written to remove. The generated snippet's `tsBucketEnd` twin had the
+  identical hole: **an emitted helper is a SECOND implementation and drifts silently**, so every
+  round-2 fix here had to be applied twice and is now cross-checked (runtime vs emitted) rather than
+  eyeballed.
+- 2026-09-27 (S30 round 2): **the epoch magnitude window (1e8..1e11) is a heuristic for "is this
+  integer a date at all", not a validity test.** It starts at 1973-03-03, so zero, negatives and
+  every earlier date failed it and were carried on as STRING epochs that ThoughtSpot silently
+  ignores. When ThoughtSpot has already wrapped the column in a `Day(...)`/`Month(...)` bucket the
+  column IS a date and the heuristic is not merely unnecessary but harmful — hence
+  `dtEpochSec(v, known)`. The millisecond window still applies on the proven path (1e11..1e14
+  SECONDS would be the year 5138+, never the intended reading). `cfbFmtDate` (`js/app.js:4868`) has
+  the same blind spot and was deliberately NOT widened: it is the custom-filter-bar's display
+  heuristic, and accepting any integer there would render a plain count column named "day count" as
+  1970-01-01. `dtMDY` therefore formats from epoch seconds itself instead of routing through it.
+- 2026-09-27 (S29 round 2, the sharpest one): **`state.js` does not key-whitelist `flags`** —
+  `cleanMap(raw.flags, sectionFlags => cleanMap(sectionFlags, …))` (`js/state.js:308-309`) keeps ANY
+  key name under a 200-char cap. So a shared link can carry `flags.<section>.liveboardId`. Wherever
+  flags and explicit ids are merged, the two must agree on which wins: `doRender` spreads the ids
+  AFTER `...flags` (so the picked object wins), and the code generator emitted the ids BEFORE its
+  flags loop (so the later duplicate key won) — the tool rendered the picked board while generating
+  a snippet aimed at the attacker's. The fix pins the id keys per section out of the generator's
+  flags loop, in lockstep with the constructors in `js/embed.js`. Note the pinned set is
+  section-dependent: `vizId` is NOT spread after flags for the plain `liveboard` case, so a flags
+  `vizId` legitimately reaches that embed and the snippet must keep matching it.
+- 2026-09-27 (S32 round 2): `enterDrill` must call `dtClosePanel()` — `render()` already does
+  (`js/app.js:684`). Without it a drill navigation leaves the PARENT board's detail panel mounted
+  over the DETAIL Liveboard, and an in-flight `dtFetchPage` writes into it perfectly legitimately
+  (`dt === mine`, so the S32 staleness guard cannot catch this one — closing the view is what makes
+  the guard fire).
+- 2026-09-27 (gates, round 2): **a probe that SKIPS what it cannot check silently loses teeth.**
+  `runCodeGenImportProbe` returned `null` for a snippet with no SDK import line and passed on
+  `checked > 0`, so a code-view regression in any one section would merely lower the count and stay
+  green. The fix is a closed expectation: an explicit `NON_SDK_SECTIONS` allow-list of the two
+  host-side (REST/MCP) sections, and any OTHER section that emits no SDK import is a failure. Same
+  shape as the governance lesson that rules partitioning a repo must be allow-lists.
+- 2026-09-27 (S31, UNVERIFIED — the one thing this work cannot self-certify): the bucket range
+  clause `[Col] >= 'MM/DD/YYYY' [Col] <= 'MM/DD/YYYY'` is **extrapolated** from the confirmed
+  single-day form. It is unverified against a live cluster, and this parser's failure mode is not an
+  error — `[Order Date].daily = '…'` returned HTTP 200 with the WRONG rows. `dtFetchPage` therefore
+  treats an EMPTY first page from a range clause as "not understood": it retries once with the
+  bucket-start day clause and logs the downgrade (`rangeDowngraded` on the view, so it happens at
+  most once and subsequent pages keep the downgraded form). A live `Month(...)` click is still
+  needed to confirm the syntax; if it is rejected, the fallback is a per-day `IN` list.
 - 2026-09-27 (S22, answering a customer's open question): **`EmbedEvent.VizPointClick` does NOT fire
   for a Muze Studio custom chart.** Tested on 26.8.0.cl against two MUZE_STUDIO vizzes: the chart
   renders in its own nested iframe (`hc-muze-studio.pdom.thoughtspot.com`), two levels below the host

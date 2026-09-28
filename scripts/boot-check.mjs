@@ -310,6 +310,86 @@ async function runAnswerPreconfirmProbe(browser) {
 // '<modelGuid>::<column>', the clicked point scopes the detail query, record_offset actually
 // advances on "Load more", the KPI/row-count badge reconciles (and shouts when it doesn't), and a
 // javascript: link template is refused at the anchor rather than rendered.
+/**
+ * GENERATOR-WIDE: every SDK identifier the generated snippet USES must appear in the import line
+ * that same snippet emits. Gate this per rail section, not per feature — the drill-through import
+ * gating was wrong for months precisely because the check only ever looked at one section's body,
+ * and a missing name is a ReferenceError on the first paste.
+ */
+const SDK_ID_RE = /\b(init|AuthType|EmbedEvent|HostEvent|RuntimeFilterOp|CustomActionsPosition|CustomActionTarget|Action|Page|LiveboardEmbed|SearchEmbed|AppEmbed|SpotterEmbed|SageEmbed)\b/g;
+
+function importGapsIn(code) {
+  const m = /import \{([\s\S]*?)\} from '@thoughtspot\/visual-embed-sdk';/.exec(code);
+  if (!m) return null;                       // ai-insights / spotter-chat emit no SDK import
+  const imported = new Set(m[1].split(',').map((x) => x.trim()).filter(Boolean));
+  const body = code.slice(m.index + m[0].length)
+    .replace(/^\s*\/\/.*$/gm, '')            // whole-line comments
+    .replace(/\s\/\/\s.*$/gm, '');           // trailing comments ("https://" has no space before //)
+  const used = new Set(body.match(SDK_ID_RE) || []);
+  return [...used].filter((u) => !imported.has(u));
+}
+
+/**
+ * The only two rail sections that legitimately emit no Visual Embed SDK import: both are host-side
+ * REST/MCP flows, not embeds. Every OTHER section must emit one, so the coverage count cannot drift
+ * downwards unnoticed.
+ */
+const NON_SDK_SECTIONS = new Set(['ai-insights', 'spotter-chat']);
+
+async function runCodeGenImportProbe(browser) {
+  // Drill-through demo defaults: enabled + summaryModelId + measureColumn, no other actions or
+  // filters — the setup a reader lands on from the inspector, and the one that emitted
+  // CustomActionsPosition/CustomActionTarget without importing them.
+  const drill = {
+    enabled: true, summaryModelId: 'model-a', measureColumn: 'Total Sales Amount',
+    detailModelId: 'model-b', detailColumns: ['Order Id', 'Order Date'],
+  };
+  const hash = Buffer.from(JSON.stringify({ section: 'liveboard', liveboardId: 'lb-summary', drill }), 'utf8').toString('base64url');
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    await sleep(900);
+    const snippets = await probe.evaluate(async () => {
+      const out = [];
+      const ids = [...document.querySelectorAll('#embed-list li.embed-item')].map((li) => li.dataset.id);
+      const grab = async (label) => {
+        document.querySelector('[data-tab="code"]')?.click();
+        await new Promise((r) => setTimeout(r, 250));
+        out.push({ id: label, code: document.getElementById('code-view')?.textContent || '' });
+      };
+      for (const id of ids) {
+        document.querySelector(`#embed-list li[data-id="${id}"]`)?.click();
+        await new Promise((r) => setTimeout(r, 150));
+        await grab(id);
+      }
+      // …and the drill-through setup that ALSO emits the point-click leg (HostEvent/RuntimeFilterOp).
+      const st = await import('./js/state.js');
+      st.setState({ section: 'drillthrough', drill: { ...st.getState().drill, drillLiveboardId: 'lb-detail', drillVizId: 'viz-CHART', trigger: 'action' } });
+      await new Promise((r) => setTimeout(r, 150));
+      await grab('drillthrough+pointdrill');
+      return { ids, out };
+    });
+    const gaps = [];
+    const skipped = [];
+    let checked = 0;
+    snippets.out.forEach(({ id, code }) => {
+      const missing = importGapsIn(code);
+      // A snippet with no SDK import line is SKIPPED by the gap check, so counting only the checked
+      // ones lets a code-view regression in any section quietly shrink the coverage and stay green.
+      // Everything except the two known non-SDK sections must therefore emit an SDK import.
+      if (missing === null) { skipped.push(id); return; }
+      checked++;
+      if (missing.length) gaps.push(`${id}: ${missing.join(', ')}`);
+    });
+    const unexpectedSkips = skipped.filter((id) => !NON_SDK_SECTIONS.has(id));
+    return { sections: snippets.ids.length, checked, gaps, skipped, unexpectedSkips, probeErrors };
+  } finally {
+    await probe.close();
+  }
+}
+
 async function runDrillthroughProbe(browser) {
   const drill = {
     enabled: true, summaryModelId: 'model-a', measureColumn: 'Meeting count', actionLabel: 'View meetings',
@@ -467,7 +547,94 @@ async function runDrillthroughProbe(browser) {
       await window.__onVizPointClick({ data: { vizId: 'viz-TABLE', clickedPoint: { selectedAttributes: [{ column: { name: 'Stage' }, value: 'Prospecting' }] } } });
       await new Promise((r) => setTimeout(r, 200));
       const scoping = { otherVizDrilled: !!document.getElementById('drill-bar') };
-      return { bodies, first, after, mismatchShown, guard, modal, scoping, tableClick };
+
+      // S31 — a Month(...) bucket covers a RANGE of days. Emitting only the bucket's start lists
+      // the 1st of the month while the KPI covers the whole month, and the badge then flags a
+      // mismatch that is not real. `scopeColumn` is the UNSTRIPPED name on purpose: the user types
+      // 'Order Date', the click reports 'Month(Order Date)', and those must still match.
+      call = 0;
+      document.getElementById('dt-modal')?.remove();
+      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', scopeColumn: 'Order Date', measureColumn: 'Total Sales Amount', trigger: 'action' } });
+      const monthIdx = bodies.length;
+      await window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: { clickedPoint: {
+          selectedAttributes: [],
+          deselectedAttributes: [
+            { column: { name: 'Month(Order Date)' }, value: '1733011200' },
+            { column: { name: 'Territory' }, value: 'Pacific' },
+          ],
+          selectedMeasures: [{ column: { name: 'Total Sales Amount' }, value: '10' }],
+        } },
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      const monthQuery = bodies[monthIdx]?.query_string;
+
+      // S32 — two overlapping clicks: A is SLOW, B is FAST. A's rows must never land in B's panel.
+      const raceCols = ['Meeting Id', 'User Name', 'Booked at'];
+      window.fetch = async (url, opts) => {
+        if (String(url).includes('searchdata')) {
+          const body = JSON.parse(opts.body); bodies.push(body);
+          const isA = /a-scope/.test(body.query_string);
+          await new Promise((r) => setTimeout(r, isA ? 500 : 20));
+          const rows = isA ? [['a1', 'A', '2026-01-01'], ['a2', 'A', '2026-01-02']]
+            : [['b1', 'B', '2026-02-01'], ['b2', 'B', '2026-02-02']];
+          return new Response(JSON.stringify({ contents: [{ column_names: raceCols, data_rows: rows, available_data_row_count: 2, returned_data_row_count: 2 }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return real(url, opts);
+      };
+      document.getElementById('dt-modal')?.remove();
+      st.setState({ drill: { ...st.getState().drill, presentation: 'panel', scopeColumn: 'Stage' } });
+      const clickScope = (v) => window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: { clickedPoint: {
+          selectedAttributes: [{ column: { name: 'Stage' }, value: v }],
+          selectedMeasures: [{ column: { name: 'Total Sales Amount' }, value: '5' }],
+        } },
+      });
+      const pA = clickScope('a-scope');
+      await new Promise((r) => setTimeout(r, 60));
+      const pB = clickScope('b-scope');
+      await Promise.all([pA, pB]);
+      await new Promise((r) => setTimeout(r, 800));   // long enough for A's slow page to land
+      const rp = document.getElementById('dt-panel');
+      const race = {
+        rows: rp?.querySelectorAll('.dt-table tbody tr').length,
+        firstCell: rp?.querySelector('.dt-table tbody tr td')?.textContent,
+        moreButtons: rp?.querySelectorAll('.dt-more').length,
+      };
+
+      // S30 — a point-click drill must carry NUMERIC epochs on the UNDERLYING column. The drill
+      // re-renders a real embed; that is contained inside this async dispatcher, so any failure
+      // there surfaces as a rejected promise here rather than a page error.
+      document.getElementById('dt-panel')?.remove();
+      st.setState({ drill: { ...st.getState().drill, trigger: 'action', drillLiveboardId: 'lb-detail', drillVizId: '', scopeColumn: '' } });
+      window.__TS_PLAYGROUND_PROBE = true;   // opt in to the carried-filter diagnostic
+      window.__lastDrillFilters = null;
+      // Park the embed container so the drill's doRender cannot create a live iframe against the
+      // (deliberately absent) host. The SDK then fails fast INSIDE the async dispatcher, which is
+      // a rejected promise this probe catches — not a page error.
+      const cont = document.getElementById('ts-embed-container');
+      if (cont) cont.id = 'ts-embed-container-parked';
+      try {
+        await window.__onVizPointClick({ data: { vizId: 'viz-TABLE', clickedPoint: {
+          selectedAttributes: [],
+          deselectedAttributes: [
+            { column: { name: 'Employee Name' }, value: 'Lynn Tsoflias' },
+            { column: { name: 'Day(Order Date)' }, value: '1769644800' },
+          ],
+          selectedMeasures: [{ column: { name: 'Total Sales Amount' }, value: '134280.9824' }],
+        } } });
+      } catch (_) { /* only the carried filters matter here, not the detail board's render */ }
+      if (cont) cont.id = 'ts-embed-container';
+      await new Promise((r) => setTimeout(r, 250));
+      const carried = {
+        filters: (window.__lastDrillFilters || []).map((f) => ({
+          columnName: f.columnName, values: f.values, types: f.values.map((v) => typeof v),
+        })),
+        bar: document.querySelector('#drill-bar .drill-filters')?.textContent || '',
+      };
+      return { bodies, first, after, mismatchShown, guard, modal, scoping, tableClick, monthQuery, race, carried };
     });
 
     const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
@@ -492,7 +659,68 @@ async function runDrillthroughProbe(browser) {
       && t.title === 'Total Sales Amount' && /134,280\.9824/.test(t.summary || '')
       && /Employee Name: Lynn Tsoflias/.test(t.summary || '');
     const drillScopeOk = run.scoping.otherVizDrilled === false;
-    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk, drillScopeOk, probeErrors };
+    // 1733011200 = 2024-12-01 UTC. The whole month, in the same token syntax the day clause uses.
+    const monthRangeOk = run.monthQuery
+      === "[Meeting Id] [User Name] [Booked at] [Order Date] >= '12/01/2024' [Order Date] <= '12/31/2024'";
+    const raceOk = run.race.rows === 2 && run.race.firstCell === 'b1' && run.race.moreButtons === 1;
+    const c = run.carried.filters;
+    const dateCarried = c.find((f) => f.columnName === 'Order Date');
+    const carriedOk = c.length === 2
+      && !c.some((f) => /[()]/.test(f.columnName))                       // no Day(...) wrapper survives
+      && !!dateCarried && dateCarried.values.length === 1
+      && dateCarried.values[0] === 1769644800 && dateCarried.types[0] === 'number'
+      && /Order Date: 2026-01-29/.test(run.carried.bar);
+    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk,
+      drillScopeOk, monthRangeOk, raceOk, carriedOk, monthQuery: run.monthQuery, carried: run.carried, probeErrors };
+  } finally {
+    await probe.close();
+  }
+}
+
+/**
+ * A shared link's `flags` are NOT key-whitelisted by state.js sanitize, so a link can carry
+ * `flags.<section>.liveboardId`. doRender spreads the explicit ids AFTER ...flags, so the render
+ * uses the picked board — and the generated snippet must agree, or the user copies code aimed at a
+ * different object than the tool just showed them.
+ */
+async function runFlagOverrideProbe(browser) {
+  const hash = Buffer.from(JSON.stringify({
+    section: 'liveboard', liveboardId: 'GOOD-LB',
+    // Only liveboardId is planted: `vizId` is NOT spread after ...flags for the 'liveboard' case,
+    // so a flags vizId legitimately reaches the real embed there and the snippet must keep matching
+    // it. The claim under test is narrower — a flag cannot re-point the PICKED object.
+    flags: { liveboard: { liveboardId: 'ATTACKER-LB', fullHeight: true } },
+  }), 'utf8').toString('base64url');
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    await sleep(900);
+    const r = await probe.evaluate(async () => {
+      const st = await import('./js/state.js');
+      document.querySelector('[data-tab="code"]')?.click();
+      await new Promise((r2) => setTimeout(r2, 400));
+      return {
+        // POSITIVE CONTROL: the hostile flag must actually have survived sanitize, or every
+        // assertion below passes vacuously.
+        flagSurvived: st.getState().flags?.liveboard?.liveboardId === 'ATTACKER-LB',
+        benignFlagSurvived: st.getState().flags?.liveboard?.fullHeight === true,
+        renderedId: window.TS_CONFIG?.liveboardId,
+        code: document.getElementById('code-view')?.textContent || '',
+      };
+    });
+    return {
+      flagSurvived: r.flagSurvived,
+      benignFlagSurvived: r.benignFlagSurvived,
+      renderUsesPicked: r.renderedId === 'GOOD-LB',
+      // The snippet must name the picked board, must not mention the attacker's at all, and must
+      // still carry the benign flag (proof the filter is narrow, not a blanket flag drop).
+      codeUsesPicked: /liveboardId: 'GOOD-LB'/.test(r.code),
+      codeFreeOfAttacker: !/ATTACKER/.test(r.code),
+      codeKeepsBenignFlag: /fullHeight: true/.test(r.code),
+      probeErrors,
+    };
   } finally {
     await probe.close();
   }
@@ -643,6 +871,18 @@ try {
   const urlActOk = urlAct.dispatcherReady && !urlAct.pwned && urlAct.hostileOpened.length === 0
     && urlAct.goodOpened && urlAct.probeErrors.length === 0;
 
+  const flagOv = await runFlagOverrideProbe(browser);
+  console.log('');
+  console.log(`Flag-override probe (S29) — hostile flags.<section>.liveboardId survived sanitize (positive control): ${flagOv.flagSurvived}`);
+  console.log(`Flag-override probe (S29) — render uses the PICKED liveboardId: ${flagOv.renderUsesPicked}`);
+  console.log(`Flag-override probe (S29) — generated snippet uses the PICKED liveboardId: ${flagOv.codeUsesPicked}`);
+  console.log(`Flag-override probe (S29) — generated snippet never mentions the flag's id: ${flagOv.codeFreeOfAttacker}`);
+  console.log(`Flag-override probe (S29) — a BENIGN flag is still emitted (filter is narrow): ${flagOv.codeKeepsBenignFlag}`);
+  flagOv.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const flagOvOk = flagOv.flagSurvived && flagOv.benignFlagSurvived && flagOv.renderUsesPicked
+    && flagOv.codeUsesPicked && flagOv.codeFreeOfAttacker && flagOv.codeKeepsBenignFlag
+    && flagOv.probeErrors.length === 0;
+
   const dtp = await runDrillthroughProbe(browser);
   console.log('');
   console.log(`Drill-through probe (S22) — rail item + inspector panel render: ${dtp.railOk && dtp.panelOk}`);
@@ -654,13 +894,30 @@ try {
   console.log(`Drill-through probe (S22) — modal record list: title/period/summary, rows+chevrons, Esc closes: ${dtp.modalOk}`);
   console.log(`Drill-through probe (S22) — TABLE right-click (deselectedAttributes) scopes the query + badge: ${dtp.tableClickOk}`);
   console.log(`Drill-through probe (S22) — a click from a DIFFERENT viz does not drill away: ${dtp.drillScopeOk}`);
+  console.log(`Drill-through probe (S31) — a Month(...) click queries the WHOLE month, not just the 1st: ${dtp.monthRangeOk}`);
+  console.log(`  query: ${dtp.monthQuery}`);
+  console.log(`Drill-through probe (S32) — a slow first click's rows never land in the second click's panel: ${dtp.raceOk}`);
+  console.log(`Drill-through probe (S30) — the drill carries NUMERIC epochs on the unwrapped column: ${dtp.carriedOk}`);
+  console.log(`  carried: ${JSON.stringify(dtp.carried?.filters ?? [])}`);
   dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
   const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
-    && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.tableClickOk && dtp.drillScopeOk && dtp.probeErrors.length === 0;
+    && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.tableClickOk && dtp.drillScopeOk
+    && dtp.monthRangeOk && dtp.raceOk && dtp.carriedOk && dtp.probeErrors.length === 0;
+
+  const gen = await runCodeGenImportProbe(browser);
+  console.log('');
+  console.log(`Code-gen import probe (S29) — sections walked: ${gen.sections} (snippets with an SDK import: ${gen.checked})`);
+  console.log(`Code-gen import probe (S29) — every SDK identifier used is also imported: ${gen.gaps.length === 0}`);
+  gen.gaps.forEach((g) => console.log('  - missing import:', g));
+  console.log(`Code-gen import probe (S29) — every embed section still emits SDK code: ${gen.unexpectedSkips.length === 0}`);
+  gen.unexpectedSkips.forEach((id) => console.log('  - section emitted no SDK import:', id));
+  gen.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const genOk = gen.checked > 0 && gen.gaps.length === 0 && gen.unexpectedSkips.length === 0
+    && gen.probeErrors.length === 0;
 
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
-    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk && dtOk;
+    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk && dtOk && genOk && flagOvOk;
   console.log(ok ? '\nBOOT CHECK: PASS' : '\nBOOT CHECK: FAIL');
 } finally {
   try { await browser?.close(); } catch { /* already gone */ }
