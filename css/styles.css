@@ -57,12 +57,11 @@
 /* One keyboard-focus indicator for everything that doesn't paint its own.
    --accent is only 2.02:1 on white (below the 3:1 non-text floor of WCAG 1.4.11),
    so the outline uses --accent-ink (5.07:1) and the theme's signature soft halo
-   sits outside it. */
-:focus-visible {
-  outline: 2px solid var(--accent-ink);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 5px var(--accent-soft);
-}
+   sits outside it.
+
+   The rule itself lives at the END of this file — see "Keyboard focus ring". At equal
+   specificity the last declaration wins, and ~8 later rules set `outline: none`, which
+   would otherwise cancel it. */
 
 body {
   font-family: 'Inter', system-ui, sans-serif;
@@ -1677,3 +1676,17 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
 .smcp-input { flex: 1 1 320px; height: 38px; }
 .smcp-send, .smcp-reset { height: 38px; flex: 0 0 auto; white-space: nowrap; }
 .smcp-send { min-width: 64px; }
+
+/* ── Keyboard focus ring — MUST STAY LAST ─────────────────────────────────────────────────────
+   Equal specificity (0,1,0) with the `outline: none` declarations on .inp, .sel-btn,
+   .sel-search and the wh-* inputs, so source order decides. Placed last so the ring reaches
+   every control instead of only the ones that never opted out; those rules keep their
+   border-color treatment, this only restores the outline and halo. */
+:focus-visible,
+.wh-email-input:focus-visible, .wh-email-textarea:focus-visible,
+.wh-comp-input:focus-visible, .wh-comp-msg-input:focus-visible,
+.sel-btn:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--accent-soft);
+}
