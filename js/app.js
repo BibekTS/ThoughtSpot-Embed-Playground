@@ -2823,11 +2823,13 @@ function buildEmbedCustomActions(s) {
       target: CustomActionTarget.LIVEBOARD,
     });
   }
-  // Drill-through demo — "View detail", scoped to a SINGLE measure column so it shows up only in
-  // that column's right-click menu. The scoping key is dataModelIds.modelColumnNames, whose entries
-  // are '<modelGuid>::<columnName>' (verified against the SDK docs for 1.49.0; requires 1.43.0+ /
-  // 10.14.0.cl+). Without both the model GUID and the column the action would apply to every viz,
-  // so it is only injected when both are configured. The dispatcher routes it to openDetailPanel().
+  // Drill-through demo — "View detail". The scoping key is dataModelIds.modelColumnNames, whose
+  // entries are '<modelGuid>::<columnName>' (SDK 1.43.0+ / 10.14.0.cl+). NOTE it scopes to a
+  // VISUALIZATION, not to a cell: the action shows on every cell of any viz built on that column,
+  // neighbouring measures included (verified live on 26.8.0.cl). That is why dtClickedMeasure()
+  // reports the CONFIGURED measure rather than whichever cell was right-clicked. Without both the
+  // model GUID and the column it would apply to every viz, so it is only injected when both are
+  // set. The dispatcher routes it to openDetailPanel().
   const d = s.drill || {};
   if (s.section === 'drillthrough' && d.enabled && d.summaryModelId && d.measureColumn) {
     actions.push({
