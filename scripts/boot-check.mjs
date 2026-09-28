@@ -741,11 +741,18 @@ async function runFlagOverrideProbe(browser) {
     await sleep(900);
     const r = await probe.evaluate(async () => {
       const st = await import('./js/state.js');
+      // Layer 1 (S39): sanitize() allowlists flag keys, so the link's liveboardId must be gone.
+      const strippedByLink = st.getState().flags?.liveboard?.liveboardId === undefined;
+      // Layer 2 (S29): plant the hostile flag past sanitize (setState does not sanitize) so the
+      // render/code-gen assertions below are not vacuous.
+      st.setState({ flags: { liveboard: { liveboardId: 'ATTACKER-LB', fullHeight: true } } });
+      await new Promise((r2) => setTimeout(r2, 400));
       document.querySelector('[data-tab="code"]')?.click();
       await new Promise((r2) => setTimeout(r2, 400));
       return {
-        // POSITIVE CONTROL: the hostile flag must actually have survived sanitize, or every
-        // assertion below passes vacuously.
+        strippedByLink,
+        // POSITIVE CONTROL: the hostile flag must actually be in state, or every assertion below
+        // passes vacuously.
         flagSurvived: st.getState().flags?.liveboard?.liveboardId === 'ATTACKER-LB',
         benignFlagSurvived: st.getState().flags?.liveboard?.fullHeight === true,
         renderedId: window.TS_CONFIG?.liveboardId,
@@ -753,6 +760,7 @@ async function runFlagOverrideProbe(browser) {
       };
     });
     return {
+      strippedByLink: r.strippedByLink,
       flagSurvived: r.flagSurvived,
       benignFlagSurvived: r.benignFlagSurvived,
       renderUsesPicked: r.renderedId === 'GOOD-LB',
@@ -1201,13 +1209,14 @@ try {
 
   const flagOv = await runFlagOverrideProbe(browser);
   console.log('');
-  console.log(`Flag-override probe (S29) — hostile flags.<section>.liveboardId survived sanitize (positive control): ${flagOv.flagSurvived}`);
+  console.log(`Flag-override probe (S39) — sanitize strips a link's flags.<section>.liveboardId: ${flagOv.strippedByLink}`);
+  console.log(`Flag-override probe (S29) — hostile flag planted past sanitize (positive control): ${flagOv.flagSurvived}`);
   console.log(`Flag-override probe (S29) — render uses the PICKED liveboardId: ${flagOv.renderUsesPicked}`);
   console.log(`Flag-override probe (S29) — generated snippet uses the PICKED liveboardId: ${flagOv.codeUsesPicked}`);
   console.log(`Flag-override probe (S29) — generated snippet never mentions the flag's id: ${flagOv.codeFreeOfAttacker}`);
   console.log(`Flag-override probe (S29) — a BENIGN flag is still emitted (filter is narrow): ${flagOv.codeKeepsBenignFlag}`);
   flagOv.probeErrors.forEach((e) => console.log('  - probe page:', e));
-  const flagOvOk = flagOv.flagSurvived && flagOv.benignFlagSurvived && flagOv.renderUsesPicked
+  const flagOvOk = flagOv.strippedByLink && flagOv.flagSurvived && flagOv.benignFlagSurvived && flagOv.renderUsesPicked
     && flagOv.codeUsesPicked && flagOv.codeFreeOfAttacker && flagOv.codeKeepsBenignFlag
     && flagOv.probeErrors.length === 0;
 
