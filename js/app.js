@@ -2838,6 +2838,10 @@ function buildEmbedCustomActions(s) {
       position: CustomActionsPosition.CONTEXTMENU,            // right-click menu on the data point
       target: CustomActionTarget.VIZ,                         // per-viz, so the clicked row comes through
       dataModelIds: { modelColumnNames: [`${d.summaryModelId}::${d.measureColumn}`] },
+      // Pin it to named visualizations when the setup asks for it. Without this the column scoping
+      // alone puts the action on EVERY viz built on that column, which on a busy Liveboard is most
+      // of the board. metadataIds also accepts answerIds and liveboardIds (SDK 1.43.0+).
+      ...(d.actionVizIds?.length ? { metadataIds: { vizIds: d.actionVizIds } } : {}),
     });
   }
   return actions;
@@ -6471,6 +6475,36 @@ function sectionDrillthrough(s) {
   c.appendChild(textField('Measure column', d.measureColumn, v => { set({ measureColumn: v }); render(); },
     'e.g. Meeting count'));
   c.appendChild(el('div', 'fld-hint', 'Together these scope the action as &quot;&lt;modelGuid&gt;::&lt;column&gt;&quot;. Leave either blank and no action is injected.'));
+
+  // Column scoping alone puts the action on every viz built on that column. Naming visualizations
+  // here adds metadataIds.vizIds, which is the only way to keep it off the rest of the board.
+  const pinned = d.actionVizIds || [];
+  if (s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
+    loadViz(s.liveboardId).then(() => renderInspector());
+  }
+  const allViz = vizCache[s.liveboardId] || [];
+  const pickable = allViz.filter(v => !pinned.includes(v.id));
+  c.appendChild(labeledSelect('Show the action only on', '', pickable,
+    v => { if (v) set({ actionVizIds: [...pinned, v] }); renderInspector(); render(); },
+    _vizLoading.has(s.liveboardId) ? 'Loading\u2026' : (pinned.length ? '' : 'Every visualization built on that column'),
+    !connected || !pickable.length));
+  if (pinned.length) {
+    const chips = el('div', 'dpre');
+    pinned.forEach(id => {
+      const nm = (allViz.find(v => v.id === id) || {}).name || id;
+      const chip = el('span', 'dpre-chip');
+      const lbl = el('button', 'dpre-go'); lbl.type = 'button'; lbl.disabled = true;
+      lbl.textContent = nm;                      // viz names come from TS — textContent only
+      lbl.title = id;
+      const x = el('button', 'dpre-x'); x.type = 'button'; x.textContent = '\u2715';
+      x.setAttribute('aria-label', `Stop showing the action on ${nm}`);
+      x.addEventListener('click', () => { set({ actionVizIds: pinned.filter(p => p !== id) }); renderInspector(); render(); });
+      chip.append(lbl, x);
+      chips.appendChild(chip);
+    });
+    c.appendChild(chips);
+  }
+  c.appendChild(el('div', 'fld-hint', 'Leave empty and the action appears on every visualization built on the measure column, which on a busy Liveboard is most of the board.'));
   c.appendChild(labeledSelect('Detail Model', d.detailModelId, wsOpts, v => { set({ detailModelId: v }); renderInspector(); },
     'The event-grain Model queried by POST searchdata, one row per event.', !connected));
   c.appendChild(textField('Detail columns', (d.detailColumns || []).join(', '),
@@ -6931,7 +6965,15 @@ function generateCode() {
     if (dateBtn) opt.push(`    { id: '${DATE_ACTION_ID}', name: 'Date', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.LIVEBOARD },`);
     // Scoped to ONE column: dataModelIds.modelColumnNames entries are '<modelGuid>::<columnName>',
     // so the action shows up only in that column's context menu (SDK 1.43.0+ / 10.14.0.cl+).
-    if (dtAction) opt.push(`    { id: '${DT_ACTION_ID}', name: '${esc(dtAction.actionLabel || 'View detail')}', position: CustomActionsPosition.CONTEXTMENU, target: CustomActionTarget.VIZ, dataModelIds: { modelColumnNames: ['${esc(dtAction.summaryModelId)}::${esc(dtAction.measureColumn)}'] } },`);
+    if (dtAction) {
+      // metadataIds.vizIds is what confines the action to named visualizations; without it the
+      // column scoping alone puts it on every viz built on that column.
+      const pinnedIds = (dtAction.actionVizIds || []).map(v => `'${esc(v)}'`).join(', ');
+      opt.push(`    { id: '${DT_ACTION_ID}', name: '${esc(dtAction.actionLabel || 'View detail')}', position: CustomActionsPosition.CONTEXTMENU, target: CustomActionTarget.VIZ,`);
+      opt.push(`      dataModelIds: { modelColumnNames: ['${esc(dtAction.summaryModelId)}::${esc(dtAction.measureColumn)}'] },`);
+      if (pinnedIds) opt.push(`      metadataIds: { vizIds: [${pinnedIds}] }, // only these visualizations`);
+      opt.push('    },');
+    }
     opt.push('  ],');
   }
   if (s.runtimeParameters.length) { opt.push('  runtimeParameters: ['); s.runtimeParameters.forEach(p => opt.push(`    { name: '${esc(p.name)}', value: '${esc(p.value)}' },`)); opt.push('  ],'); }

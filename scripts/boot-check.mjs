@@ -459,6 +459,7 @@ async function runDrillthroughProbe(browser) {
       return document.getElementById('code-view')?.textContent || document.getElementById('bottom')?.textContent || '';
     });
     const codeOk = code.includes("modelColumnNames: ['model-a::Meeting count']")
+      && !/metadataIds/.test(code)   // nothing pinned yet, so no vizIds clause
       && code.includes('CustomActionsPosition.CONTEXTMENU') && code.includes('CustomActionTarget.VIZ')
       && code.includes('EmbedEvent.VizPointClick') && code.includes('HostEvent.GetFilters')
       && code.includes('record_offset: offset');
@@ -608,6 +609,18 @@ async function runDrillthroughProbe(browser) {
       presets.restored = back.measureColumn === 'Meeting count' && back.recordNoun === 'meetings';
       presets.noNewKeys = Object.keys(back).length === keysBefore && !('bogusKey' in back);
       presets.noPollution = ({}).polluted === undefined;
+      // Pinning: naming visualizations must add metadataIds.vizIds to the declaration, and
+      // clearing it must take the clause back out. This is the contract the app controls; whether
+      // ThoughtSpot then hides the item on other vizzes is a live-UI behaviour, not asserted here.
+      const pinning = {};
+      st.setState({ drill: { ...st.getState().drill, actionVizIds: ['viz-ONLY-THIS'] } });
+      await new Promise((r) => setTimeout(r, 300));
+      const withPin = document.getElementById('code-view')?.textContent || '';
+      pinning.added = /metadataIds: \{ vizIds: \['viz-ONLY-THIS'\] \}/.test(withPin);
+      st.setState({ drill: { ...st.getState().drill, actionVizIds: [] } });
+      await new Promise((r) => setTimeout(r, 300));
+      pinning.removed = !/metadataIds/.test(document.getElementById('code-view')?.textContent || '');
+
       presets.folded = [...document.querySelectorAll('.insp-sub')].length >= 3
         && [...document.querySelectorAll('.insp-sub')].every((x) => !x.open);
 
@@ -706,7 +719,7 @@ async function runDrillthroughProbe(browser) {
         })),
         bar: document.querySelector('#drill-bar .drill-filters')?.textContent || '',
       };
-      return { presets, bodies, first, after, mismatchShown, guard, modal, scoping, tableClick, monthQuery, race, carried };
+      return { pinning, presets, bodies, first, after, mismatchShown, guard, modal, scoping, tableClick, monthQuery, race, carried };
     });
 
     const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
@@ -732,6 +745,7 @@ async function runDrillthroughProbe(browser) {
       && /Employee Name: Lynn Tsoflias/.test(t.summary || '');
     const pr = run.presets || {};
     const presetOk = pr.stored && pr.restored && pr.noNewKeys && pr.noPollution && pr.folded;
+    const pinOk = !!(run.pinning && run.pinning.added && run.pinning.removed);
     const drillScopeOk = run.scoping.otherVizDrilled === false;
     // 1733011200 = 2024-12-01 UTC. The whole month, in the same token syntax the day clause uses.
     const monthRangeOk = run.monthQuery
@@ -745,7 +759,7 @@ async function runDrillthroughProbe(browser) {
       && dateCarried.values[0] === 1769644800 && dateCarried.types[0] === 'number'
       && /Order Date: 2026-01-29/.test(run.carried.bar);
     return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk,
-      presetOk, drillScopeOk, monthRangeOk, raceOk, carriedOk, monthQuery: run.monthQuery, carried: run.carried, probeErrors };
+      presetOk, pinOk, drillScopeOk, monthRangeOk, raceOk, carriedOk, monthQuery: run.monthQuery, carried: run.carried, probeErrors };
   } finally {
     await probe.close();
   }
@@ -1264,6 +1278,7 @@ try {
   console.log(`Drill-through probe (S22) — TABLE right-click (deselectedAttributes) scopes the query + badge: ${dtp.tableClickOk}`);
   console.log(`Drill-through probe (S22) — a click from a DIFFERENT viz does not drill away: ${dtp.drillScopeOk}`);
   console.log(`Drill-through probe (S42) — preset saves, reapplies, folds, admits no foreign keys: ${dtp.presetOk}`);
+  console.log(`Drill-through probe (S43) — naming visualizations adds and removes metadataIds.vizIds: ${dtp.pinOk}`);
   console.log(`Drill-through probe (S31) — a Month(...) click queries the WHOLE month, not just the 1st: ${dtp.monthRangeOk}`);
   console.log(`  query: ${dtp.monthQuery}`);
   console.log(`Drill-through probe (S32) — a slow first click's rows never land in the second click's panel: ${dtp.raceOk}`);
@@ -1272,7 +1287,8 @@ try {
   dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
   const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
     && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.tableClickOk && dtp.drillScopeOk
-    && dtp.monthRangeOk && dtp.raceOk && dtp.carriedOk && dtp.presetOk && dtp.probeErrors.length === 0;
+    && dtp.monthRangeOk && dtp.raceOk && dtp.carriedOk && dtp.presetOk && dtp.pinOk
+    && dtp.probeErrors.length === 0;
 
   const gen = await runCodeGenImportProbe(browser);
   console.log('');
