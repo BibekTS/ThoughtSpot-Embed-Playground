@@ -581,6 +581,36 @@ async function runDrillthroughProbe(browser) {
         summary: tp?.querySelector('.dt-summary')?.textContent,
       };
 
+      // Presets: save the current setup, wipe the slice, reapply, confirm it came back. Also that a
+      // hand-edited localStorage entry cannot introduce keys the drill slice does not already have.
+      st.setState({ drill: { ...st.getState().drill, measureColumn: 'Meeting count', recordNoun: 'meetings' } });
+      const presets = {};
+      document.querySelector('.dpre-add')?.click();
+      await new Promise((r) => setTimeout(r, 200));
+      const nameInput = document.querySelector('.dpre-input');
+      if (nameInput) {
+        nameInput.value = 'probe setup';
+        document.querySelector('.dpre-add--cta')?.click();
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      presets.stored = !!(JSON.parse(localStorage.getItem('tsp_drill_presets_v1') || '{}')['probe setup']);
+      const raw = JSON.parse(localStorage.getItem('tsp_drill_presets_v1') || '{}');
+      if (raw['probe setup']) {
+        raw['probe setup'].drill.bogusKey = 'nope';                 // a key the slice does not have
+        raw['probe setup'].drill['__proto__'] = { polluted: 1 };    // and a polluting one
+        localStorage.setItem('tsp_drill_presets_v1', JSON.stringify(raw));
+      }
+      st.setState({ drill: { ...st.getState().drill, measureColumn: '', recordNoun: 'rows' } });
+      const keysBefore = Object.keys(st.getState().drill).length;
+      [...document.querySelectorAll('.dpre-go')].find((b) => b.textContent === 'probe setup')?.click();
+      await new Promise((r) => setTimeout(r, 300));
+      const back = st.getState().drill;
+      presets.restored = back.measureColumn === 'Meeting count' && back.recordNoun === 'meetings';
+      presets.noNewKeys = Object.keys(back).length === keysBefore && !('bogusKey' in back);
+      presets.noPollution = ({}).polluted === undefined;
+      presets.folded = [...document.querySelectorAll('.insp-sub')].length >= 3
+        && [...document.querySelectorAll('.insp-sub')].every((x) => !x.open);
+
       // Drill scoping: VizPointClick fires for EVERY viz on the board, so a click from a viz other
       // than the configured one must not drill away. Only the negative case is asserted here — the
       // positive case re-renders a real embed, which this stubbed page has no business doing.
@@ -676,7 +706,7 @@ async function runDrillthroughProbe(browser) {
         })),
         bar: document.querySelector('#drill-bar .drill-filters')?.textContent || '',
       };
-      return { bodies, first, after, mismatchShown, guard, modal, scoping, tableClick, monthQuery, race, carried };
+      return { presets, bodies, first, after, mismatchShown, guard, modal, scoping, tableClick, monthQuery, race, carried };
     });
 
     const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
@@ -700,6 +730,8 @@ async function runDrillthroughProbe(browser) {
     const tableClickOk = t.query === "[Meeting Id] [User Name] [Booked at] [Employee Name] = 'Lynn Tsoflias'"
       && t.title === 'Total Sales Amount' && /134,280\.9824/.test(t.summary || '')
       && /Employee Name: Lynn Tsoflias/.test(t.summary || '');
+    const pr = run.presets || {};
+    const presetOk = pr.stored && pr.restored && pr.noNewKeys && pr.noPollution && pr.folded;
     const drillScopeOk = run.scoping.otherVizDrilled === false;
     // 1733011200 = 2024-12-01 UTC. The whole month, in the same token syntax the day clause uses.
     const monthRangeOk = run.monthQuery
@@ -713,7 +745,7 @@ async function runDrillthroughProbe(browser) {
       && dateCarried.values[0] === 1769644800 && dateCarried.types[0] === 'number'
       && /Order Date: 2026-01-29/.test(run.carried.bar);
     return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk,
-      drillScopeOk, monthRangeOk, raceOk, carriedOk, monthQuery: run.monthQuery, carried: run.carried, probeErrors };
+      presetOk, drillScopeOk, monthRangeOk, raceOk, carriedOk, monthQuery: run.monthQuery, carried: run.carried, probeErrors };
   } finally {
     await probe.close();
   }
@@ -1231,6 +1263,7 @@ try {
   console.log(`Drill-through probe (S22) — modal record list: title/period/summary, rows+chevrons, Esc closes: ${dtp.modalOk}`);
   console.log(`Drill-through probe (S22) — TABLE right-click (deselectedAttributes) scopes the query + badge: ${dtp.tableClickOk}`);
   console.log(`Drill-through probe (S22) — a click from a DIFFERENT viz does not drill away: ${dtp.drillScopeOk}`);
+  console.log(`Drill-through probe (S42) — preset saves, reapplies, folds, admits no foreign keys: ${dtp.presetOk}`);
   console.log(`Drill-through probe (S31) — a Month(...) click queries the WHOLE month, not just the 1st: ${dtp.monthRangeOk}`);
   console.log(`  query: ${dtp.monthQuery}`);
   console.log(`Drill-through probe (S32) — a slow first click's rows never land in the second click's panel: ${dtp.raceOk}`);
@@ -1239,7 +1272,7 @@ try {
   dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
   const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
     && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.tableClickOk && dtp.drillScopeOk
-    && dtp.monthRangeOk && dtp.raceOk && dtp.carriedOk && dtp.probeErrors.length === 0;
+    && dtp.monthRangeOk && dtp.raceOk && dtp.carriedOk && dtp.presetOk && dtp.probeErrors.length === 0;
 
   const gen = await runCodeGenImportProbe(browser);
   console.log('');

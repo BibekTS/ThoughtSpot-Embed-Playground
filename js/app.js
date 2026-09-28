@@ -6336,6 +6336,110 @@ function renderDetailPanel() {
   panel.appendChild(foot);
 }
 
+// ── Drill-through presets ────────────────────────────────────────────────────
+// A whole drill-through setup is ten-odd fields, and re-entering them (or hunting for an old
+// share link) every time is the main friction in demoing this. Presets live in localStorage, per
+// browser: they are a convenience, not shareable state, so they deliberately do NOT go through
+// state.js or the #s= hash. The share link remains the way to hand a setup to someone else.
+const DRILL_PRESETS_KEY = 'tsp_drill_presets_v1';
+let dpreNaming = false;      // the Save control is showing its name input
+let dpreArmed = '';          // preset name whose ✕ is armed for a second, confirming click
+
+function drillPresets() {
+  try {
+    const raw = localStorage.getItem(DRILL_PRESETS_KEY);
+    const obj = raw ? JSON.parse(raw) : null;
+    return (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : {};
+  } catch (_) { return {}; }
+}
+function writeDrillPresets(all) {
+  try { localStorage.setItem(DRILL_PRESETS_KEY, JSON.stringify(all)); } catch (_) { /* private mode */ }
+}
+
+/**
+ * Apply a saved preset. The patch is built by walking the CURRENT drill slice's own keys, so a
+ * hand-edited or corrupted localStorage entry can only ever set keys the app already has — no
+ * prototype-polluting key can make it through, and no unknown field is introduced.
+ */
+function applyDrillPreset(name) {
+  const p = drillPresets()[name];
+  if (!p) return;
+  const cur = getState().drill || {};
+  const patch = {};
+  for (const k of Object.keys(cur)) {
+    if (Object.prototype.hasOwnProperty.call(p.drill || {}, k)) patch[k] = p.drill[k];
+  }
+  const next = { drill: { ...cur, ...patch } };
+  if (p.liveboardId) next.liveboardId = String(p.liveboardId).slice(0, 128);
+  setState(next);
+  logEvent('Drill-through', `preset applied: ${name}`);
+  renderInspector();
+  render();
+}
+
+/** Collapsible sub-group inside an accordion, so the panel opens on the few fields that matter. */
+function subGroup(title, openByDefault = false) {
+  const wrap = el('details', 'insp-sub');
+  if (openByDefault) wrap.open = true;
+  const sum = el('summary', 'insp-sub-sum');
+  sum.textContent = title;                       // static, developer-authored
+  const body = el('div', 'insp-sub-body');
+  wrap.append(sum, body);
+  return { el: wrap, body };
+}
+
+/** The preset row: saved setups as chips, plus a control to name and store the current one. */
+function drillPresetBar(s) {
+  const all = drillPresets();
+  const names = Object.keys(all).sort((a, b) => a.localeCompare(b));
+  const bar = el('div', 'dpre');
+
+  names.forEach(name => {
+    const chip = el('span', 'dpre-chip');
+    const go = el('button', 'dpre-go'); go.type = 'button';
+    go.textContent = name;                       // user-typed — textContent, never innerHTML
+    go.title = 'Apply this setup';
+    go.addEventListener('click', () => { dpreArmed = ''; applyDrillPreset(name); });
+    const x = el('button', `dpre-x${dpreArmed === name ? ' dpre-x--armed' : ''}`); x.type = 'button';
+    x.textContent = dpreArmed === name ? 'Delete?' : '\u2715';
+    x.setAttribute('aria-label', `Delete preset ${name}`);
+    x.addEventListener('click', () => {
+      if (dpreArmed !== name) { dpreArmed = name; renderInspector(); return; }
+      const next = drillPresets(); delete next[name]; writeDrillPresets(next);
+      dpreArmed = ''; renderInspector();
+    });
+    chip.append(go, x);
+    bar.appendChild(chip);
+  });
+
+  if (dpreNaming) {
+    const inp = el('input', 'inp dpre-input'); inp.type = 'text';
+    inp.placeholder = 'Name this setup'; inp.maxLength = 60;
+    const commit = () => {
+      const name = inp.value.trim();
+      if (!name) { dpreNaming = false; renderInspector(); return; }
+      const cur = getState();
+      writeDrillPresets({ ...drillPresets(), [name]: { liveboardId: cur.liveboardId, drill: { ...cur.drill } } });
+      dpreNaming = false; renderInspector();
+    };
+    inp.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') commit();
+      if (ev.key === 'Escape') { dpreNaming = false; renderInspector(); }
+    });
+    const ok = el('button', 'dpre-add dpre-add--cta'); ok.type = 'button'; ok.textContent = 'Save';
+    ok.addEventListener('click', commit);
+    bar.append(inp, ok);
+    setTimeout(() => inp.focus(), 0);
+  } else {
+    const add = el('button', `dpre-add${names.length ? '' : ' dpre-add--cta'}`); add.type = 'button';
+    add.textContent = names.length ? '\uFF0B Save current' : '\uFF0B Save this setup as a preset';
+    add.title = 'Store these settings in this browser so you can reapply them in one click';
+    add.addEventListener('click', () => { dpreNaming = true; dpreArmed = ''; renderInspector(); });
+    bar.appendChild(add);
+  }
+  return bar;
+}
+
 // — Drill-through setup panel (inspector) —
 function sectionDrillthrough(s) {
   const d = s.drill || {};
@@ -6343,12 +6447,15 @@ function sectionDrillthrough(s) {
   const c = el('div', 'sec-body');
 
   c.appendChild(infoHint(
-    'Summary Liveboard → detail rows, entirely host-side.',
-    'Pick the Liveboard above as your summary board. A click on a data point carries that point’s '
-    + 'attributes (plus any filters set inside the iframe, via HostEvent.GetFilters) into the detail '
-    + 'Liveboard. Separately, a right-click action scoped to the summary Model\u2019s measure column opens a paged grid of '
-    + 'event-grain rows fetched with POST searchdata against a finer-grained Model. Needs SDK 1.43.0+ / '
-    + 'cluster 10.14.0.cl+ for the column scoping.'));
+    'Summary Liveboard \u2192 detail rows, entirely host-side.',
+    'Pick the Liveboard above as your summary board. A right-click action scoped to the summary '
+    + 'Model\u2019s measure column opens a paged list of event-grain rows fetched with POST searchdata '
+    + 'against a finer-grained Model. Separately, a point click can carry that point\u2019s attributes '
+    + '(plus any filters set inside the iframe, via HostEvent.GetFilters) into a second Liveboard. '
+    + 'Needs SDK 1.43.0+ / cluster 10.14.0.cl+ for the column scoping.'));
+
+  c.appendChild(drillPresetBar(s));
+  c.appendChild(el('div', 'fld-hint', 'Presets are stored in this browser only. To hand a setup to someone else, share the page URL instead.'));
 
   c.appendChild(toggleField('Enable drill-through', d.enabled, v => { set({ enabled: v }); renderInspector(); render(); },
     'Injects the column-scoped action and listens for point clicks on this section only.'));
@@ -6356,64 +6463,67 @@ function sectionDrillthrough(s) {
   const wsOpts = discovered.worksheets.map(w => ({ id: w.id, name: w.name }));
   const lbOpts = discovered.liveboards.map(l => ({ id: l.id, name: l.name }));
 
-  c.appendChild(el('div', 'insp-group-lbl', 'The action'));
+  // ── the five fields a working setup actually needs ──
   c.appendChild(labeledSelect('Summary Model', d.summaryModelId, wsOpts, v => { set({ summaryModelId: v }); renderInspector(); render(); },
-    'The Model behind the summary Liveboard. Its GUID is half of the modelColumnNames scoping key.', !connected));
+    'The Model behind the summary Liveboard.', !connected));
   c.appendChild(textField('Measure column', d.measureColumn, v => { set({ measureColumn: v }); render(); },
     'e.g. Meeting count'));
-  c.appendChild(el('div', 'fld-hint', 'The SDK scopes the action as "<modelGuid>::<column>", which limits it to VISUALIZATIONS built on that column — not to that column’s cells, so it shows on every cell of a matching viz. The record list always reports THIS measure, wherever on the row you right-click. Leave either field blank and no action is injected at all.'));
-  c.appendChild(textField('Action label', d.actionLabel, v => { set({ actionLabel: v }); render(); }, 'View detail'));
-  c.appendChild(enumSelect('Opened by', d.trigger, [
-    { value: 'action', label: 'Right-click → menu item' },
+  c.appendChild(el('div', 'fld-hint', 'Together these scope the action as &quot;&lt;modelGuid&gt;::&lt;column&gt;&quot;. Leave either blank and no action is injected.'));
+  c.appendChild(labeledSelect('Detail Model', d.detailModelId, wsOpts, v => { set({ detailModelId: v }); renderInspector(); },
+    'The event-grain Model queried by POST searchdata, one row per event.', !connected));
+  c.appendChild(textField('Detail columns', (d.detailColumns || []).join(', '),
+    v => set({ detailColumns: v.split(',').map(x => x.trim()).filter(Boolean) }),
+    'Meeting Id, User Name, Booked at'));
+  c.appendChild(el('div', 'fld-hint', 'In order: the first becomes each row\u2019s title, a date-named one moves to the right. Add a grain suffix where you need it, e.g. Booked at.daily.'));
+
+  // ── everything else, folded away ──
+  const beh = subGroup('How it opens and pages');
+  beh.body.appendChild(enumSelect('Opened by', d.trigger, [
+    { value: 'action', label: 'Right-click \u2192 menu item' },
     { value: 'click', label: 'Plain left-click on the value' },
   ], v => { set({ trigger: v }); renderInspector(); render(); },
-  'Right-click opens ThoughtSpot\u2019s own menu with your item added to it, and nothing reaches your code until the user picks it. Left-click fires VizPointClick straight away with no menu at all, so your panel opens on the first click. Verified on 26.8.0.cl for both a table cell and a chart mark.'));
-
-  c.appendChild(el('div', 'insp-group-lbl', 'The record list'));
-  c.appendChild(enumSelect('Show as', d.presentation, [
+  'Right-click opens ThoughtSpot\u2019s own menu with your item added to it, and nothing reaches your code until the user picks it. Left-click fires VizPointClick straight away with no menu at all.'));
+  beh.body.appendChild(enumSelect('Show as', d.presentation, [
     { value: 'modal', label: 'Modal over the board' },
     { value: 'panel', label: 'Docked grid below' },
   ], v => { set({ presentation: v }); renderInspector(); }, 'Modal = a record list, one row per record. Panel = a dense table docked under the embed.'));
-  c.appendChild(textField('Period label', d.periodLabel, v => set({ periodLabel: v }), 'This Year'));
-  c.appendChild(textField('A row is a…', d.recordNoun, v => set({ recordNoun: v }), 'orders'));
-  c.appendChild(textField('“View all” link', d.viewAllUrl, v => set({ viewAllUrl: v }), 'https://…'));
-  c.appendChild(el('div', 'fld-hint', 'Optional footer CTA, like the “View all Conversations” button on the reference design. http(s) only.'));
+  beh.body.appendChild(textField('Scope column', d.scopeColumn, v => set({ scopeColumn: v }), 'blank = every attribute'));
+  beh.body.appendChild(el('div', 'fld-hint', 'Narrows the detail query to ONE clicked attribute. Leave blank so every attribute on the clicked cell is carried, which is what makes the totals reconcile.'));
+  beh.body.appendChild(textField('Page size', String(d.pageSize ?? 100), v => { const n = Number(v); set({ pageSize: Number.isFinite(n) ? Math.min(1000, Math.max(1, Math.round(n))) : 100 }); renderInspector(); }, '100'));
+  beh.body.appendChild(el('div', 'fld-hint', 'record_size per page. "Load more" advances record_offset, which is how you get past the 1,000-row response cap.'));
+  c.appendChild(beh.el);
 
-  c.appendChild(el('div', 'insp-group-lbl', 'The detail rows'));
-  c.appendChild(labeledSelect('Detail Model', d.detailModelId, wsOpts, v => { set({ detailModelId: v }); renderInspector(); },
-    'The event-grain Model queried by POST searchdata — one row per event, not the aggregate.', !connected));
-  c.appendChild(textField('Detail columns', (d.detailColumns || []).join(', '),
-    v => set({ detailColumns: v.split(',').map(x => x.trim()).filter(Boolean) }),
-    'Meeting Id, User Name, Booked at, Stage'));
-  c.appendChild(textField('Scope column', d.scopeColumn, v => set({ scopeColumn: v }), 'e.g. Stage'));
-  c.appendChild(el('div', 'fld-hint', 'Which clicked attribute filters the detail query. Blank = carry every attribute on the clicked point.'));
-  const ps = textField('Page size', String(d.pageSize ?? 100), v => { const n = Number(v); set({ pageSize: Number.isFinite(n) ? Math.min(1000, Math.max(1, Math.round(n))) : 100 }); renderInspector(); }, '100');
-  c.appendChild(ps);
-  c.appendChild(el('div', 'fld-hint', 'record_size per page. "Load more" advances record_offset, which is how you get past the 1,000-row response cap.'));
-  c.appendChild(textField('Row link template', d.linkTemplate, v => set({ linkTemplate: v }),
+  const lab = subGroup('Labels and links');
+  lab.body.appendChild(textField('Action label', d.actionLabel, v => { set({ actionLabel: v }); render(); }, 'View detail'));
+  lab.body.appendChild(textField('Period label', d.periodLabel, v => set({ periodLabel: v }), 'This Year'));
+  lab.body.appendChild(textField('A row is a\u2026', d.recordNoun, v => set({ recordNoun: v }), 'orders'));
+  lab.body.appendChild(textField('Row link template', d.linkTemplate, v => set({ linkTemplate: v }),
     'https://app.example.com/meetings/{Meeting Id}'));
-  c.appendChild(el('div', 'fld-hint', 'Per-row deep link. {Column} is replaced with that row’s value (URL-encoded). Only plain http(s) links are opened.'));
+  lab.body.appendChild(el('div', 'fld-hint', '{Column} is replaced with that row\u2019s value, URL-encoded. Only plain http(s) links open.'));
+  lab.body.appendChild(textField('\u201cView all\u201d link', d.viewAllUrl, v => set({ viewAllUrl: v }), 'https://\u2026'));
+  c.appendChild(lab.el);
 
-  c.appendChild(el('div', 'insp-group-lbl', 'The point click'));
-  c.appendChild(labeledSelect('Detail Liveboard', d.drillLiveboardId, lbOpts, v => { set({ drillLiveboardId: v }); renderInspector(); },
-    'Opened, filtered, when a point is clicked. Leave unset to demo the record list alone.', !connected));
+  const pc = subGroup('Click through to another Liveboard');
+  pc.body.appendChild(labeledSelect('Detail Liveboard', d.drillLiveboardId, lbOpts, v => { set({ drillLiveboardId: v }); renderInspector(); },
+    'Opened, filtered, on a point click. Leave unset to demo the record list alone.', !connected));
   if (d.drillLiveboardId) {
     if (s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
       loadViz(s.liveboardId).then(() => renderInspector());
     }
     const vizzes = vizCache[s.liveboardId] || [];
-    c.appendChild(labeledSelect('Drill only from', d.drillVizId, vizzes, v => set({ drillVizId: v }),
-      _vizLoading.has(s.liveboardId) ? 'Loading…' : '', !connected));
-    c.appendChild(el('div', 'fld-hint', 'VizPointClick fires for every viz on the board. Pick one so a chart can drill while a table opens the record list — leave blank and any click drills.'));
+    pc.body.appendChild(labeledSelect('Drill only from', d.drillVizId, vizzes, v => set({ drillVizId: v }),
+      _vizLoading.has(s.liveboardId) ? 'Loading\u2026' : '', !connected));
+    pc.body.appendChild(el('div', 'fld-hint', 'VizPointClick fires for every viz on the board. Pick one so a chart can drill while a table opens the record list.'));
     if (d.trigger === 'click') {
       const warn = el('div', 'sec-note sec-note--warn');
       warn.textContent = 'Opened by is set to left-click, so the record list owns the click and this drill will not fire. Switch to right-click to run both on one board.';
-      c.appendChild(warn);
+      pc.body.appendChild(warn);
     }
   }
+  c.appendChild(pc.el);
 
   const sec = el('div', 'sec-note sec-note--warn');
-  sec.textContent = 'Runtime filters are not a security boundary — they are visible and editable in the URL. The detail rows are safe because searchdata runs under the viewer’s own token, so RLS applies to them.';
+  sec.textContent = 'Runtime filters are not a security boundary, they are visible and editable in the URL. The detail rows are safe because searchdata runs under the viewer\u2019s own token, so RLS applies to them.';
   c.appendChild(sec);
 
   const count = [d.enabled, d.summaryModelId, d.measureColumn, d.detailModelId, (d.detailColumns || []).length, d.drillLiveboardId].filter(Boolean).length;
