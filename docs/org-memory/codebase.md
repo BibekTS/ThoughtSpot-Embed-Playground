@@ -601,3 +601,10 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   removing it with unique ids stays 45/45 green. Kept deliberately; do not "prove it with a test",
   and do not delete it as dead code either — it is the second line against any future id scheme that
   can repeat.
+- 2026-09-27 (merge of S25 onto S33, found at merge time): **a probe fixture must satisfy the same
+  input normalization as the code it drives.** S33's connect-race probe told its two fake clusters
+  apart by PATH (`${BASE}/s33a`, `/s33b`); S25 made `connect()` normalize every host to its ORIGIN
+  (lockstep with `sanitize()`), so both collapsed into one host and the probe failed on correct code.
+  It now uses two distinct fake origins and stubs `window.fetch` via `evaluateOnNewDocument` (request
+  interception cannot reliably answer the CORS preflight a cross-origin JSON POST needs). Re-proven
+  by mutation: `isStale = () => false` → pill reads "USER_A · ORG_A", gate FAILS.
