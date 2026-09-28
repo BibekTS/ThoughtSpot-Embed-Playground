@@ -183,6 +183,14 @@ function renderBody() {
     <div class="tok-block"><div class="tok-lbl">getAuthToken invocations</div><div id="tok-log" class="tok-log"><div class="tok-empty">No requests yet.</div></div></div>`;
   body.appendChild(insp);
   document.getElementById('tok-copy').onclick = () => { if (_lastToken) navigator.clipboard.writeText(_lastToken); };
+  syncCopyBtn();
+}
+
+// Copy is only meaningful while a current token is on screen — disable it otherwise so the button
+// can't imply there is something to copy.
+function syncCopyBtn() {
+  const b = document.getElementById('tok-copy');
+  if (b) b.disabled = !_lastToken;
 }
 
 // ── Field builders ───────────────────────────────────────────────────────────
@@ -498,7 +506,18 @@ async function mintToken(apply) {
   try {
     const res = await fetch(`${API_BASE}/api/auth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     try { window.__onApiCall?.({ scope: 'playground', method: 'POST', path: '/api/auth/token', status: res.status }); } catch (_) {}
-    const data = await res.json();
+    // An HTML 5xx (a proxy error page, a crashed process behind a reverse proxy) makes res.json()
+    // throw, which used to land in the catch below and report "is the Node server running?" — the
+    // server plainly IS running, it just didn't answer JSON. Say what actually happened instead.
+    let data;
+    try {
+      data = await res.json();
+    } catch (_) {
+      const msg = `HTTP ${res.status} — non-JSON response from the token server (${res.headers.get('content-type') || 'unknown content-type'}); check the server log or a proxy in front of it.`;
+      renderInspector({ requestBody: body, error: msg });
+      _log('Auth', `✗ ${msg}`);
+      return;
+    }
     if (!res.ok) {
       const detail = upstreamDetail(data);
       const msg = detail ? `${data.error || 'HTTP ' + res.status} — ${detail}` : (data.error || `HTTP ${res.status}`);
@@ -543,9 +562,19 @@ function renderInspector(info = {}) {
   appendLog(info);
   const raw = document.getElementById('tok-raw');
   const dec = document.getElementById('tok-dec');
-  if (info.error) { if (raw) raw.textContent = `Error: ${info.error}`; if (dec) dec.textContent = '—'; stopCountdown(); return; }
+  if (info.error) {
+    // Clear the copy buffer too. Leaving the PREVIOUS mint's token here meant Copy silently handed
+    // back a stale credential while the panel showed an error — the worst kind of wrong.
+    _lastToken = '';
+    syncCopyBtn();
+    if (raw) raw.textContent = `Error: ${info.error}`;
+    if (dec) dec.textContent = '—';
+    stopCountdown();
+    return;
+  }
   const token = info.response?.token || '';
   _lastToken = token;
+  syncCopyBtn();
   if (raw) raw.textContent = token || '—';
   if (dec) {
     try {

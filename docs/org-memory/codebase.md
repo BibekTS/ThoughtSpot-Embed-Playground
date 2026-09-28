@@ -400,3 +400,131 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `font-size/font-weight/line-height: inherit` added (`css/styles.css:113`) because the UA
   `h1` sizing would otherwise blow up the 14px brand scale. `js/app.js` still builds two
   `.modal-title` **divs** (`js/app.js:2793`, `:2996`) — those stay unheaded until a JS pass.
+
+## In-flight fences / async races (S33)
+
+- 2026-09-25 (S33, this PR): `connect()` (`js/app.js:488`) is the THIRD site of the same defect
+  class as S3/S11 and the widest: it awaits `discoverOrg` then `discoverObjects` and writes four
+  module globals (`connected`, the status pill, the overlay, `discovered`). It is now fenced with a
+  monotonic `connectSeq` ticket (`js/app.js:210`) plus the captured-host check, evaluated as
+  `isStale()` after EVERY await (`:507`, `:544`). The ticket alone is not enough and the host check
+  alone is not enough — a second connect to the SAME host also needs the seq. `loadAnswers()`
+  (`js/app.js:2401`) keeps its host-only fence; it is idempotent per host, `connect()` is not.
+- 2026-09-25 (S33, boot-check): a race probe does NOT need a cross-origin stub. Point both "hosts"
+  at SAME-ORIGIN paths on the gate's own server (`${BASE}/s33a`, `${BASE}/s33b`) — `validHost()`
+  (`js/state.js:188`) accepts them (scheme + `new URL` only, no host shape), so plain puppeteer
+  request interception can stub `/api/rest/2.0/auth/session/user` and `/metadata/search` with no
+  CORS headers and, crucially, no preflight — a cross-origin stub needs an OPTIONS response that
+  CDP interception does not reliably surface. `discovered.worksheets` is observable by clicking the
+  "Worksheet / Model" `.sel-btn` (the `.sel-item` list renders lazily on open).
+
+## Code execution in the UI (S37)
+
+- 2026-09-25 (S37, FIXED, this PR): the custom-styles paste box ran `new Function` on pasted text
+  (`parseRulesObject`, formerly `js/app.js:4106`) — arbitrary JS in the page's origin, with no CSP
+  anywhere in the repo to fall back on. Replaced by `jsObjectLiteralToJson()` + `JSON.parse`
+  (`js/app.js:4102-4211`): a hand-written tokenizer for the tolerant JS-literal grammar (single
+  quotes, bare identifier keys, trailing commas, `//` and `/* */` comments), values restricted to
+  string / number / true / false / null / nested object. The wrap-in-braces decision for a bare
+  `rules_UNSTABLE: {…}` fragment MUST look past leading trivia (`skipTrivia`) — testing
+  `text.startsWith('{')` wraps a paste that opens with a comment twice and rejects it.
+- 2026-09-25 (S37): `grep -n "new Function" js/` returning only the explanatory comment is the
+  standing check. Note the paste box was reachable without any ThoughtSpot contact at all — the
+  boot-check probe just opens the "CSS rules (rules_UNSTABLE)" accordion on a host-free page.
+
+## Gates (additions)
+
+- 2026-09-25 (S33/S37): a port-shifted COPY of a gate script (`sed 's/const PORT = 34921;/…/'` into
+  `scripts/boot-check.local.mjs`, run, delete) lets a worktree-isolated implementer verify and
+  mutation-test frontend probes without touching the shared 34917/34921 ports (M8). Both scripts
+  derive ROOT from `import.meta.url`, so the copy must live in `scripts/` of the same worktree.
+  This is verification, never weakening: the committed gate scripts are unchanged by it.
+- 2026-09-25 (S33/S37, mutation-proven): reverting `parseRulesObject` to `new Function` flips the
+  S37 probe's "did NOT execute" AND "hostile paste rejected" to false; deleting the two `isStale()`
+  lines flips the S33 probe's status and discovered-objects assertions (final pill read
+  "USER_A · ORG_A", picker showed WS_A). Unlike the S13 `window.open` stub, the S37 `__pwned`
+  assertion is NOT vacuous — nothing stubs the evaluator, so the flag really does get set.
+- 2026-09-25 (S33/S37): the boot-check whole-run watchdog was raised 120s → 180s
+  (`scripts/boot-check.mjs:55`) — the S33 probe deliberately holds a response 2.5s and then waits
+  3.5s more, so it alone spends ~7s inside a budget that was already ~60% consumed.
+
+## Detector / tooling
+
+- 2026-09-25 (S34, FIXED): `scripts/check-ts-updates.mjs` pushed ANY `!r.ok` watched-doc response
+  onto `changes`, so a transient 503/429 at developers.thoughtspot.com produced "CHANGES DETECTED"
+  (exit 10) and sent the weekly cloud routine off to open a PR about nothing. Only 404/410 is drift
+  now; everything else is a warning, matching the npm/GitHub branches. `main` is exported and the
+  bottom-of-file invocation is guarded by an `import.meta.url === process.argv[1]` check so
+  `scripts/check-ts-updates.test.mjs` (`npm run test:ts-watch`) can import it and stub global fetch.
+
+## Client-side PDF / Spotter chat
+
+- 2026-09-25 (S35): `groupStatements` in `js/invoice-pdf.js` keyed a plain `{}` by LIVE TS ROW DATA.
+  A group value of `constructor`/`toString` makes the `if (!statements[key])` init test truthy
+  (inherited member) and `__proto__` assignment is swallowed — one row's text aborted or corrupted
+  the whole export. Now a `Map`. Any object keyed by TS row/column data in this repo is the same
+  bug waiting to happen. `fetchAllRows` also gained a 50k row ceiling and an empty-page break.
+- 2026-09-25 (S36): `js/spotter-mcp.js` `createLiveboard()` built its link base as
+  `https://${tsHost}` while `js/app.js` passes an ALREADY-SCHEMED host — a relative `dashboard_url`
+  resolved to `https://https/…`. The module already normalises the host once for `tsOrigin`
+  (`js/spotter-mcp.js:196`); reuse it rather than re-deriving. Same file: the typing indicator is
+  now removed in a `finally` (`ask()` delegates to `askTurn()`), and the relay-supplied
+  `iframe_url` is scheme-checked before it reaches `frame.src` — an iframe src is a navigation sink
+  in THIS document's context, same class as the S13 `window.open` hole.
+
+## Review-round corrections to the S33/S35/S37 work (2026-09-27)
+
+- 2026-09-27 (S35, review must-fix): a row ceiling on a document that prints a **Total** is not a
+  performance knob, it is a disclosure obligation. The first cut capped at 50k and only
+  `console.warn`'d, while `fetchAllRows` returned `{rows, schema}` — so the per-region Total
+  (`js/invoice-pdf.js:348`) and the "from N row(s)" success log (`js/app.js:5270`) were both computed
+  over the capped set and read as complete: a 60k-row viz produced a financial-looking PDF
+  understating revenue by ~10k rows behind a green success toast. Two comments actively claimed the
+  opposite ("the export says so"). Now `fetchAllRows` returns `truncated`, `groupStatements(rows,
+  schema, {truncated})` sets `totalLabel: 'Total (partial)'` + an "INCOMPLETE EXPORT — capped at N
+  rows" footer line, and `handleInvoicePdf` logs ⚠ and raises an error toast. **Rule of thumb: a
+  truncation that a downstream aggregate is computed over must travel in the RETURN VALUE; a console
+  line is not a disclosure.** Verified: 60k-row fake service → rows=50000, truncated=true, printed
+  total 50000 with the partial label on every page.
+- 2026-09-27 (S37, review must-fix): the non-executing paste parser must accept **arrays**. Rejecting
+  them was a real workflow regression, not a hardening win: `findRulesUnstable` (`js/app.js:4082`)
+  exists precisely so a user can paste a whole customizations/ViewConfig wrapper, and those wrappers
+  routinely carry `visibleActions:['save','edit']` / `hiddenActions` / `runtimeFilters` — every one of
+  which `new Function` used to accept. Arrays are safe here because they leave through the same
+  `JSON.stringify` → `JSON.parse` path as every other value; `readArray` adds no evaluation. An
+  expression *inside* an array (`[(window.x=1)]`) is still refused. Lesson: when replacing an
+  evaluator with a parser, enumerate what the evaluator ACCEPTED, not just what it must now refuse.
+- 2026-09-27 (S33, review must-fix — the fence's real boundary): fencing `connect()` was not enough
+  because the last thing `connect()` does is **fire-and-forget** `refreshPersonalCopies()`
+  (`js/app.js:5654`, launched at `:553`), which has its own two unfenced awaits and writes both module globals
+  (`currentUserLogin`/`currentUserName`) and PERSISTED state (`setState({personalLb.copies})`).
+  Connect A → switch to B before A's `getCurrentUser` returns → host A's login lands in the live
+  host-B session, which then scopes its owner-filtered tag search to A's login (the cross-user leak
+  its own comment warns about), and A's copy GUIDs get persisted to localStorage and serialised into
+  B's share link. **A fence stops at the function boundary; every fire-and-forget launched from
+  inside it needs its own.** `refreshPersonalCopies` now carries the same `connectSeq` + captured-host
+  `isStale()` check after each await. Its `finally` clears `plbDiscovering` unconditionally by
+  design — gating that on `!isStale()` strands the spinner forever when the newer connect returns
+  early (host B with no `liveboardId`).
+- 2026-09-27 (S34, review must-fix, EMPIRICALLY CONFIRMED): an `import.meta.url` vs `process.argv[1]`
+  direct-run guard **must realpath both sides**. Node resolves symlinks for the ESM module path but
+  NOT for `argv[1]`, so a symlinked invocation makes them disagree and the guarded block never runs:
+  measured `OLD guard (path.resolve equality): false` / `NEW guard (realpathSync equality): true` for
+  `node <symlink-to-script>`. For a detector that is the worst possible failure — `main()` never
+  runs, the process exits **0**, and the weekly routine reads that as "no drift" while the check has
+  gone blind. `scripts/check-ts-updates.mjs` `invokedDirectly()` realpaths both and fails OPEN to
+  running: a spurious run is harmless, a spurious skip is undetectable.
+- 2026-09-27 (S35): `console.warn(..., d)` where `d` is a live response object is a customer-data
+  leak into devtools, screen shares and captured browser logs, exactly like `console.log` — the
+  earlier "console dumps removed" pass missed it because it grepped only for `console.log`. Grep for
+  **`console.` followed by a bare object argument**, not for one method name.
+- 2026-09-27 (S33, KNOWN-VACUOUS, filed as backlog not fixed): the boot-check connect-race probe
+  never asserts host A's late response actually **arrived**. It relies on puppeteer running the two
+  interception handlers concurrently; if a future version serialised them, B would win by ordering
+  alone and the probe would pass with the fence deleted. Same vacuity family as the recorded S13
+  `window.open` stub. Today it has teeth (mutation-proven: pill read "USER_A · ORG_A"), but the
+  assertion needs an "A responded" counter to STAY meaningful.
+- 2026-09-27 (S35, still open, filed as backlog): the per-row objects in `normalizeRows`
+  (`js/invoice-pdf.js:133-136`) are still plain `{}` keyed by column DISPLAY NAME, so a column named
+  `__proto__` silently vanishes from the PDF. `groupStatements` was converted to a `Map`; the row
+  builder was not. Same class, one layer down.

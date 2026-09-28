@@ -361,6 +361,13 @@ export function renderSpotterMcpChat(container, opts = {}) {
     if (answer_id && sessionAnswers.has(answer_id)) sessionAnswers.get(answer_id).title = title;
     updateLbBar();
     if (!iframe_url) return card;
+    // The relay supplies this URL. An iframe src is a navigation sink, so require a plain http(s)
+    // scheme before it ever reaches the element — the same refusal the "Open in ThoughtSpot" link
+    // below applies. `javascript:`/`data:` in an iframe src executes in THIS document's context.
+    if (!/^https?:\/\//i.test(String(iframe_url))) {
+      log('MCP', `✗ refused a non-http(s) answer URL for ${answer_id || 'answer'}`);
+      return card;
+    }
 
     // The auto-renderer REPLACES our iframe with its own element, whose src is the
     // rewritten embed URL — so the live element's src can never be compared against
@@ -435,7 +442,11 @@ export function renderSpotterMcpChat(container, opts = {}) {
     // The URL comes from ThoughtSpot — still refuse anything that isn't plain http(s).
     let href = '';
     try {
-      const u = new URL(data.dashboard_url, `https://${tsHost}`);
+      // Base off the NORMALISED origin, not `https://${tsHost}` — app.js passes a full
+      // "https://cluster…" host, so the naive template yields "https://https://cluster…" and a
+      // relative dashboard_url resolves to https://https/… (a link to nowhere). tsOrigin is ''
+      // when tsHost is unparseable, and `new URL(rel, '')` throws → caught → no link, fail-closed.
+      const u = new URL(data.dashboard_url, tsOrigin);
       if (u.protocol === 'https:' || u.protocol === 'http:') href = u.href;
     } catch (_) { /* no link, just the confirmation */ }
     if (href) {
@@ -452,6 +463,17 @@ export function renderSpotterMcpChat(container, opts = {}) {
   async function ask(question) {
     addMessage(question, 'user');
     const typing = addTyping();
+    // Removed in a finally: getToken(), fetch() and readSse() can each throw (network drop, abort,
+    // a relay 5xx), and every throw used to strand the three bouncing dots in the transcript for
+    // the rest of the session. .remove() is idempotent, so the happy-path removals still stand.
+    try {
+      await askTurn(question, typing);
+    } finally {
+      typing.remove();
+    }
+  }
+
+  async function askTurn(question, typing) {
     const cards = new Map(); // answer_id -> card element
 
     // One live node per lane for this turn. The wire interleaves reasoning and
@@ -602,8 +624,7 @@ export function renderSpotterMcpChat(container, opts = {}) {
     }, controller.signal);
 
     flushLanes(); // stream over (done, error, or abort) — never hold queued text
-    typing.remove();
-    log('MCP', 'turn complete');
+    log('MCP', 'turn complete'); // the indicator goes away in ask()'s finally
   }
 
   const setBusy = (v) => {
