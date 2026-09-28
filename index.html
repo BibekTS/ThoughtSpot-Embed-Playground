@@ -145,6 +145,9 @@
             <div class="st-icon">🔗</div>
             <div class="st-title">Connect to this shared host?</div>
             <div class="st-sub">This shared link wants to connect to <strong id="confirm-host-name"></strong>. Connecting sends requests to that host from your browser — only continue if you trust whoever sent the link.</div>
+            <!-- Everything else the link carries that has security weight (auth mode, the identity
+                 tokens would be minted for, a remote stylesheet). Filled by textContent in app.js. -->
+            <ul id="confirm-host-extras" class="st-extras" hidden></ul>
             <div class="st-actions">
               <button id="confirm-host-go" class="st-btn">Connect</button>
             </div>
