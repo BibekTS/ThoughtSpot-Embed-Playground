@@ -124,6 +124,8 @@ To exercise the full claims playground, set `TS_ALLOW_JIT=true` and `TS_GROUP_AL
 | `npm run doctor` | Verify Trusted Auth end-to-end (mints a test token) |
 | `npm test` | **Security gate** — asserts the server guards + static restrictions |
 | `npm run boot-check` | **Frontend gate** — headless boot, fails on any JS error |
+| `npm run test:spotter-mcp` | Unit tests for the Spotter-over-MCP customizer (`node:test`) |
+| `npm run check-ts-updates` | Report SDK/doc drift against the pinned `ts-sdk-version.json` |
 | `npm run vendor-sdk` | Self-host the pinned SDK into `vendor/` |
 | `npm run register-webhook` / `schedule-liveboard` / `simulate-webhook` | Webhook Inbox demo ([docs](docs/webhook-inbox-demo.md)) |
 
@@ -175,10 +177,16 @@ js/
   embed.js        Visual Embed SDK wrapper: initSDK() + doRender()
   auth.js         Trusted-auth token-claims playground + live inspector
   invoice-pdf.js  Callback-action handler: viz rows → client-side PDF
+  spotter-mcp.js  Spotter-over-MCP chat panel (frontend half)
   app.js          Controller: connection, rail, render, inspector, SDK code, log
+lib/
+  multipart.js    Dependency-free multipart/form-data parser (webhook attachments)
+  spotter-mcp/    MCP router + customizer for the Spotter panel (+ node:test suites)
 server.js         Token service + filter proxy + static host. Fail-closed.
 scripts/          setup · smoke-test (npm test) · boot-check · doctor · vendor-sdk
+ts-sdk-version.json  Pinned Visual Embed SDK version (watched by check-ts-updates)
 docs/             Deep-dive guides for the shipped integrations
+  org-memory/     The agent org's shared memory: verified facts + retro log
 ```
 
 ---

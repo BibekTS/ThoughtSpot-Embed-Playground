@@ -341,3 +341,62 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   genuinely vulnerable code. When a fence guards a lazy loader, the fixture must carry whatever
   makes that loader *actually run*, and the probe should assert on ANY request to the host, not
   only on the one path the author had in mind.
+
+## Hygiene / a11y / CSS (S41, 2026-09-25)
+
+- 2026-09-25 (S41): **`INSTRUCTIONS.md` cannot be deleted.** `scripts/smoke-test.mjs` probes that
+  `/INSTRUCTIONS.md` is NOT statically served; removing the file makes that assertion vacuous (a
+  missing file 404s trivially), and `smoke-test.mjs` is guard-protected, so the probe cannot be
+  re-pointed without a human `human-approved` PR. Keep the file, or move the probe and the file in
+  one human-labelled PR. It still contains a real instance hostname + GUIDs.
+- 2026-09-25 (S41): `node --test lib/spotter-mcp/` **fails on Node 22** with
+  `Cannot find module …/lib/spotter-mcp` — a directory argument is resolved as a module specifier.
+  Use `node --test 'lib/spotter-mcp/*.test.mjs'` (23 pass). Separately, `npm run test:spotter-mcp`
+  runs **only** `customize.test.mjs`, so `router.test.mjs` is in no gate at all (that is M15).
+- 2026-09-25 (S41): of the 36 `.aip-*` rules in `css/styles.css`, exactly 14 class names are dead;
+  the other 22 are built at runtime by the AI Insights panel via `el()` in `js/app.js`. "The aip
+  block is dead CSS" is **false** — check each class name, not the block.
+- 2026-09-25 (S41): `var(--warn, …)`, `var(--danger, …)` and `var(--success, …)` fallbacks were
+  removable because `:root` defines all three. `var(--err, #c0392b)` in `.flow-step.failed .fs-dot`
+  is **not** — `--err` is defined nowhere, so that fallback is load-bearing. Left in place.
+- 2026-09-25 (S41): `index.html` now ships `<link rel="icon" href="data:,">`, so the browser never
+  requests `/favicon.ico`, and `scripts/boot-check.mjs`'s favicon 4xx exemption is **removed** — the
+  gate now fails on ANY 4xx/5xx. Verified on a private port (45301, clean env): 0 responses >= 400,
+  0 JS errors. **`CLAUDE.md` is now stale on this point** (it still says "no non-favicon 4xx … the
+  only allowed console 404 is `/favicon.ico`"); it is guard-protected, so a human PR must fix it —
+  filed as **M19**.
+- 2026-09-25 (UX O8/O9): `--accent` (`#00c9de`) is **2.02:1 on white** — it is a fill colour, not
+  an ink. Every accent-coloured label in `css/styles.css` failed WCAG AA, and the `:focus-visible`
+  rule added by S41 (`outline: 2px solid var(--accent)`) failed the 3:1 non-text floor of WCAG
+  1.4.11 too. `css/styles.css:23-24` now defines `--accent-ink: #067a87` (5.07:1 on `#fff`,
+  4.65:1 on `--accent-soft`, 4.82:1 on `--bg`, but only **4.45:1 on `--surface-3` `#eaf1f7`** — do
+  not put accent text there) and `--accent-2-ink: #4f46e5` (6.29:1). Rule, now in `THEME.md` §8:
+  **`--accent` paints, `--accent-ink` writes.** Roughly 50 further `color: var(--accent)` sites
+  remain in the sheet (`.st-link`, `.lr-type`, `.wh-*`, `.cfb-*`, `.flow-lane`, `.badge-good`, …) —
+  same defect, not yet converted; that is a follow-up.
+- 2026-09-25 (UX O2/O5): `#topbar` is a single non-wrapping, non-scrolling flex row inside
+  `body{overflow:hidden}`, so anything that does not fit is **unreachable**, not scrolled to. Two
+  independent failures came out of that: at 390px `#connect-btn` sat at x=411 off-screen, and at
+  1440px-connected the utilities wrapped inside their fixed 30px height. The fix needs BOTH halves
+  or it just moves the overflow: `.tb-right{flex:0 0 auto}` + `.tb-icon-btn{white-space:nowrap}`
+  stops the wrap, but then `#conn-status` (which was `flex:0 0 auto` with `max-width:440px`) pushes
+  the whole right cluster past the viewport edge. `#conn-status` must be `flex:0 1 auto` with a
+  `min-width` floor (`css/styles.css:134`). Measure `#reset-btn`'s `getBoundingClientRect()
+  .right <= innerWidth`, not just `scrollWidth`.
+- 2026-09-25 (UX O1): the inspector can be a mobile drawer with **zero JS**. `index.html:17-19`
+  puts a visually-hidden checkbox as the first element in `<body>` (NOT `hidden` — `[hidden]` is
+  `display:none !important` in this sheet, which kills focusability) and a `<label for=…>` in the
+  topbar's `.tb-right`; `.mobile-opt-cb:checked ~ #app #inspector` then wins on specificity over
+  the `@media (max-width:860px) { #inspector{display:none} }` rule. The checkbox must stay a
+  *preceding sibling of `#app`* for that combinator to work. Keyboard focus lands on the invisible
+  checkbox, so the ring is painted on the label via
+  `.mobile-opt-cb:focus-visible ~ #app .mobile-opt-btn`.
+- 2026-09-25 (UX O1, follow-up): the onboarding copy in `index.html` says "in the options panel
+  **on the right**", which is wrong once the panel is a bottom sheet. The `st-needs` variant of
+  that string is generated in `js/app.js`, so both must change together in a JS pass — not done
+  here (CSS/HTML-only scope).
+- 2026-09-25 (UX O11): `index.html` had **zero** `h1`–`h4`. The static overlay titles, inspector
+  title and modal titles are now real `<h2>`s and the wordmark an `<h1>`; `.tb-name` needed
+  `font-size/font-weight/line-height: inherit` added (`css/styles.css:113`) because the UA
+  `h1` sizing would otherwise blow up the 14px brand scale. `js/app.js` still builds two
+  `.modal-title` **divs** (`js/app.js:2793`, `:2996`) — those stay unheaded until a JS pass.
