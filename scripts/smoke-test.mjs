@@ -377,7 +377,16 @@ try {
     // ring has turned over several times, and ids must stay unique.
     {
       const chunk = Buffer.alloc(8 * 1024, 0x42);
-      for (let i = 0; i < 120; i += 1) await postAttachment('application/pdf', `sat-${i}.pdf`, chunk);
+      // The CONCURRENCY is what gives these three assertions teeth — do NOT "tidy" it back into a
+      // sequential `for … await` loop. The buggy id scheme only collides for deliveries landing in
+      // the SAME millisecond, so a sequential burst gets a fresh Date.now() each time and stays
+      // green even with the bug fully restored (mutation-tested: sequential = green, batched = red
+      // with "41 duplicate id(s) in 50 events / 0 live file(s)"). 15 × 8 keeps the total near 120 so
+      // the 50-event ring still turns over more than twice.
+      for (let b = 0; b < 15; b += 1) {
+        await Promise.all(Array.from({ length: 8 }, (_, i) =>
+          postAttachment('application/pdf', `sat-${b}-${i}.pdf`, chunk)));
+      }
       const a = await liveAttachments();
       check('event ids stay unique after the ring saturates', a.dupes === 0, `${a.dupes} duplicate id(s) in ${a.events} events`);
       check('attachments are still retained after the ring saturates', a.live > 0, `${a.live} live file(s), ${a.bytes} bytes`);

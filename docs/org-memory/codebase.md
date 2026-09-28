@@ -339,3 +339,17 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   the NEXT `npm test` reds with EADDRINUSE — a phantom failure that looks like the code under test.
   Every `bootServer()` call in `scripts/smoke-test.mjs` is now wrapped, and the handle exposes
   `.kill()`.
+- 2026-09-27 (S28 test integrity): **a burst written as `for (…) await post(…)` cannot reproduce a
+  same-millisecond id collision** — each iteration gets a fresh `Date.now()`, so the assertion passes
+  with the bug fully restored. The three ring-saturation checks in `scripts/smoke-test.mjs` were
+  vacuous until the burst became `15 × Promise.all(8)`. Mutation-tested all four ways: colliding
+  recId + sequential burst = GREEN (vacuous); colliding recId + concurrent burst = RED, 40 duplicate
+  ids / 0 live files. **Concurrency is load-bearing in that test and is commented as such** — a
+  "tidying" refactor back to a sequential loop silently disarms it. General rule: a regression test
+  for a timestamp-keyed collision MUST issue its requests concurrently, and the way to know it bites
+  is to re-break the code and watch it go red.
+- 2026-09-27 (S28): `retainWebhookFile()`'s `dropWebhookFile(key)` is **unreachable defence in depth**
+  once recIds are unique — no test can cover it, because a key is never replaced. Mutation-tested:
+  removing it with unique ids stays 45/45 green. Kept deliberately; do not "prove it with a test",
+  and do not delete it as dead code either — it is the second line against any future id scheme that
+  can repeat.
