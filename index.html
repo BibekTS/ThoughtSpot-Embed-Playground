@@ -50,6 +50,7 @@
           </label>
         </div>
       </div>
+      <button id="demo-btn" class="tb-icon-btn" title="Demo mode — hide the top bar, options panel and bottom panel (Shift+D)">Demo mode</button>
       <button id="share-btn" class="tb-icon-btn" title="Copy a shareable link to the current setup" hidden>Share</button>
       <span class="tb-div" aria-hidden="true"></span>
       <button id="reset-btn" class="tb-icon-btn tb-reset" title="Reset all applied options">Reset</button>
@@ -254,6 +255,9 @@
 
   </div>
 </div>
+
+<!-- Demo mode: the only chrome left on screen — restores the full tool UI. -->
+<button id="demo-exit" class="demo-exit" hidden title="Exit demo mode (Shift+D)">Exit demo</button>
 
 <!-- ── Trusted-auth token-claims playground (slide-over) ────────────────── -->
 <div id="auth-modal" class="modal" hidden>

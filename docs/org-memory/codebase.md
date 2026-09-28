@@ -499,3 +499,11 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   bucket-start day clause and logs the downgrade (`rangeDowngraded` on the view, so it happens at
   most once and subsequent pages keep the downgraded form). A live `Month(...)` click is still
   needed to confirm the syntax; if it is rejected, the fallback is a per-day `IN` list.
+- 2026-09-27 (S22, answering a customer's open question): **`EmbedEvent.VizPointClick` does NOT fire
+  for a Muze Studio custom chart.** Tested on 26.8.0.cl against two MUZE_STUDIO vizzes: the chart
+  renders in its own nested iframe (`hc-muze-studio.pdom.thoughtspot.com`), two levels below the host
+  page, and the ThoughtSpot tile's own DOM contains zero marks. Clicking a real mark inside that
+  nested frame (18 marks present) produced **no** VizPointClick on the host. Native chart types and
+  table cells both fire it (verified separately), so the rule is: point-click interception works for
+  ThoughtSpot's own chart types, not for BYOC/Muze Studio charts. A custom-chart author can of course
+  emit their own postMessage, but nothing arrives through the SDK event by default.
