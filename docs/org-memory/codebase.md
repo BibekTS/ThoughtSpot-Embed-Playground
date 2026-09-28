@@ -528,3 +528,83 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   (`js/invoice-pdf.js:133-136`) are still plain `{}` keyed by column DISPLAY NAME, so a column named
   `__proto__` silently vanishes from the PDF. `groupStatements` was converted to a `Map`; the row
   builder was not. Same class, one layer down.
+- 2026-09-25 (S25–S28, S38/S39): **`fetch` (undici) silently DROPS a caller-supplied `Host` header.**
+  Any smoke assertion about the Host allowlist written with `fetch` tests nothing — it passes a
+  loopback Host and the guard never fires. `scripts/smoke-test.mjs:~90` now has a `rawRequest()`
+  helper built on `node:http`, which does honour an explicit `Host`. Verified empirically both ways.
+- 2026-09-25 (S27): **`app.set('trust proxy', true)` is a rate-limiter bypass, not a convenience.**
+  With it on, `req.ip` is the caller-supplied leftmost `X-Forwarded-For`, so rotating that header
+  makes every request look like a new client. `'loopback'` is no better *here*: the server binds to
+  127.0.0.1, so loopback is exactly the hop every real client arrives on. Default is now `false`
+  (`server.js:~240`, env `TS_TRUST_PROXY`). Measured: 16×429 in 71 rotating-XFF requests after the
+  fix, 0 before.
+- 2026-09-25 (S26): **`if (SET.size && !SET.has(x))` is a fail-OPEN idiom.** An empty allowlist
+  skipped the guard entirely, so a server with neither `TS_USERNAME_ALLOWLIST` nor
+  `TS_DEFAULT_USERNAME` minted for any username (`server.js:~296` before the fix). Separately,
+  `!autoCreate &&` on the same line meant `auto_create:true` bypassed the allowlist for EXISTING
+  users — JIT must govern creation only. Both now explicit branches at `server.js:~330`.
+- 2026-09-25 (S25): **`/api/webhook/file/*` shares an origin with the token mint endpoint.** A
+  multipart part's `Content-Type` is sender-controlled, so serving it back `inline` made a
+  `text/html` attachment stored XSS against `POST /api/auth/token`. Fixed with an allowlisted
+  Content-Type + `attachment` + `nosniff` (`server.js:~560`). The same reasoning is why the Host
+  allowlist exempts ONLY `POST /api/webhook`, not the `/api/webhook/*` prefix.
+- 2026-09-25 (S39): **`state.flags[section]` is spread LAST into every embed constructor**
+  (`js/embed.js:~253`), so before the per-section key allowlist a crafted `#s=` link could set any
+  constructor option — `flags.viz.answerId` silently overriding the explicit one. `FLAG_KEYS` in
+  `js/state.js:~28` mirrors app.js's `DISPLAY` table by hand (state.js must not import the
+  controller); **a new DISPLAY flag that isn't added there is silently dropped from shared links.**
+- 2026-09-25 (CI): **`node --test <directory>` fails on Node 22.17** with
+  `MODULE_NOT_FOUND: Cannot find module '<dir>'` — it tries to run the directory as a module. The
+  glob form works: `node --test "lib/spotter-mcp/*.test.mjs"` (quoted, so node expands it, not the
+  shell). `package.json` `test:spotter-mcp` used to name only `customize.test.mjs`, so
+  `router.test.mjs`'s 11 tests had never run in CI; both files pass (23 tests).
+- 2026-09-27 (S25–S28 round 2): **`whk-${Date.now()}-${webhookEvents.length}` is not a unique id.**
+  `length` PINS at `WEBHOOK_BUFFER_MAX` once the ring saturates, so every same-millisecond delivery
+  after the 50th reused an id. Harmless while attachments were only count-evicted (one mis-served
+  file); fatal once a byte counter existed — `webhookBytes` charged for both copies but
+  `webhookFiles` held one, so the counter drifted monotonically up and the budget evicted EVERY
+  attachment forever (~60 deliveries into a demo, all downloads 404 "aged out" until restart). Now a
+  monotonic `webhookSeq` (`server.js:~478`) plus `retainWebhookFile()` which credits the old bytes
+  back before replacing a key. **Lesson: adding a resource counter to a keyed cache turns any latent
+  key collision from cosmetic into permanent.** A budget assertion must SATURATE the ring — the first
+  version sent 9 deliveries and could not see this.
+- 2026-09-27 (CI): **`node --test <non-matching-glob>` exits 0 with `# tests 0`.** A glob-based test
+  step is therefore green-when-empty, and Node's own glob expansion is a late-20.x feature while CI
+  pins Node 20 — so the pattern may match nothing on CI while working locally on 22. `package.json`
+  `test:spotter-mcp` now NAMES both files, and `.github/workflows/ci.yml` has a tripwire step that
+  fails if any `lib/**/*.test.mjs` is absent from the script (the other half of the same hazard).
+- 2026-09-27 (S38): **a sanitizer is only half a guard — the WRITER must normalize to the same
+  shape.** `validOrigin()` accepts origins only, but `connect()` (`js/app.js:~486`) wrote the user's
+  raw string and `setState` does not sanitize, so a pasted `https://host/#/home` connected fine and
+  then silently blanked on the next load. `connect()` now normalizes via `new URL(host).origin`. Same
+  writer/sanitizer lockstep rule the org already recorded for `safeNavUrl`.
+- 2026-09-27 (S25): **Express non-strict routing matches `/api/webhook/` for a route declared as
+  `/api/webhook`, so an exact-string path exemption in a preceding middleware desynchronizes from it.**
+  A tunnel URL registered with a trailing slash got silent 403s with an empty inbox. Any
+  path-matching guard placed in front of a router must normalize trailing slashes the way the router
+  does (`server.js:~292`).
+- 2026-09-27 (smoke harness): a child process spawned outside a `try/finally` survives a throw and
+  the NEXT `npm test` reds with EADDRINUSE — a phantom failure that looks like the code under test.
+  Every `bootServer()` call in `scripts/smoke-test.mjs` is now wrapped, and the handle exposes
+  `.kill()`.
+- 2026-09-27 (S28 test integrity): **a burst written as `for (…) await post(…)` cannot reproduce a
+  same-millisecond id collision** — each iteration gets a fresh `Date.now()`, so the assertion passes
+  with the bug fully restored. The three ring-saturation checks in `scripts/smoke-test.mjs` were
+  vacuous until the burst became `15 × Promise.all(8)`. Mutation-tested all four ways: colliding
+  recId + sequential burst = GREEN (vacuous); colliding recId + concurrent burst = RED, 40 duplicate
+  ids / 0 live files. **Concurrency is load-bearing in that test and is commented as such** — a
+  "tidying" refactor back to a sequential loop silently disarms it. General rule: a regression test
+  for a timestamp-keyed collision MUST issue its requests concurrently, and the way to know it bites
+  is to re-break the code and watch it go red.
+- 2026-09-27 (S28): `retainWebhookFile()`'s `dropWebhookFile(key)` is **unreachable defence in depth**
+  once recIds are unique — no test can cover it, because a key is never replaced. Mutation-tested:
+  removing it with unique ids stays 45/45 green. Kept deliberately; do not "prove it with a test",
+  and do not delete it as dead code either — it is the second line against any future id scheme that
+  can repeat.
+- 2026-09-27 (merge of S25 onto S33, found at merge time): **a probe fixture must satisfy the same
+  input normalization as the code it drives.** S33's connect-race probe told its two fake clusters
+  apart by PATH (`${BASE}/s33a`, `/s33b`); S25 made `connect()` normalize every host to its ORIGIN
+  (lockstep with `sanitize()`), so both collapsed into one host and the probe failed on correct code.
+  It now uses two distinct fake origins and stubs `window.fetch` via `evaluateOnNewDocument` (request
+  interception cannot reliably answer the CORS preflight a cross-origin JSON POST needs). Re-proven
+  by mutation: `isStale = () => false` → pill reads "USER_A · ORG_A", gate FAILS.

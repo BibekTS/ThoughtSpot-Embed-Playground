@@ -410,47 +410,46 @@ async function runUrlActionSchemeProbe(browser) {
 // session — the pill flips to that host's result and the pickers fill with the wrong instance's
 // objects. The guard is app.js's `connectSeq` ticket + the captured-host check after every await.
 //
-// Both "clusters" are SAME-ORIGIN paths on the gate's own server (`/s33a`, `/s33b`), which is what
-// lets the probe stub REST responses with plain request interception — a cross-origin stub would
-// need a CORS preflight that interception does not reliably surface. Host A's session call is held
-// for 2.5s; host B's answers immediately. We connect A, then B, then wait past A's delay and assert
-// nothing of A's ever lands.
+// The two "clusters" must be DISTINCT ORIGINS: connect() normalizes every host to its origin (in
+// lockstep with state.js's sanitize), so path-distinguished hosts on the gate's own server would
+// collapse into one. A real cross-origin stub via request interception would need a CORS preflight
+// that interception does not reliably surface (discovery sends `Content-Type: application/json`),
+// so the probe stubs `window.fetch` itself for the two fake origins, before any app script runs.
+// Host A's session call is held for 2.5s; host B's answers immediately. We connect A, then B, then
+// wait past A's delay and assert nothing of A's ever lands.
 //   Positive control (mandatory): B's own result must actually arrive — otherwise "A did not win"
 //   would be vacuously true on a page where connect() is broken outright.
 async function runConnectRaceProbe(browser) {
-  const HOST_A = `${BASE}/s33a`;
-  const HOST_B = `${BASE}/s33b`;
-  const SESSION = '/api/rest/2.0/auth/session/user';
-  const SEARCH = '/api/rest/2.0/metadata/search';
-  const json = (body) => ({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify(body),
-  });
+  const HOST_A = 'https://s33a.invalid';
+  const HOST_B = 'https://s33b.invalid';
   const probe = await browser.newPage();
   const probeErrors = [];
   probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
   try {
-    await probe.setRequestInterception(true);
-    probe.on('request', async (r) => {
-      const u = r.url();
-      try {
-        if (u.includes('/s33a' + SESSION)) {
-          await sleep(2500); // the hung probe of the mistyped host
-          return void r.respond(json({ display_name: 'USER_A', current_org: { name: 'ORG_A' } }));
+    await probe.evaluateOnNewDocument((A, B) => {
+      const SESSION = '/api/rest/2.0/auth/session/user';
+      const SEARCH = '/api/rest/2.0/metadata/search';
+      const json = (body) => new Response(JSON.stringify(body), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+      const realFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const u = typeof input === 'string' ? input : input?.url || String(input);
+        if (u.startsWith(A + SESSION)) {
+          await new Promise((r) => setTimeout(r, 2500)); // the hung probe of the mistyped host
+          return json({ display_name: 'USER_A', current_org: { name: 'ORG_A' } });
         }
-        if (u.includes('/s33b' + SESSION)) {
-          return void r.respond(json({ display_name: 'USER_B', current_org: { name: 'ORG_B' } }));
+        if (u.startsWith(B + SESSION)) return json({ display_name: 'USER_B', current_org: { name: 'ORG_B' } });
+        if (u.startsWith(A + SEARCH)) {
+          return json([{ metadata_type: 'LOGICAL_TABLE', metadata_id: 'ws-a', metadata_name: 'WS_A' }]);
         }
-        if (u.includes('/s33a' + SEARCH)) {
-          return void r.respond(json([{ metadata_type: 'LOGICAL_TABLE', metadata_id: 'ws-a', metadata_name: 'WS_A' }]));
+        if (u.startsWith(B + SEARCH)) {
+          return json([{ metadata_type: 'LOGICAL_TABLE', metadata_id: 'ws-b', metadata_name: 'WS_B' }]);
         }
-        if (u.includes('/s33b' + SEARCH)) {
-          return void r.respond(json([{ metadata_type: 'LOGICAL_TABLE', metadata_id: 'ws-b', metadata_name: 'WS_B' }]));
-        }
-        return void r.continue();
-      } catch { /* page torn down mid-flight */ }
-    });
+        if (u.startsWith(A) || u.startsWith(B)) return new Response('', { status: 404 });
+        return realFetch(input, init);
+      };
+    }, HOST_A, HOST_B);
 
     await probe.goto(`${BASE}/`, { waitUntil: 'networkidle2', timeout: 30_000 });
     const connectTo = (h) => probe.evaluate((host) => {

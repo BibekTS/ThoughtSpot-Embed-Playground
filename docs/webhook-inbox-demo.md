@@ -51,6 +51,16 @@ Send now ─▶ ThoughtSpot renders per view ─▶ one multipart webhook per re
    ```bash
    ngrok http 3000
    ```
+   > ⚠️ **The tunnel exposes the WHOLE server, including `POST /api/auth/token`** — the trusted-auth
+   > mint endpoint. Anyone with the ngrok URL could otherwise ask it for a token.
+   >
+   > The mitigation is the **Host allowlist**: every route except `/api/webhook` refuses a Host
+   > header that is not loopback, so the tunnel reaches the receiver and nothing else. The inbox
+   > read/clear endpoints (`/api/webhook/events`, `/api/webhook/file/*`) are loopback-only too.
+   >
+   > Only set `TS_PUBLIC_HOST=<your-ngrok-host>` if you genuinely need the tunnel to serve the app —
+   > and then the mint endpoint is reachable again, so put real auth in front of it first. Keep the
+   > tunnel short-lived, and always set `TS_WEBHOOK_SECRET` so unverified deliveries aren't retained.
 3. **Register the webhook** (use the same secret):
    ```bash
    npm run register-webhook -- --url=https://<ngrok>/api/webhook
@@ -112,5 +122,10 @@ Liveboard and fires one webhook per the batching rules. Each card has an **ⓘ**
 - Triggering is **Send now** (UI) or the schedule cadence — ThoughtSpot has no REST "run now".
 - Real deliveries are `multipart/form-data`; the receiver extracts the JSON metadata **and** the report file
   (`GET /api/webhook/file/:id/:fileId`). It keeps only the **last 50** deliveries in memory — hit **Clear** between runs.
+- Attachments are also bounded by **total bytes**, not just delivery count: `TS_WEBHOOK_MAX_BYTES`
+  (default 100 MB) evicts oldest-first, and `TS_WEBHOOK_MAX_FILES` (default 10) caps files per delivery.
+  When `TS_WEBHOOK_SECRET` is set, an unverified delivery's bytes are never retained at all.
 - Payloads are untrusted: every payload string enters the DOM via `textContent`; attachment downloads set a
-  sanitized `Content-Disposition` filename.
+  sanitized `Content-Disposition` filename. They are served as `attachment` (never `inline`) with
+  `X-Content-Type-Options: nosniff` and an allowlisted Content-Type — a sender-supplied `text/html`
+  part would otherwise be stored XSS on the same origin that mints trusted-auth tokens.

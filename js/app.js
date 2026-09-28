@@ -9,7 +9,7 @@
  */
 
 import { initSDK, doRender, HostEvent, Action, RuntimeFilterOp, CustomActionsPosition, CustomActionTarget } from './embed.js';
-import { getState, setState, subscribe, loadState, resetState, getHostSource, holdHostPersist } from './state.js';
+import { getState, setState, subscribe, loadState, resetState, getHostSource, holdHostPersist, isHttpUrl } from './state.js';
 import * as Discovery from './discovery.js';
 import { openAuthModal, buildTrustedAuthConfig, seedAuthHooks } from './auth.js';
 import { fetchAllRows, groupStatements, downloadStatementsPdf } from './invoice-pdf.js';
@@ -583,7 +583,14 @@ async function connect({ silent = false, trustHost = false } = {}) {
   let host = $('#host-input').value.trim().replace(/\/+$/, '');
   if (!host) { toast('Enter a host URL first.'); return; }
   // Auto-prefix https:// when the user omits the scheme (e.g. "my-co.thoughtspot.cloud").
-  if (!/^https?:\/\//i.test(host)) { host = 'https://' + host; $('#host-input').value = host; }
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) { host = 'https://' + host; }
+  // Normalize to the bare ORIGIN, in lockstep with state.js's sanitize(): that guard accepts only
+  // an origin, so writing anything richer here (a pasted '…/#/home') would connect fine now and
+  // then silently vanish on the next load when sanitize blanks it. The writer and the sanitizer
+  // must agree — same rule the org recorded for safeNavUrl.
+  try { host = new URL(host).origin; } catch { toast('That does not look like a valid host URL.'); return; }
+  if (!isHttpUrl(host)) { toast('Host must be an http(s) URL.'); return; }
+  $('#host-input').value = host;
   // S10: only the confirm overlay's own button may trust a shared-link host. Any other route here
   // — notably the token-applied auto-connect — must leave the overlay standing. Typing a DIFFERENT
   // host and connecting is the user authoring their own host, so that is trusted as before.
