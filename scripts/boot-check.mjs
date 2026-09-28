@@ -15,6 +15,9 @@
  *     inert text in the auth chips and the Event Log — it must never execute
  *   ✓ URL-action scheme probe (BACKLOG S13): a `javascript:` urlTemplate from a #s= hash must be
  *     refused at window.open, while a plain https template still opens with placeholders resolved
+ *   ✓ Drill-through probe (BACKLOG S22): the column-scoped action reaches the generated code as
+ *     '<modelGuid>::<column>', a clicked point scopes the searchdata query, Load more advances
+ *     record_offset, the KPI/row-count badge reconciles, and a javascript: link template is refused
  *   ✓ Custom-styles paste probe (BACKLOG S37): a pasted rules object is PARSED, never evaluated —
  *     an embedded expression must not run, while a plain rules object still adds its rule
  *   ✓ Connect-race probe (BACKLOG S33): a slow connect to host A that resolves after a connect to
@@ -343,6 +346,436 @@ async function runAnswerPreconfirmProbe(browser) {
 //   Positive control (mandatory): dispatch a plain https action with a {{placeholder}} → it MUST
 //     open the substituted, encodeURIComponent'd URL. Without it, a broken registry rebuild or a
 //     no-op dispatcher would make the negative assertion vacuously true.
+// Drill-through probe (S22): the demo section's two host-side moves must hold end to end.
+// searchdata is stubbed in-page so this runs with no ThoughtSpot instance — what's under test is
+// OUR wiring, not TS: the column-scoped action reaches the generated code as
+// '<modelGuid>::<column>', the clicked point scopes the detail query, record_offset actually
+// advances on "Load more", the KPI/row-count badge reconciles (and shouts when it doesn't), and a
+// javascript: link template is refused at the anchor rather than rendered.
+/**
+ * GENERATOR-WIDE: every SDK identifier the generated snippet USES must appear in the import line
+ * that same snippet emits. Gate this per rail section, not per feature — the drill-through import
+ * gating was wrong for months precisely because the check only ever looked at one section's body,
+ * and a missing name is a ReferenceError on the first paste.
+ */
+const SDK_ID_RE = /\b(init|AuthType|EmbedEvent|HostEvent|RuntimeFilterOp|CustomActionsPosition|CustomActionTarget|Action|Page|LiveboardEmbed|SearchEmbed|AppEmbed|SpotterEmbed|SageEmbed)\b/g;
+
+function importGapsIn(code) {
+  const m = /import \{([\s\S]*?)\} from '@thoughtspot\/visual-embed-sdk';/.exec(code);
+  if (!m) return null;                       // ai-insights / spotter-chat emit no SDK import
+  const imported = new Set(m[1].split(',').map((x) => x.trim()).filter(Boolean));
+  const body = code.slice(m.index + m[0].length)
+    .replace(/^\s*\/\/.*$/gm, '')            // whole-line comments
+    .replace(/\s\/\/\s.*$/gm, '');           // trailing comments ("https://" has no space before //)
+  const used = new Set(body.match(SDK_ID_RE) || []);
+  return [...used].filter((u) => !imported.has(u));
+}
+
+/**
+ * The only two rail sections that legitimately emit no Visual Embed SDK import: both are host-side
+ * REST/MCP flows, not embeds. Every OTHER section must emit one, so the coverage count cannot drift
+ * downwards unnoticed.
+ */
+const NON_SDK_SECTIONS = new Set(['ai-insights', 'spotter-chat']);
+
+async function runCodeGenImportProbe(browser) {
+  // Drill-through demo defaults: enabled + summaryModelId + measureColumn, no other actions or
+  // filters — the setup a reader lands on from the inspector, and the one that emitted
+  // CustomActionsPosition/CustomActionTarget without importing them.
+  const drill = {
+    enabled: true, summaryModelId: 'model-a', measureColumn: 'Total Sales Amount',
+    detailModelId: 'model-b', detailColumns: ['Order Id', 'Order Date'],
+  };
+  const hash = Buffer.from(JSON.stringify({ section: 'liveboard', liveboardId: 'lb-summary', drill }), 'utf8').toString('base64url');
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    await sleep(900);
+    const snippets = await probe.evaluate(async () => {
+      const out = [];
+      const ids = [...document.querySelectorAll('#embed-list li.embed-item')].map((li) => li.dataset.id);
+      const grab = async (label) => {
+        document.querySelector('[data-tab="code"]')?.click();
+        await new Promise((r) => setTimeout(r, 250));
+        out.push({ id: label, code: document.getElementById('code-view')?.textContent || '' });
+      };
+      for (const id of ids) {
+        document.querySelector(`#embed-list li[data-id="${id}"]`)?.click();
+        await new Promise((r) => setTimeout(r, 150));
+        await grab(id);
+      }
+      // …and the drill-through setup that ALSO emits the point-click leg (HostEvent/RuntimeFilterOp).
+      const st = await import('./js/state.js');
+      st.setState({ section: 'drillthrough', drill: { ...st.getState().drill, drillLiveboardId: 'lb-detail', drillVizId: 'viz-CHART', trigger: 'action' } });
+      await new Promise((r) => setTimeout(r, 150));
+      await grab('drillthrough+pointdrill');
+      return { ids, out };
+    });
+    const gaps = [];
+    const skipped = [];
+    let checked = 0;
+    snippets.out.forEach(({ id, code }) => {
+      const missing = importGapsIn(code);
+      // A snippet with no SDK import line is SKIPPED by the gap check, so counting only the checked
+      // ones lets a code-view regression in any section quietly shrink the coverage and stay green.
+      // Everything except the two known non-SDK sections must therefore emit an SDK import.
+      if (missing === null) { skipped.push(id); return; }
+      checked++;
+      if (missing.length) gaps.push(`${id}: ${missing.join(', ')}`);
+    });
+    const unexpectedSkips = skipped.filter((id) => !NON_SDK_SECTIONS.has(id));
+    return { sections: snippets.ids.length, checked, gaps, skipped, unexpectedSkips, probeErrors };
+  } finally {
+    await probe.close();
+  }
+}
+
+async function runDrillthroughProbe(browser) {
+  const drill = {
+    enabled: true, summaryModelId: 'model-a', measureColumn: 'Meeting count', actionLabel: 'View meetings',
+    detailModelId: 'model-b', detailColumns: ['Meeting Id', 'User Name', 'Booked at'], scopeColumn: 'Stage',
+    drillLiveboardId: 'lb-detail', linkTemplate: 'https://example.invalid/m/{Meeting Id}', pageSize: 2,
+    // The paging/link legs below assert against the docked grid; the modal leg flips this at the end.
+    presentation: 'panel', recordNoun: 'meetings', periodLabel: 'This Year',
+  };
+  const hash = Buffer.from(JSON.stringify({ section: 'drillthrough', liveboardId: 'lb-summary', drill }), 'utf8').toString('base64url');
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    await sleep(900);
+
+    const railOk = await probe.evaluate(() =>
+      [...document.querySelectorAll('#embed-list li')].some((li) => li.textContent.includes('Drill-through')));
+    const panelOk = await probe.evaluate(() =>
+      [...document.querySelectorAll('.acc')].some((a) => a.textContent.includes('Drill-through')));
+
+    const code = await probe.evaluate(async () => {
+      document.querySelector('[data-tab="code"]')?.click();
+      await new Promise((r) => setTimeout(r, 400));
+      return document.getElementById('code-view')?.textContent || document.getElementById('bottom')?.textContent || '';
+    });
+    const codeOk = code.includes("modelColumnNames: ['model-a::Meeting count']")
+      && code.includes('CustomActionsPosition.CONTEXTMENU') && code.includes('CustomActionTarget.VIZ')
+      && code.includes('EmbedEvent.VizPointClick') && code.includes('HostEvent.GetFilters')
+      && code.includes('record_offset: offset');
+
+    // Drive the REAL dispatcher; only the network is faked.
+    const run = await probe.evaluate(async () => {
+      const cols = ['Meeting Id', 'User Name', 'Booked at'];
+      // The fixture emulates the REAL cluster: available_data_row_count comes back equal to the
+      // rows in THIS page, never the grand total (verified on 26.8.0.cl, contrary to the REST
+      // schema's "Total available data row count"). Page 1 is therefore indistinguishable from a
+      // result of exactly 2 rows except by asking for page 2 — so a full page must keep "Load more"
+      // alive and must NOT let the badge claim a reconciliation it cannot know yet.
+      const pages = [
+        { column_names: cols, data_rows: [['m1', 'Lakshman', '2026-01-02'], ['m2', 'Lakshman', '2026-01-03']], available_data_row_count: 2, returned_data_row_count: 2 },
+        { column_names: cols, data_rows: [['m3', 'Lakshman', '2026-01-04']], available_data_row_count: 1, returned_data_row_count: 1 },
+      ];
+      let call = 0; const bodies = [];
+      const real = window.fetch;
+      window.fetch = async (url, opts) => {
+        if (String(url).includes('searchdata')) {
+          bodies.push(JSON.parse(opts.body));
+          return new Response(JSON.stringify({ contents: [pages[Math.min(call++, 1)]] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return real(url, opts);
+      };
+      const click = (measure) => window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: { clickedPoint: {
+          selectedAttributes: [{ column: { name: 'Stage' }, value: 'Prospecting' }, { column: { name: 'User Name' }, value: 'Lakshman' }],
+          selectedMeasures: [{ column: { name: 'Meeting count' }, value: measure }],
+        } },
+      });
+      await click(3);
+      await new Promise((r) => setTimeout(r, 300));
+      const p1 = document.getElementById('dt-panel');
+      const first = {
+        rows: p1?.querySelectorAll('.dt-table tbody tr').length,
+        more: !!p1?.querySelector('.dt-more'),
+        badge: p1?.querySelector('.dt-badge')?.textContent,
+        mismatch: !!p1?.querySelector('.dt-badge--mismatch'),
+      };
+      p1?.querySelector('.dt-more')?.click();
+      await new Promise((r) => setTimeout(r, 300));
+      const p2 = document.getElementById('dt-panel');
+      const after = {
+        rows: p2?.querySelectorAll('.dt-table tbody tr').length, more: !!p2?.querySelector('.dt-more'),
+        href: p2?.querySelector('.dt-link')?.getAttribute('href'),
+        badge: p2?.querySelector('.dt-badge')?.textContent, mismatch: !!p2?.querySelector('.dt-badge--mismatch'),
+      };
+      // A KPI that disagrees with the row count must be flagged, not quietly shown.
+      await click(99);
+      await new Promise((r) => setTimeout(r, 300));
+      const mismatchShown = !!document.querySelector('.dt-badge--mismatch');
+      // A javascript: link template must never become a live anchor.
+      const st = await import('./js/state.js');
+      st.setState({ drill: { ...st.getState().drill, linkTemplate: 'javascript:window.__dtPwned=1//{Meeting Id}' } });
+      await click(3);
+      await new Promise((r) => setTimeout(r, 300));
+      const p3 = document.getElementById('dt-panel');
+      const guard = { anchors: p3?.querySelectorAll('.dt-link').length, blocked: p3?.querySelectorAll('.dt-link-bad').length, pwned: window.__dtPwned === 1 };
+
+      // Modal presentation: the record-list surface. Same `dt` state, different painter.
+      call = 0; // rewind the stub so this leg sees a FULL first page, not the tail of the last one
+      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', linkTemplate: 'https://example.invalid/m/{Meeting Id}' } });
+      await click(3);
+      await new Promise((r) => setTimeout(r, 300));
+      const mp = document.getElementById('dt-modal-panel');
+      const modal = {
+        mounted: !!mp,
+        panelGone: !document.getElementById('dt-panel'),
+        title: mp?.querySelector('.modal-title')?.textContent,
+        period: mp?.querySelector('.modal-sub')?.textContent,
+        summary: mp?.querySelector('.dt-summary')?.textContent,
+        records: mp?.querySelectorAll('.dt-rec').length,
+        chevrons: mp?.querySelectorAll('.dt-rec-chev').length,
+        href: mp?.querySelector('a.dt-rec')?.getAttribute('href'),
+        more: !!mp?.querySelector('.dt-more'),
+      };
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await new Promise((r) => setTimeout(r, 120));
+      modal.closedByEsc = !document.getElementById('dt-modal');
+      // TABLE right-click payload, copied from a real 26.8.0.cl response (see docs/org-memory):
+      // contextMenuPoints is an OBJECT, selectedAttributes is EMPTY, and the row's attributes are
+      // in deselectedAttributes. Reading only selectedAttributes yields no scope at all, and the
+      // detail query silently returns the whole model — which is what shipped before this fixture.
+      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', scopeColumn: 'Employee Name', measureColumn: 'Total Sales Amount' } });
+      document.getElementById('dt-modal')?.remove();
+      call = 0;
+      const tableQueryIdx = bodies.length; // keep the paging legs' bodies intact
+      await window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: {
+          vizId: 'viz-TABLE',
+          contextMenuPoints: {
+            clickedPoint: {
+              selectedAttributes: [],
+              deselectedAttributes: [
+                { column: { name: 'Employee Name' }, value: 'Lynn Tsoflias' },
+                { column: { name: 'Territory' }, value: 'Pacific' },
+              ],
+              // The user right-clicked the QUOTA cell, so that is what ThoughtSpot reports as
+              // selected — modelColumnNames scopes the action to the VIZ, not to one column, so this
+              // is reachable in the real UI. The configured measureColumn must still win, otherwise
+              // the modal is titled after a '{Null}' quota (observed on a real screenshot).
+              selectedMeasures: [{ column: { name: 'Total Sales Amount Quota' }, value: '{Null}' }],
+              deselectedMeasures: [
+                { column: { name: 'Total Sales Amount' }, value: '134280.9824' },
+                { column: { name: 'Quota %' }, value: '{Null}' },
+              ],
+            },
+            selectedPoints: [],
+          },
+        },
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      const tp = document.getElementById('dt-modal-panel');
+      const tableClick = {
+        query: bodies[tableQueryIdx]?.query_string,
+        title: tp?.querySelector('.modal-title')?.textContent,
+        summary: tp?.querySelector('.dt-summary')?.textContent,
+      };
+
+      // Drill scoping: VizPointClick fires for EVERY viz on the board, so a click from a viz other
+      // than the configured one must not drill away. Only the negative case is asserted here — the
+      // positive case re-renders a real embed, which this stubbed page has no business doing.
+      st.setState({ drill: { ...st.getState().drill, trigger: 'action', drillLiveboardId: 'lb-detail', drillVizId: 'viz-CHART' } });
+      document.getElementById('dt-modal')?.remove();
+      await window.__onVizPointClick({ data: { vizId: 'viz-TABLE', clickedPoint: { selectedAttributes: [{ column: { name: 'Stage' }, value: 'Prospecting' }] } } });
+      await new Promise((r) => setTimeout(r, 200));
+      const scoping = { otherVizDrilled: !!document.getElementById('drill-bar') };
+
+      // S31 — a Month(...) bucket covers a RANGE of days. Emitting only the bucket's start lists
+      // the 1st of the month while the KPI covers the whole month, and the badge then flags a
+      // mismatch that is not real. `scopeColumn` is the UNSTRIPPED name on purpose: the user types
+      // 'Order Date', the click reports 'Month(Order Date)', and those must still match.
+      call = 0;
+      document.getElementById('dt-modal')?.remove();
+      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', scopeColumn: 'Order Date', measureColumn: 'Total Sales Amount', trigger: 'action' } });
+      const monthIdx = bodies.length;
+      await window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: { clickedPoint: {
+          selectedAttributes: [],
+          deselectedAttributes: [
+            { column: { name: 'Month(Order Date)' }, value: '1733011200' },
+            { column: { name: 'Territory' }, value: 'Pacific' },
+          ],
+          selectedMeasures: [{ column: { name: 'Total Sales Amount' }, value: '10' }],
+        } },
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      const monthQuery = bodies[monthIdx]?.query_string;
+
+      // S32 — two overlapping clicks: A is SLOW, B is FAST. A's rows must never land in B's panel.
+      const raceCols = ['Meeting Id', 'User Name', 'Booked at'];
+      window.fetch = async (url, opts) => {
+        if (String(url).includes('searchdata')) {
+          const body = JSON.parse(opts.body); bodies.push(body);
+          const isA = /a-scope/.test(body.query_string);
+          await new Promise((r) => setTimeout(r, isA ? 500 : 20));
+          const rows = isA ? [['a1', 'A', '2026-01-01'], ['a2', 'A', '2026-01-02']]
+            : [['b1', 'B', '2026-02-01'], ['b2', 'B', '2026-02-02']];
+          return new Response(JSON.stringify({ contents: [{ column_names: raceCols, data_rows: rows, available_data_row_count: 2, returned_data_row_count: 2 }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return real(url, opts);
+      };
+      document.getElementById('dt-modal')?.remove();
+      st.setState({ drill: { ...st.getState().drill, presentation: 'panel', scopeColumn: 'Stage' } });
+      const clickScope = (v) => window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: { clickedPoint: {
+          selectedAttributes: [{ column: { name: 'Stage' }, value: v }],
+          selectedMeasures: [{ column: { name: 'Total Sales Amount' }, value: '5' }],
+        } },
+      });
+      const pA = clickScope('a-scope');
+      await new Promise((r) => setTimeout(r, 60));
+      const pB = clickScope('b-scope');
+      await Promise.all([pA, pB]);
+      await new Promise((r) => setTimeout(r, 800));   // long enough for A's slow page to land
+      const rp = document.getElementById('dt-panel');
+      const race = {
+        rows: rp?.querySelectorAll('.dt-table tbody tr').length,
+        firstCell: rp?.querySelector('.dt-table tbody tr td')?.textContent,
+        moreButtons: rp?.querySelectorAll('.dt-more').length,
+      };
+
+      // S30 — a point-click drill must carry NUMERIC epochs on the UNDERLYING column. The drill
+      // re-renders a real embed; that is contained inside this async dispatcher, so any failure
+      // there surfaces as a rejected promise here rather than a page error.
+      document.getElementById('dt-panel')?.remove();
+      st.setState({ drill: { ...st.getState().drill, trigger: 'action', drillLiveboardId: 'lb-detail', drillVizId: '', scopeColumn: '' } });
+      window.__TS_PLAYGROUND_PROBE = true;   // opt in to the carried-filter diagnostic
+      window.__lastDrillFilters = null;
+      // Park the embed container so the drill's doRender cannot create a live iframe against the
+      // (deliberately absent) host. The SDK then fails fast INSIDE the async dispatcher, which is
+      // a rejected promise this probe catches — not a page error.
+      const cont = document.getElementById('ts-embed-container');
+      if (cont) cont.id = 'ts-embed-container-parked';
+      try {
+        await window.__onVizPointClick({ data: { vizId: 'viz-TABLE', clickedPoint: {
+          selectedAttributes: [],
+          deselectedAttributes: [
+            { column: { name: 'Employee Name' }, value: 'Lynn Tsoflias' },
+            { column: { name: 'Day(Order Date)' }, value: '1769644800' },
+          ],
+          selectedMeasures: [{ column: { name: 'Total Sales Amount' }, value: '134280.9824' }],
+        } } });
+      } catch (_) { /* only the carried filters matter here, not the detail board's render */ }
+      if (cont) cont.id = 'ts-embed-container';
+      await new Promise((r) => setTimeout(r, 250));
+      const carried = {
+        filters: (window.__lastDrillFilters || []).map((f) => ({
+          columnName: f.columnName, values: f.values, types: f.values.map((v) => typeof v),
+        })),
+        bar: document.querySelector('#drill-bar .drill-filters')?.textContent || '',
+      };
+      return { bodies, first, after, mismatchShown, guard, modal, scoping, tableClick, monthQuery, race, carried };
+    });
+
+    const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
+    // The load-bearing assertion: after a FULL page, "Load more" must still be offered. A
+    // row-count comparison against available_data_row_count would have hidden it here.
+    const pagingOk = run.bodies[0]?.record_offset === 0 && run.bodies[0]?.record_size === 2
+      && run.bodies[1]?.record_offset === 2
+      && run.first.rows === 2 && run.first.more && run.after.rows === 3 && !run.after.more;
+    // Mid-paging the total is unknown, so the badge reads "2+" and must NOT flag a mismatch;
+    // once a short page proves the end, it reconciles 3 against 3.
+    const badgeOk = /2\+ meetings/.test(run.first.badge || '') && !run.first.mismatch
+      && /Meeting count: 3 · 3 meetings/.test(run.after.badge || '') && !run.after.mismatch && run.mismatchShown;
+    const linkOk = run.after.href === 'https://example.invalid/m/m1'
+      && run.guard.anchors === 0 && run.guard.blocked > 0 && !run.guard.pwned;
+    const m = run.modal;
+    const modalOk = m.mounted && m.panelGone && m.closedByEsc
+      && m.title === 'Meeting count' && m.period === 'This Year'
+      && /meetings/.test(m.summary || '') && /Meeting count: 3/.test(m.summary || '')
+      && m.records === 2 && m.chevrons === 2 && m.href === 'https://example.invalid/m/m1' && m.more;
+    const t = run.tableClick;
+    const tableClickOk = t.query === "[Meeting Id] [User Name] [Booked at] [Employee Name] = 'Lynn Tsoflias'"
+      && t.title === 'Total Sales Amount' && /134,280\.9824/.test(t.summary || '')
+      && /Employee Name: Lynn Tsoflias/.test(t.summary || '');
+    const drillScopeOk = run.scoping.otherVizDrilled === false;
+    // 1733011200 = 2024-12-01 UTC. The whole month, in the same token syntax the day clause uses.
+    const monthRangeOk = run.monthQuery
+      === "[Meeting Id] [User Name] [Booked at] [Order Date] >= '12/01/2024' [Order Date] <= '12/31/2024'";
+    const raceOk = run.race.rows === 2 && run.race.firstCell === 'b1' && run.race.moreButtons === 1;
+    const c = run.carried.filters;
+    const dateCarried = c.find((f) => f.columnName === 'Order Date');
+    const carriedOk = c.length === 2
+      && !c.some((f) => /[()]/.test(f.columnName))                       // no Day(...) wrapper survives
+      && !!dateCarried && dateCarried.values.length === 1
+      && dateCarried.values[0] === 1769644800 && dateCarried.types[0] === 'number'
+      && /Order Date: 2026-01-29/.test(run.carried.bar);
+    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk,
+      drillScopeOk, monthRangeOk, raceOk, carriedOk, monthQuery: run.monthQuery, carried: run.carried, probeErrors };
+  } finally {
+    await probe.close();
+  }
+}
+
+/**
+ * A shared link's `flags` are NOT key-whitelisted by state.js sanitize, so a link can carry
+ * `flags.<section>.liveboardId`. doRender spreads the explicit ids AFTER ...flags, so the render
+ * uses the picked board — and the generated snippet must agree, or the user copies code aimed at a
+ * different object than the tool just showed them.
+ */
+async function runFlagOverrideProbe(browser) {
+  const hash = Buffer.from(JSON.stringify({
+    section: 'liveboard', liveboardId: 'GOOD-LB',
+    // Only liveboardId is planted: `vizId` is NOT spread after ...flags for the 'liveboard' case,
+    // so a flags vizId legitimately reaches the real embed there and the snippet must keep matching
+    // it. The claim under test is narrower — a flag cannot re-point the PICKED object.
+    flags: { liveboard: { liveboardId: 'ATTACKER-LB', fullHeight: true } },
+  }), 'utf8').toString('base64url');
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    await sleep(900);
+    const r = await probe.evaluate(async () => {
+      const st = await import('./js/state.js');
+      // Layer 1 (S39): sanitize() allowlists flag keys, so the link's liveboardId must be gone.
+      const strippedByLink = st.getState().flags?.liveboard?.liveboardId === undefined;
+      // Layer 2 (S29): plant the hostile flag past sanitize (setState does not sanitize) so the
+      // render/code-gen assertions below are not vacuous.
+      st.setState({ flags: { liveboard: { liveboardId: 'ATTACKER-LB', fullHeight: true } } });
+      await new Promise((r2) => setTimeout(r2, 400));
+      document.querySelector('[data-tab="code"]')?.click();
+      await new Promise((r2) => setTimeout(r2, 400));
+      return {
+        strippedByLink,
+        // POSITIVE CONTROL: the hostile flag must actually be in state, or every assertion below
+        // passes vacuously.
+        flagSurvived: st.getState().flags?.liveboard?.liveboardId === 'ATTACKER-LB',
+        benignFlagSurvived: st.getState().flags?.liveboard?.fullHeight === true,
+        renderedId: window.TS_CONFIG?.liveboardId,
+        code: document.getElementById('code-view')?.textContent || '',
+      };
+    });
+    return {
+      strippedByLink: r.strippedByLink,
+      flagSurvived: r.flagSurvived,
+      benignFlagSurvived: r.benignFlagSurvived,
+      renderUsesPicked: r.renderedId === 'GOOD-LB',
+      // The snippet must name the picked board, must not mention the attacker's at all, and must
+      // still carry the benign flag (proof the filter is narrow, not a blanket flag drop).
+      codeUsesPicked: /liveboardId: 'GOOD-LB'/.test(r.code),
+      codeFreeOfAttacker: !/ATTACKER/.test(r.code),
+      codeKeepsBenignFlag: /fullHeight: true/.test(r.code),
+      probeErrors,
+    };
+  } finally {
+    await probe.close();
+  }
+}
+
 async function runUrlActionSchemeProbe(browser) {
   const EVIL = 'javascript:window.__pwned=1';
   const GOOD = 'https://example.invalid/x?id={{Customer ID}}';
@@ -774,6 +1207,51 @@ try {
   const urlActOk = urlAct.dispatcherReady && !urlAct.pwned && urlAct.hostileOpened.length === 0
     && urlAct.goodOpened && urlAct.probeErrors.length === 0;
 
+  const flagOv = await runFlagOverrideProbe(browser);
+  console.log('');
+  console.log(`Flag-override probe (S39) — sanitize strips a link's flags.<section>.liveboardId: ${flagOv.strippedByLink}`);
+  console.log(`Flag-override probe (S29) — hostile flag planted past sanitize (positive control): ${flagOv.flagSurvived}`);
+  console.log(`Flag-override probe (S29) — render uses the PICKED liveboardId: ${flagOv.renderUsesPicked}`);
+  console.log(`Flag-override probe (S29) — generated snippet uses the PICKED liveboardId: ${flagOv.codeUsesPicked}`);
+  console.log(`Flag-override probe (S29) — generated snippet never mentions the flag's id: ${flagOv.codeFreeOfAttacker}`);
+  console.log(`Flag-override probe (S29) — a BENIGN flag is still emitted (filter is narrow): ${flagOv.codeKeepsBenignFlag}`);
+  flagOv.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const flagOvOk = flagOv.strippedByLink && flagOv.flagSurvived && flagOv.benignFlagSurvived && flagOv.renderUsesPicked
+    && flagOv.codeUsesPicked && flagOv.codeFreeOfAttacker && flagOv.codeKeepsBenignFlag
+    && flagOv.probeErrors.length === 0;
+
+  const dtp = await runDrillthroughProbe(browser);
+  console.log('');
+  console.log(`Drill-through probe (S22) — rail item + inspector panel render: ${dtp.railOk && dtp.panelOk}`);
+  console.log(`Drill-through probe (S22) — code-gen emits '<modelGuid>::<column>' scoping + both handlers: ${dtp.codeOk}`);
+  console.log(`Drill-through probe (S22) — clicked point scopes the searchdata query: ${dtp.scopedQuery}`);
+  console.log(`Drill-through probe (S22) — a FULL page keeps Load more alive; offset advances and appends: ${dtp.pagingOk}`);
+  console.log(`Drill-through probe (S22) — badge stays neutral ("N+") until the count is known, then reconciles: ${dtp.badgeOk}`);
+  console.log(`Drill-through probe (S22) — {Column} link resolves; javascript: template refused: ${dtp.linkOk}`);
+  console.log(`Drill-through probe (S22) — modal record list: title/period/summary, rows+chevrons, Esc closes: ${dtp.modalOk}`);
+  console.log(`Drill-through probe (S22) — TABLE right-click (deselectedAttributes) scopes the query + badge: ${dtp.tableClickOk}`);
+  console.log(`Drill-through probe (S22) — a click from a DIFFERENT viz does not drill away: ${dtp.drillScopeOk}`);
+  console.log(`Drill-through probe (S31) — a Month(...) click queries the WHOLE month, not just the 1st: ${dtp.monthRangeOk}`);
+  console.log(`  query: ${dtp.monthQuery}`);
+  console.log(`Drill-through probe (S32) — a slow first click's rows never land in the second click's panel: ${dtp.raceOk}`);
+  console.log(`Drill-through probe (S30) — the drill carries NUMERIC epochs on the unwrapped column: ${dtp.carriedOk}`);
+  console.log(`  carried: ${JSON.stringify(dtp.carried?.filters ?? [])}`);
+  dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
+    && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.tableClickOk && dtp.drillScopeOk
+    && dtp.monthRangeOk && dtp.raceOk && dtp.carriedOk && dtp.probeErrors.length === 0;
+
+  const gen = await runCodeGenImportProbe(browser);
+  console.log('');
+  console.log(`Code-gen import probe (S29) — sections walked: ${gen.sections} (snippets with an SDK import: ${gen.checked})`);
+  console.log(`Code-gen import probe (S29) — every SDK identifier used is also imported: ${gen.gaps.length === 0}`);
+  gen.gaps.forEach((g) => console.log('  - missing import:', g));
+  console.log(`Code-gen import probe (S29) — every embed section still emits SDK code: ${gen.unexpectedSkips.length === 0}`);
+  gen.unexpectedSkips.forEach((id) => console.log('  - section emitted no SDK import:', id));
+  gen.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const genOk = gen.checked > 0 && gen.gaps.length === 0 && gen.unexpectedSkips.length === 0
+    && gen.probeErrors.length === 0;
+
   // S10 — one run per trusted auth mode; each is a distinct SDK authentication path.
   const exfilResults = [];
   for (const [authType, expectPath, testAuthChange] of [
@@ -828,7 +1306,7 @@ try {
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
     && s3pre.confirmShown && s3pre.noDiscoveryContact && s3pre.noAnyContact
-    && urlActOk && exfilOk && pasteOk && raceOk;
+    && urlActOk && dtOk && genOk && flagOvOk && exfilOk && pasteOk && raceOk;
   console.log(ok ? '\nBOOT CHECK: PASS' : '\nBOOT CHECK: FAIL');
 } finally {
   try { await browser?.close(); } catch { /* already gone */ }

@@ -268,17 +268,20 @@ export function doRender(section, config, callbacks, options = {}) {
     case 'liveboard':
     case 'liveboard-custom':
     case 'ai-highlights':
+    case 'drillthrough':
       embed = new LiveboardEmbed('#ts-embed-container', {
         frameParams: {},
         liveboardV2: true,
         isLiveboardMasterpiecesEnabled: true,
-        liveboardId: config.liveboardId,
         hiddenActions,
         disabledActions,
         customActions,
         ...(rtParams && { runtimeParameters: rtParams }),
         ...fhExtra,
         ...flags,
+        // The ids go LAST: `flags` comes from the shared link, and a stray `liveboardId`/`vizId`
+        // key in it must not be able to redirect the embed away from the picked object.
+        liveboardId: config.liveboardId,
       });
       break;
 
@@ -290,27 +293,27 @@ export function doRender(section, config, callbacks, options = {}) {
         // only so it reads like a single viz rather than a live search session.
         embed = new SearchEmbed('#ts-embed-container', {
           frameParams: {},
-          answerId: config.answerId,
-          hideSearchBar: true,
           hiddenActions,
           disabledActions,
           customActions,
           ...(rtParams && { runtimeParameters: rtParams }),
           ...flags,
+          answerId: config.answerId,     // after ...flags — a shared link must not re-point it
+          hideSearchBar: true,
         });
       } else {
         embed = new LiveboardEmbed('#ts-embed-container', {
           frameParams: {},
           liveboardV2: true,
           isLiveboardMasterpiecesEnabled: true,
-          liveboardId: config.liveboardId,
-          vizId: config.vizId,
           hiddenActions,
           disabledActions,
           customActions,
           ...(rtParams && { runtimeParameters: rtParams }),
           ...fhExtra,
           ...flags,
+          liveboardId: config.liveboardId,   // after ...flags — see the 'liveboard' case above
+          vizId: config.vizId,
         });
       }
       break;
@@ -416,6 +419,17 @@ export function doRender(section, config, callbacks, options = {}) {
       onEvent('CustomAction', JSON.stringify(payload?.data ?? payload, null, 2));
       // Notify app.js to display in the custom action panel
       if (window.__onCustomAction) window.__onCustomAction(payload);
+    })
+    .on(EmbedEvent.VizPointClick, (payload) => {
+      // A click on a data point in any viz. Carries clickedPoint.selectedAttributes[] and
+      // .selectedMeasures[] ({ value, column: { name } }) — the raw payload is forwarded so
+      // app.js can read those directly and turn a click into a drill-through.
+      // Gated on config._vizPointClick (set only for the drill-through demo with drill enabled):
+      // while this event is subscribed a LEFT click fires the host event and ThoughtSpot shows NO
+      // menu of its own (verified live on 26.8.0.cl), so subscribing it on every embed would
+      // silently take left-click away from plain Liveboard/Viz/Search embeds.
+      if (!config._vizPointClick) return;
+      if (window.__onVizPointClick) window.__onVizPointClick(payload);
     })
     .on(EmbedEvent.Save, (payload) => {
       // Fires when a user clicks Save inside the embed. ThoughtSpot has NO server-side

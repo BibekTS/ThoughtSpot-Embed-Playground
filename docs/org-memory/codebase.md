@@ -280,6 +280,233 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `ba27a041aaf037086be5c0f17b215494bb6ca4dc` at f927b9c). But byte-identity is wrong for any line
   carrying a cross-reference: `# see step 3's commit rule` pointed into SKILL.md while `qa-verifier.md`
   has its own step 3 (`npm run boot-check`) — a reader of the agent file alone resolves it wrongly.
+- 2026-09-23 (S22): three SDK shapes for the drill-through demo, MCP-verified against the **pinned
+  1.49.0** (all three available at that version — do not re-derive them from memory):
+  `CustomAction.dataModelIds = { modelIds?: string[], modelColumnNames?: string[] }`, allowed on
+  `VIZ`/`ANSWER`/`SPOTTER` targets only, with column entries formatted **`'<modelGuid>::<columnName>'`**
+  — that `::` join is the whole mechanism behind "this action shows on one column and nowhere else"
+  (needs SDK 1.43.0+ / 10.14.0.cl+, same gate as `customActions` itself).
+  `EmbedEvent.VizPointClick` delivers `payload.data.clickedPoint.selectedAttributes[]` **and**
+  `.selectedMeasures[]`, each `{ value, column: { name } }` — the measures half is what makes a
+  KPI-vs-row-count reconciliation possible from a click alone.
+  `HostEvent.GetFilters` **returns a promise directly** and takes no callback argument (unlike most
+  HostEvents) — `await embed.trigger(HostEvent.GetFilters)`; items come back as
+  `{ column, operator, values, applicable_viz, linking }`, i.e. `column`, not `columnName`, so they
+  need mapping before they can be passed as runtime filters.
+- 2026-09-23 (S22): `POST /api/rest/2.0/searchdata` was already called (`aiSearchData`) but through the
+  **direct** `api()` path, so it was CORS-blocked under cookieless trusted auth and silently
+  unusable there. Any new REST call the app makes should default to `apiRest()` (auto-relays when a
+  bearer is set) **and** be added to `REST_RELAY_ALLOW` in `server.js` — the two must change together
+  or the call works in browser-session auth and fails in trusted auth, which is the mode most demos run.
+- 2026-09-23 (S22): COMPACT `data_rows` are **arrays aligned to `column_names`**, not objects — any
+  new row renderer needs a name→value mapping step before it can do placeholder substitution or
+  column lookup. `available_data_row_count` is the full match count (not the page size), which is what
+  makes `record_offset` paging and a row-count reconciliation badge possible from one response.
+- 2026-09-24 (S22, found by the first LIVE run): **`available_data_row_count` is NOT the total.**
+  The REST v2 `searchData` response schema documents it as "Total available data row count", but on
+  `ps-internal` (26.8.0.cl) it comes back **equal to `returned_data_row_count` on every page** —
+  `record_size` 3/10/100/1000 all returned `available == returned == record_size`, and a request at
+  `record_offset: 90` still said 100. It only drops below the page size when the result genuinely
+  runs out. So: a FULL page tells you nothing about the total, and any `loaded < available` paging
+  predicate silently stops after page one. The reliable end-of-data signal is a **short page**.
+  `js/app.js dtKnownTotal()` encodes the safe reading: trust a reported total only when it exceeds
+  what you already hold, otherwise treat a short page as "that's all" and a full page as "unknown".
+  The pre-existing `aiSearchData` consumer inherits the same wrong assumption — filed as S24.
+- 2026-09-24 (S22, process): the headless probe for this feature **passed while the code was wrong**,
+  because the probe's own fixture hard-coded `available_data_row_count: 3` — i.e. the fixture asserted
+  the author's assumption about the upstream contract rather than the contract. A stub can only test
+  the code against the fixture's beliefs. Rule of thumb: whenever a fixture encodes an upstream
+  response shape, the value chosen must come from an observed real response, and the probe should
+  cover the awkward case (here: a full page, where total and page size are indistinguishable).
+- 2026-09-25 (S22, found by the first LIVE click test): **a TABLE right-click reports the row's
+  attributes in `deselectedAttributes`, not `selectedAttributes`** — and `contextMenuPoints` is an
+  OBJECT (`{clickedPoint, selectedPoints}`), not the array the old extractor assumed. Verified on
+  26.8.0.cl by right-clicking a `Total Sales Amount` cell on a TABLE_MODE viz: `selectedAttributes`
+  came back `[]` while `deselectedAttributes` held `Employee Name='Lynn Tsoflias'`,
+  `Territory='Pacific'`, `Day(Order Date)='1769644800'`, and `selectedMeasures` held the clicked
+  `Total Sales Amount`. `deselectedMeasures` held the row's OTHER measures, mostly `'{Null}'` — so
+  never fall back to it for "the measure the user clicked". CHART clicks are different: there
+  `selectedAttributes` IS populated (a bubble/bar click carried Territory + Product), so the
+  deselected fallback must be conditional on selectedAttributes being empty. Encoded in
+  `clickedPoints()` / `clickedAttributes()` / `dtClickedMeasure()` in app.js. Symptom when wrong:
+  the detail query loses its scope entirely and silently returns the whole model.
+- 2026-09-25 (S22): `dataModelIds.modelColumnNames` matches the column's **display name as the viz
+  shows it**, not the underlying model column. `'<modelGuid>::Total Sales Amount'` put the action in
+  the right-click menu of that column; the model's own column is named `Sales Amount`. Confirmed
+  live — the menu read Filter · Drill down · Show underlying data · SpotIQ analyze · Copy to
+  clipboard · **View orders**.
+- 2026-09-25 (S22, driving the embed in tests): ThoughtSpot renders each Liveboard tile as a `div`
+  whose **`id` is the viz GUID** (`#c27c6f29-…`), which is a far steadier hook than tile titles or
+  `data-testid`s. Its context menu does NOT use `role="menuitem"` — match menu entries by exact leaf
+  text instead. Tiles render lazily, so `scrollIntoView` + retry before looking for marks/cells.
+  Puppeteer reaches into the cross-origin TS iframe fine (`page.frames()` → `evaluateHandle` →
+  `ElementHandle.click()`), so a full live click-path test is possible without any TS-side setup.
+- 2026-09-25 (S22, found by reviewing a real screenshot): a drill-through must carry **every**
+  attribute on the clicked point, not one. The clicked measure on a table is the intersection of all
+  its attribute columns — `Employee Quota Achievement` is Employee × Territory × Day, so scoping the
+  detail query to Employee alone returned ~10× the rows and the number could never reconcile. Two
+  ThoughtSpot syntax facts make the full scope work:
+  (a) bucketed attributes come back wrapped — `Day(Order Date)` — and the wrapper must be stripped
+      before use as a search token (`[Order Date]`), or the query is rejected as "Bad tokens";
+  (b) the date literal ThoughtSpot's search parser accepts here is **`MM/DD/YYYY`**. Verified on
+      26.8.0.cl: `[Order Date] = '01/29/2026'` → 178 rows summing to exactly the clicked KPI, while
+      `'2026-01-29'` and bare `2026-01-29` both 400, and `[Order Date].daily = '2026-01-29'` silently
+      returned the WRONG rows (200 rows, different sum) rather than erroring. That format is
+      locale-shaped — a non-US cluster may need DD/MM/YYYY.
+- 2026-09-25 (S22): **which reconciliation is correct depends on the measure.** A count measure
+  ("57 Conversations") reconciles against the detail ROW COUNT; a sum ("Total Sales Amount") never
+  will — it reconciles against the SUM of the matching detail column. `dtReconcile()` picks
+  automatically: if a detail column carries the same name as the clicked measure, add it up,
+  otherwise count rows. Getting this wrong doesn't just look odd — it flashes a false mismatch
+  warning on a demo that is actually correct.
+- 2026-09-25 (S22, correcting an earlier entry): **`dataModelIds.modelColumnNames` scopes a custom
+  action to a VISUALIZATION, not to a column.** The doc wording is "displayed only on visualizations
+  that are created using the specified modelColumnNames", and live behaviour matches: with the action
+  scoped to `'<guid>::Total Sales Amount'`, right-clicking the neighbouring `Total Sales Amount Quota`
+  cell on the same table still shows it. An earlier entry here implied per-cell targeting — it is not.
+  Consequence for any drill-through: never take "the measure the user clicked" as the measure the
+  feature is about. Look up the CONFIGURED measure across `selectedMeasures` ∪ `deselectedMeasures`
+  on the clicked point and prefer that; on this Liveboard the quota column is `{Null}`, so taking the
+  clicked cell produced a modal titled "Total Sales Amount Quota: {Null}".
+- 2026-09-25 (S22): a "✓ reconciled" marker must be gated on a comparison having actually HAPPENED —
+  numeric measure, paging settled, values equal — not merely on paging being finished. The first cut
+  showed ✓ next to a `{Null}` KPI, which is worse than showing nothing: it asserts a check that was
+  never performed.
+- 2026-09-25 (tooling): the SpotterCode MCP `execute-thoughtspot-code` session is pinned to the
+  **Primary** org and there is no way to move it — `/api/rest/2.0/auth/session/org` (POST and PUT),
+  `/api/rest/2.0/auth/orgs/switch` and `/callosum/v1/tspublic/v1/session/orgs/update` all 404, the
+  `x-requested-orgid` family of headers is ignored (400), and `/callosum/v1/session/orgs/update`
+  400s on every body shape tried. Objects in another org return "Logical Table not found". For
+  ps-internal content living in the `Bibek` org, verify through the playground's own
+  `/api/ts-rest` relay instead — same cluster, same user, correct org.
+- 2026-09-25 (S22, precise): **ThoughtSpot reports the exact CELL, not just the row.** Captured live
+  on 26.8.0.cl by right-clicking two cells of the same table row:
+  clicking the `Total Sales Amount` cell → `selectedMeasures=[Total Sales Amount 134280.9824]`,
+  `selectedAttributes=[]`, `deselectedAttributes=[Employee Name, Territory, Day(Order Date)]`,
+  `deselectedMeasures=[Quota, Quota %]`.
+  Clicking the `Employee Name` cell on that same row → `selectedAttributes=[Employee Name
+  'Lynn Tsoflias']`, `selectedMeasures=[]`, `deselectedAttributes=[Territory, Day(Order Date)]`,
+  `deselectedMeasures=[all three measures]`.
+  So the rule is: **`selected*` is the cell that was clicked; `deselected*` is the rest of that row;
+  their union is the full row.** That is why a measure-cell click leaves selectedAttributes empty —
+  no attribute was the target. Anything needing "the whole row" must read both buckets; anything
+  needing "what did they actually click" reads `selected*` alone.
+- 2026-09-25 (S22, click matrix, verified on 26.8.0.cl): **left-click and right-click are not two
+  routes to the same menu.** Observed on both a table cell and a chart mark, with VizPointClick
+  subscribed: a LEFT click fires `EmbedEvent.VizPointClick` immediately and ThoughtSpot shows **no
+  menu**; a RIGHT click fires **no host event at all** and opens ThoughtSpot's own menu (Filter,
+  Drill down, Show underlying data, SpotIQ analyze, Copy to clipboard) with the custom action
+  appended, and `EmbedEvent.CustomAction` fires only once the user picks that item. An earlier note
+  and the inspector hint claimed left-click also raises ThoughtSpot's menu; it does not, at least
+  while VizPointClick is subscribed. Practical consequence: left-click is one gesture to the panel,
+  right-click is two, and right-click leaves ThoughtSpot's own actions reachable.
+  `payload.data.vizId` is present on VizPointClick for both viz types, so scoping a drill to one
+  visualization is reliable (confirmed: a left-click on the table did not drill while the drill was
+  pinned to the chart).
+- 2026-09-25 (S29–S32, this PR): **the SDK-code generator had no mechanical link between what it
+  EMITS and what it IMPORTS.** `generateCode()` built `importNames` from a hand-written list of
+  conditions (`js/app.js:6345-6360`) while the emitters are hundreds of lines further down, so the
+  drill-through section emitted `CustomActionsPosition.CONTEXTMENU`, `CustomActionTarget.VIZ`,
+  `HostEvent.GetFilters` and `RuntimeFilterOp.IN` that were never imported — a `ReferenceError` on
+  the first paste. The fix is the gating PLUS a generator-wide gate:
+  `runCodeGenImportProbe()` in `scripts/boot-check.mjs` walks every rail item, extracts the SDK
+  identifiers from each emitted body (comments stripped) and asserts each one appears in that same
+  snippet's import line. Any NEW emitter that reaches for an SDK name now fails the gate unless the
+  import gating is updated with it. Corollary learned while writing it: a helper emitted
+  unconditionally must not reference a conditionally-imported name — `tsFilter` (which uses
+  `RuntimeFilterOp`) had to move inside the point-drill branch.
+- 2026-09-25 (S30/S31): **a clicked attribute is NOT a carryable runtime filter, and not a search
+  token either.** ThoughtSpot reports a bucketed date as `Day(Order Date)` / `Month(Order Date)`
+  with a RAW EPOCH value, so three separate coercions are needed and they differ by destination:
+  (a) carrying into another Liveboard needs the UNWRAPPED column and NUMERIC epochs — a string
+  epoch on `Day(Order Date)` matches nothing and loses the day scope silently;
+  (b) a non-Day bucket must become a RANGE, but **the two destinations do not agree on which
+  buckets can express one.** A RUNTIME FILTER carries epoch seconds, so `BW_INC` over
+  [bucket start, bucket end] (UTC) works for ANY bucket, sub-day included. A SEARCH CLAUSE is
+  limited to `MM/DD/YYYY`, which is day-granular — so only Week/Month/Quarter/Year become a range
+  (`[Order Date] >= '12/01/2024' [Order Date] <= '12/31/2024'`, two space-joined clauses) and
+  Hour/Minute/Second fall back to the plain day-equality clause, the widest true statement the
+  literal can make. Emitting only the bucket's start lists the 1st of the month while the KPI covers
+  the whole month, and `dtReconcile()` then flags a mismatch that is not real;
+  (c) DISPLAY wants the ISO day. `dtBucket`/`dtEpochSec`/`dtBucketEndSec`/`dtMDY`/`dtCarryFilter`
+  in `js/app.js` encode all of this; `dtSearchColumn()` is now just `dtBucket().column`.
+  Consequence for any column comparison: normalise BOTH sides — a user configuring `scopeColumn`
+  types `Order Date` while the click reports `Month(Order Date)`.
+- 2026-09-25 (S32): **every `await` in the drill-through path is a suspension point over
+  module-level state.** `dt` (the active detail view) is REPLACED wholesale by `openDetailPanel`,
+  so `dtFetchPage`'s post-await `if (!dt) return` was not enough — a slow first click's rows landed
+  in a second click's panel. The pattern that fixes it is `const mine = dt` before the await and
+  `if (dt !== mine) return` after, and the same shape applies to `__onVizPointClick` around
+  `await embed.trigger(HostEvent.GetFilters)` (capture `currentEmbed`, then re-check the embed ref,
+  `getState().section` and `drillParent` before navigating). A boot-check leg with a deliberately
+  SLOW first response and a fast second is what proves it; asserting only on the final row count
+  passes either way, so assert on the first row's IDENTITY.
+- 2026-09-25 (regression guard): **`EmbedEvent.VizPointClick` was subscribed on EVERY embed**
+  (`js/embed.js`). Subscribing it makes a LEFT click fire the host event and ThoughtSpot show no
+  menu of its own, so plain Liveboard/Viz/Search embeds silently lost their native left-click
+  behaviour. It is now opt-in via `config._vizPointClick`, set in `buildConfig()` only for
+  `section === 'drillthrough' && drill.enabled` and explicitly cleared in `enterDrill()` (a click
+  inside the DETAIL board is not a new drill). `_vizPointClick` is a derived CONFIG field, not a
+  state key — no `js/state.js` change, so the PR stays off the guard-protected paths.
+- 2026-09-25 (S29 review): in `js/embed.js`'s constructors the explicit ids
+  (`liveboardId`/`vizId`/`answerId`/`hideSearchBar`) now spread AFTER `...flags`, so a shared
+  link's flags cannot re-point an embed at a different object. The `search`/`spotter` cases still
+  spread `dataSources`/`worksheetId` BEFORE `...flags` — same latent shape, not yet closed.
+- 2026-09-27 (S29–S32 round 2, review): **a bucket-end calculation must enumerate EVERY bucket the
+  range branch fires for.** `dtBucketEndSec` folded Hour/Minute/Second into the `day` arm while the
+  caller ranged over every non-day bucket, so an `Hour(Order Date)` click scoped the detail set to a
+  whole day — 24x too wide, 86400x for `Second(...)` — producing exactly the false `dtReconcile`
+  mismatch the range work was written to remove. The generated snippet's `tsBucketEnd` twin had the
+  identical hole: **an emitted helper is a SECOND implementation and drifts silently**, so every
+  round-2 fix here had to be applied twice and is now cross-checked (runtime vs emitted) rather than
+  eyeballed.
+- 2026-09-27 (S30 round 2): **the epoch magnitude window (1e8..1e11) is a heuristic for "is this
+  integer a date at all", not a validity test.** It starts at 1973-03-03, so zero, negatives and
+  every earlier date failed it and were carried on as STRING epochs that ThoughtSpot silently
+  ignores. When ThoughtSpot has already wrapped the column in a `Day(...)`/`Month(...)` bucket the
+  column IS a date and the heuristic is not merely unnecessary but harmful — hence
+  `dtEpochSec(v, known)`. The millisecond window still applies on the proven path (1e11..1e14
+  SECONDS would be the year 5138+, never the intended reading). `cfbFmtDate` (`js/app.js:4868`) has
+  the same blind spot and was deliberately NOT widened: it is the custom-filter-bar's display
+  heuristic, and accepting any integer there would render a plain count column named "day count" as
+  1970-01-01. `dtMDY` therefore formats from epoch seconds itself instead of routing through it.
+- 2026-09-27 (S29 round 2, the sharpest one): **`state.js` does not key-whitelist `flags`** —
+  `cleanMap(raw.flags, sectionFlags => cleanMap(sectionFlags, …))` (`js/state.js:308-309`) keeps ANY
+  key name under a 200-char cap. So a shared link can carry `flags.<section>.liveboardId`. Wherever
+  flags and explicit ids are merged, the two must agree on which wins: `doRender` spreads the ids
+  AFTER `...flags` (so the picked object wins), and the code generator emitted the ids BEFORE its
+  flags loop (so the later duplicate key won) — the tool rendered the picked board while generating
+  a snippet aimed at the attacker's. The fix pins the id keys per section out of the generator's
+  flags loop, in lockstep with the constructors in `js/embed.js`. Note the pinned set is
+  section-dependent: `vizId` is NOT spread after flags for the plain `liveboard` case, so a flags
+  `vizId` legitimately reaches that embed and the snippet must keep matching it.
+- 2026-09-27 (S32 round 2): `enterDrill` must call `dtClosePanel()` — `render()` already does
+  (`js/app.js:684`). Without it a drill navigation leaves the PARENT board's detail panel mounted
+  over the DETAIL Liveboard, and an in-flight `dtFetchPage` writes into it perfectly legitimately
+  (`dt === mine`, so the S32 staleness guard cannot catch this one — closing the view is what makes
+  the guard fire).
+- 2026-09-27 (gates, round 2): **a probe that SKIPS what it cannot check silently loses teeth.**
+  `runCodeGenImportProbe` returned `null` for a snippet with no SDK import line and passed on
+  `checked > 0`, so a code-view regression in any one section would merely lower the count and stay
+  green. The fix is a closed expectation: an explicit `NON_SDK_SECTIONS` allow-list of the two
+  host-side (REST/MCP) sections, and any OTHER section that emits no SDK import is a failure. Same
+  shape as the governance lesson that rules partitioning a repo must be allow-lists.
+- 2026-09-27 (S31, UNVERIFIED — the one thing this work cannot self-certify): the bucket range
+  clause `[Col] >= 'MM/DD/YYYY' [Col] <= 'MM/DD/YYYY'` is **extrapolated** from the confirmed
+  single-day form. It is unverified against a live cluster, and this parser's failure mode is not an
+  error — `[Order Date].daily = '…'` returned HTTP 200 with the WRONG rows. `dtFetchPage` therefore
+  treats an EMPTY first page from a range clause as "not understood": it retries once with the
+  bucket-start day clause and logs the downgrade (`rangeDowngraded` on the view, so it happens at
+  most once and subsequent pages keep the downgraded form). A live `Month(...)` click is still
+  needed to confirm the syntax; if it is rejected, the fallback is a per-day `IN` list.
+- 2026-09-27 (S22, answering a customer's open question): **`EmbedEvent.VizPointClick` does NOT fire
+  for a Muze Studio custom chart.** Tested on 26.8.0.cl against two MUZE_STUDIO vizzes: the chart
+  renders in its own nested iframe (`hc-muze-studio.pdom.thoughtspot.com`), two levels below the host
+  page, and the ThoughtSpot tile's own DOM contains zero marks. Clicking a real mark inside that
+  nested frame (18 marks present) produced **no** VizPointClick on the host. Native chart types and
+  table cells both fire it (verified separately), so the rule is: point-click interception works for
+  ThoughtSpot's own chart types, not for BYOC/Muze Studio charts. A custom-chart author can of course
+  emit their own postMessage, but nothing arrives through the SDK event by default.
 - 2026-09-25 (S10, P1 credential exfiltration — fixed on this branch): **SDK `init()` authenticates
   IMMEDIATELY; no embed render and no click are required.** On the pinned 1.49.0, calling
   `init({authType: TrustedAuthTokenCookieless, autoLogin: true, getAuthToken})` makes the SDK invoke

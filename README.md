@@ -43,6 +43,7 @@ a link that reproduces your setup. Secrets are never serialized, and links are s
 | Custom Liveboard | `LiveboardEmbed` + website-native filter bar | Liveboard |
 | AI Highlights | `LiveboardEmbed` + `HostEvent.AIHighlights` | Liveboard |
 | Single Viz | `LiveboardEmbed` (+`vizId`) | Liveboard + Viz, or a standalone Answer |
+| Drill-through | `LiveboardEmbed` + a host-rendered detail grid over `searchdata` | Liveboard (+ a detail Model) |
 | Full App | `AppEmbed` | — |
 | AI Insights (REST) | Spotter REST, no iframe | Worksheet/Model |
 
@@ -50,6 +51,66 @@ The **inspector** is contextual to the active embed: Data object · Display opti
 Runtime filters · Runtime parameters · Custom actions · Host events · Custom styles.
 
 The **bottom panel** has four tabs: Event Log · SDK Code · SDK Lifecycle · APIs Used.
+
+---
+
+## Drill-through demo
+
+Summary → detail, entirely host-side, over two Models of the same data: an aggregated one behind the
+summary Liveboard and an event-grain one for the rows. Configure it all in the **Drill-through**
+inspector panel — no GUIDs are hardcoded, so it runs on any cluster.
+
+Two independent moves:
+
+1. **Point click → filtered detail Liveboard.** `EmbedEvent.VizPointClick` gives the clicked point's
+   attributes. Those merge with the host's own filters and with whatever the user set *inside* the
+   iframe (`HostEvent.GetFilters`, which returns a promise directly), and the detail Liveboard renders
+   with them as runtime filters. Clicked attributes win on any column that appears in both.
+2. **"View detail" → your own record list.** A `CONTEXTMENU`/`VIZ` custom action scoped with
+   `dataModelIds.modelColumnNames: ['<modelGuid>::<column>']` is limited to vizzes built on that column.
+   It fetches event-grain rows with `POST /api/rest/2.0/searchdata`, pages them with `record_offset`
+   (which is how you get past the 1,000-row response cap), and renders them outside the iframe — with
+   per-row `{Column}` deep links into whatever system owns the record.
+
+   Two presentations: **Modal** (default) is a centred record list — measure name as the title, a
+   period subtitle, a summary line, skeleton while loading, one row per record with a chevron through
+   to the owning system, and an optional "View all …" footer. **Panel** is a dense grid docked under
+   the embed. Both read the same state.
+
+   > **`modelColumnNames` scopes to a visualization, not to a column.** The action shows on *every*
+   > cell of any viz that uses the named column — verified live: scoped to `Total Sales Amount`, it
+   > still appears when you right-click the neighbouring `Total Sales Amount Quota` cell. So the
+   > record list takes its measure from the configured **Measure column** wherever it sits on the
+   > clicked row, not from whichever cell was right-clicked; otherwise the modal ends up titled after
+   > a `{Null}` quota.
+
+   The action opens on **right-click** by default; "Opened by → plain left-click" is also available.
+   A native app can reveal a *View details* link on cell hover — inside a cross-origin iframe that is
+   not possible, so these two are the closest equivalents (and left-click also raises ThoughtSpot's
+   own menu alongside yours).
+
+   A detail column may carry a granularity suffix — `Order Date.daily` emits `[Order Date].daily`, so
+   you get per-day rows instead of whatever bucketing ThoughtSpot picks. Date columns come back as raw
+   epochs with no type metadata, so cells in date-named columns are formatted through the same
+   heuristic the custom filter bar uses.
+
+A badge reconciles the measure the user clicked against the detail row count and turns amber when
+they disagree — i.e. when the summary and detail models are not counting the same grain.
+
+> **Paging caveat, learned the hard way.** The REST schema calls `available_data_row_count` the
+> "Total available data row count", but on 26.8.0.cl it comes back equal to `returned_data_row_count`
+> on *every* page. A full page therefore says nothing about the total. This panel treats a **short
+> page** as the end-of-data signal, and the badge reads `N+` (neutral, no mismatch claimed) until the
+> count is actually known. Reuse that reading if you copy this code.
+
+**A 15-minute demo, in six steps:** pick the summary Liveboard → click a funnel stage and watch the
+detail Liveboard open already filtered → right-click the measure on a bar and pick "View detail" →
+read the individual rows → "Load more" past the first page → point at the badge and show the KPI and
+the row count agreeing. The SDK Code tab carries the runnable version of all of it.
+
+> Requires SDK 1.43.0+ / cluster 10.14.0.cl+ for the column scoping (this repo pins 1.49.0).
+> Runtime filters are **not** a security boundary — they are visible and editable in the URL. The
+> detail rows are safe because `searchdata` runs under the viewer's own token, so RLS applies.
 
 ---
 
