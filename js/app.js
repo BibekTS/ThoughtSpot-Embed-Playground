@@ -5279,11 +5279,15 @@ function clickedAttributes(payload) {
 
 // Render the curated drill liveboard in place, carrying the merged filters; show a Back bar.
 function enterDrill(drillId, filters) {
+  // The detail panel belongs to the board we are leaving. render() closes it for exactly this
+  // reason (see its dtClosePanel call); without this the panel stays mounted over the DETAIL
+  // Liveboard and an in-flight dtFetchPage legitimately writes into it (dt is still `mine`).
+  dtClosePanel();
   drillParent = { liveboardId: getState().liveboardId };
-  // Diagnostic surface for the headless gate: the carried filters are already visible in the drill
-  // bar and the event log, so this exposes nothing new — it just lets a probe assert their TYPES
-  // (date epochs must be NUMBERS) without rendering a real embed.
-  window.__lastDrillFilters = filters;
+  // Diagnostic surface for the headless gate ONLY: it lets a probe assert the carried values' TYPES
+  // (date epochs must be NUMBERS) without rendering a real embed. Gated on an explicit opt-in so a
+  // normal session never parks RLS-scoped cell values on `window`; exitDrill clears it.
+  if (window.__TS_PLAYGROUND_PROBE) window.__lastDrillFilters = filters;
   const cfb = $('#custom-filter-bar'); if (cfb) cfb.hidden = true;   // the bar's columns belong to the parent board
   applyConfig();
   if (currentEmbed) { try { currentEmbed.destroy(); } catch (_) {} currentEmbed = null; }
@@ -5317,6 +5321,7 @@ function enterDrill(drillId, filters) {
 // Return from a drill: drop the back bar and re-render the parent board (filters restored by cfbBuild).
 function exitDrill() {
   drillParent = null;
+  delete window.__lastDrillFilters;   // never outlive the drill it described
   hideDrillBar();
   const cfb = $('#custom-filter-bar');
   if (cfb && getState().section === 'liveboard-custom') cfb.hidden = false;
@@ -5386,12 +5391,23 @@ function dtSearchColumn(name) {
   return dtBucket(name).column;
 }
 
-/** Epoch SECONDS for an epoch-like value (seconds or milliseconds), else null. */
-function dtEpochSec(v) {
+/**
+ * Epoch SECONDS for an epoch-like value (seconds or milliseconds), else null.
+ *
+ * The magnitude window is a HEURISTIC for "is this integer a date at all", and it only covers
+ * 1973-03-03 onwards — zero, negatives and any pre-1973 date fall outside it. Pass `known` when the
+ * caller already PROVED the column is a date (ThoughtSpot wrapped it in a `Day(...)`/`Month(...)`
+ * bucket): the heuristic is then unnecessary and actively harmful, because failing it carries the
+ * value on as a string epoch that ThoughtSpot silently ignores. The millisecond window still
+ * applies on that path — 1e11..1e14 SECONDS would be the year 5138 and later, so it is never the
+ * intended reading.
+ */
+function dtEpochSec(v, known = false) {
   const n = Number(v);
   if (!Number.isFinite(n) || !Number.isInteger(n)) return null;
-  if (n >= 1e8 && n < 1e11) return n;               // epoch seconds (~1973–5138)
   if (n >= 1e11 && n < 1e14) return Math.floor(n / 1000);  // epoch milliseconds
+  if (known) return n;                              // a bucket wrapper proves this is a date
+  if (n >= 1e8 && n < 1e11) return n;               // epoch seconds (~1973–5138)
   return null;
 }
 
@@ -5403,23 +5419,42 @@ function dtEpochSec(v) {
 function dtBucketEndSec(bucket, startSec) {
   const d = new Date(startSec * 1000);
   const y = d.getUTCFullYear(), mo = d.getUTCMonth(), da = d.getUTCDate();
+  const h = d.getUTCHours(), mi = d.getUTCMinutes(), se = d.getUTCSeconds();
   let next;
   switch (bucket) {
     case 'week': next = Date.UTC(y, mo, da + 7); break;
     case 'month': next = Date.UTC(y, mo + 1, 1); break;
     case 'quarter': next = Date.UTC(y, mo - (mo % 3) + 3, 1); break;
     case 'year': next = Date.UTC(y + 1, 0, 1); break;
-    default: next = Date.UTC(y, mo, da + 1); break;   // day / hour / minute / second
+    // The sub-day buckets need their own arms: falling through to the day arm expands an Hour(...)
+    // click to 24h (a Second(...) click to 86400x), which is exactly the over-wide detail set that
+    // makes dtReconcile flag a mismatch that is not real.
+    case 'hour': next = Date.UTC(y, mo, da, h + 1); break;
+    case 'minute': next = Date.UTC(y, mo, da, h, mi + 1); break;
+    case 'second': next = Date.UTC(y, mo, da, h, mi, se + 1); break;
+    default: next = Date.UTC(y, mo, da + 1); break;   // day
   }
   return Math.floor(next / 1000) - 1;
 }
 
-/** MM/DD/YYYY for an epoch value — the one date literal ThoughtSpot's search parser accepts here. */
-function dtMDY(v) {
-  const iso = cfbFmtDate(v);
-  if (!iso) return '';
-  const [y, mo, d] = iso.split('-');
-  return `${mo}/${d}/${y}`;
+/**
+ * The buckets a MM/DD/YYYY search clause can express as a range. A sub-day bucket cannot: the
+ * literal has day granularity, so an Hour(...) range would read as the whole day anyway. Those fall
+ * back to the plain day-equality clause, which is the honest widest-true statement. (The RUNTIME
+ * FILTER path is not limited this way — it carries epoch seconds, so it ranges over any bucket.)
+ */
+const DT_CLAUSE_RANGE_BUCKETS = new Set(['week', 'month', 'quarter', 'year']);
+
+/**
+ * MM/DD/YYYY (UTC) for epoch SECONDS — the one date literal ThoughtSpot's search parser accepts
+ * here. Takes seconds rather than a raw value so the caller decides how the value was recognised;
+ * routing through cfbFmtDate would re-impose its 1973+ magnitude window on an already-proven date.
+ */
+function dtMDY(sec) {
+  const d = new Date(sec * 1000);
+  if (isNaN(d.getTime())) return '';
+  const p = x => String(x).padStart(2, '0');
+  return `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())}/${d.getUTCFullYear()}`;
 }
 
 /**
@@ -5434,15 +5469,21 @@ function dtMDY(v) {
 function dtCarryFilter(columnName, values, operator) {
   const { bucket, column } = dtBucket(columnName);
   const raw = Array.isArray(values) ? values : [];
-  const epochs = raw.map(dtEpochSec);
+  const epochs = raw.map(v => dtEpochSec(v, !!bucket));
   const dateish = raw.length && epochs.every(e => e !== null)
     && (bucket || CFB_DATE_NAME_RE.test(column));
   if (!dateish) {
     return { columnName: column, operator: operator ?? RuntimeFilterOp.IN, values: raw.map(String) };
   }
-  if (bucket && bucket !== 'day' && epochs.length === 1) {
-    return { columnName: column, operator: RuntimeFilterOp.BW_INC,
-      values: [epochs[0], dtBucketEndSec(bucket, epochs[0])] };
+  if (bucket && bucket !== 'day' && epochs.length) {
+    // SEVERAL bucket starts (a Liveboard filter with two months selected) span one inclusive range
+    // from the earliest start to the latest bucket end. BW_INC takes exactly two bounds and search
+    // clauses are ANDed, so an OR of disjoint ranges is not expressible either way. A span is wider
+    // than the selection when the months are not adjacent; collapsing to the bucket STARTS — the
+    // old behaviour — scoped the detail board to the 1st of each month, which is simply wrong.
+    const lo = Math.min(...epochs);
+    const hi = Math.max(...epochs.map(e => dtBucketEndSec(bucket, e)));
+    return { columnName: column, operator: RuntimeFilterOp.BW_INC, values: [lo, hi] };
   }
   return { columnName: column, operator: operator ?? RuntimeFilterOp.IN, values: epochs };
 }
@@ -5452,12 +5493,21 @@ function dtCarryFilter(columnName, values, operator) {
  * wants **MM/DD/YYYY** here — `'2026-01-29'` and a bare 2026-01-29 are both rejected (verified live
  * on 26.8.0.cl). That format is locale-shaped, so a non-US cluster may want DD/MM/YYYY.
  */
-function dtSearchLiteral(col, v) {
-  if (CFB_DATE_NAME_RE.test(col)) { const mdy = dtMDY(v); if (mdy) return mdy; }
+function dtSearchLiteral(col, v, known = false) {
+  if (known || CFB_DATE_NAME_RE.test(col)) {
+    const sec = dtEpochSec(v, known);
+    if (sec !== null) { const mdy = dtMDY(sec); if (mdy) return mdy; }
+  }
   return String(v).replace(/'/g, '');
 }
 
-function dtQueryString(columns, filters) {
+/** True when this filter set would emit at least one bucket RANGE clause. */
+function dtUsesRangeClause(filters) {
+  return (filters || []).some(f => DT_CLAUSE_RANGE_BUCKETS.has(dtBucket(f.columnName).bucket)
+    && (f.values || []).some(v => dtEpochSec(v, true) !== null));
+}
+
+function dtQueryString(columns, filters, { noRange = false } = {}) {
   // "Order Date.daily" → "[Order Date].daily". Without a suffix ThoughtSpot picks its own bucketing
   // and will happily hand back Month(Order Date) when the rows you want are per-day.
   const cols = columns.map(c => {
@@ -5474,12 +5524,14 @@ function dtQueryString(columns, filters) {
     // dtReconcile then flags a mismatch that is not real. Two space-joined clauses (TS search ANDs
     // them implicitly) in the same token syntax the Day clause uses; keyword forms are avoided
     // deliberately — `[Order Date].daily = '…'` silently returned the WRONG rows on 26.8.0.cl.
-    const start = raw.length === 1 ? dtEpochSec(raw[0]) : null;
-    if (bucket && bucket !== 'day' && start !== null) {
-      const lo = dtMDY(start), hi = dtMDY(dtBucketEndSec(bucket, start));
+    const starts = DT_CLAUSE_RANGE_BUCKETS.has(bucket)
+      ? raw.map(v => dtEpochSec(v, true)).filter(v => v !== null) : [];
+    if (!noRange && starts.length) {
+      const lo = dtMDY(Math.min(...starts));
+      const hi = dtMDY(Math.max(...starts.map(e => dtBucketEndSec(bucket, e))));
       if (lo && hi) return `[${col}] >= '${lo}' [${col}] <= '${hi}'`;
     }
-    const vals = raw.map(v => dtSearchLiteral(f.columnName, v)).filter(Boolean);
+    const vals = raw.map(v => dtSearchLiteral(f.columnName, v, !!bucket)).filter(Boolean);
     if (!vals.length) return '';
     return vals.length === 1
       ? `[${col}] = '${vals[0]}'`
@@ -5631,12 +5683,26 @@ async function dtFetchPage(reset = false) {
   const mine = dt;   // the view this fetch belongs to; openDetailPanel REPLACES `dt` on every click
   mine.loading = true; mine.error = '';
   renderDetail();
-  const query = dtQueryString(d.detailColumns, mine.filters);
+  const query = dtQueryString(d.detailColumns, mine.filters, { noRange: mine.rangeDowngraded });
   const offset = reset ? 0 : mine.offset;
   logEvent('Drill-through', `searchdata ← "${query}" (offset ${offset}, size ${d.pageSize})`);
-  const res = await Discovery.searchDataPage(s.host, {
+  let res = await Discovery.searchDataPage(s.host, {
     queryString: query, modelId: d.detailModelId, offset, size: d.pageSize,
   });
+  if (!dt || dt !== mine) return;
+  // The bucket RANGE clause is EXTRAPOLATED syntax: only the single-day form
+  // `[Order Date] = 'MM/DD/YYYY'` has been confirmed on a live cluster, and this parser's failure
+  // mode is not an error — `[Order Date].daily = '…'` returned HTTP 200 with the WRONG rows. An
+  // empty first page is the cheapest signal that the range was not understood, so retry ONCE with
+  // the day clause and say so, rather than presenting "no detail rows" as the answer.
+  if (reset && res.ok && !res.rows.length && !mine.rangeDowngraded && dtUsesRangeClause(mine.filters)) {
+    mine.rangeDowngraded = true;
+    const fallback = dtQueryString(d.detailColumns, mine.filters, { noRange: true });
+    logEvent('Drill-through', `⚠ the bucket range clause returned 0 rows — this cluster may not accept it. Retrying once with the bucket-start day clause: "${fallback}"`);
+    res = await Discovery.searchDataPage(s.host, {
+      queryString: fallback, modelId: d.detailModelId, offset: 0, size: d.pageSize,
+    });
+  }
   // Closed, or superseded by a later click, while the fetch was in flight. Writing into a view that
   // is no longer `dt` would append one click's page 2 onto another click's rows (last write wins).
   if (!dt || dt !== mine) return;
@@ -6425,7 +6491,19 @@ function generateCode() {
     else opt.push('  liveboardV2: true,', '  isLiveboardMasterpiecesEnabled: true,', `  liveboardId: '${esc(s.liveboardId)}',`, `  vizId: '${esc(s.vizId)}',`);
   }
   if (s.section === 'fullapp') { const pid = (s.flags.fullapp || {}).pageId || 'Home'; opt.push('  showPrimaryNavbar: false,', `  pageId: Page.${pid},`); }
-  Object.entries(s.flags[s.section] || {}).forEach(([k, v]) => { if (k === 'pageId') return; if (k === 'isLiveboardMasterpiecesEnabled' && v === true) return; opt.push(`  ${k}: ${JSON.stringify(v)},`); });
+  // The ids doRender spreads AFTER ...flags cannot be overridden at runtime, so the snippet must not
+  // let a flag override them either. `flags` keys are NOT whitelisted by state.js (any key name
+  // survives sanitize), so a shared link carrying flags.<section>.liveboardId would otherwise render
+  // the picked board while generating code aimed at the attacker's — the copied snippet and the tool
+  // would disagree about which object the user is looking at. Keep this set in lockstep with the
+  // constructors in js/embed.js.
+  const pinnedKeys = new Set(['pageId']);
+  if (['liveboard', 'liveboard-custom', 'ai-highlights', 'drillthrough'].includes(s.section)) pinnedKeys.add('liveboardId');
+  if (s.section === 'viz') {
+    if (s.answerId) { pinnedKeys.add('answerId'); pinnedKeys.add('hideSearchBar'); }
+    else { pinnedKeys.add('liveboardId'); pinnedKeys.add('vizId'); }
+  }
+  Object.entries(s.flags[s.section] || {}).forEach(([k, v]) => { if (pinnedKeys.has(k)) return; if (k === 'isLiveboardMasterpiecesEnabled' && v === true) return; opt.push(`  ${k}: ${JSON.stringify(v)},`); });
   const hiddenKeys = hiddenActionKeys(s);
   if (hiddenKeys.length) opt.push(`  hiddenActions: [${hiddenKeys.map(a => `Action.${a}`).join(', ')}],`);
   if (s.disabledActions.length) opt.push(`  disabledActions: [${s.disabledActions.map(a => `Action.${a}`).join(', ')}],`);
@@ -6458,21 +6536,31 @@ function generateCode() {
     L.push('  return m ? { bucket: m[1].toLowerCase(), column: m[2] } : { bucket: \'\', column: String(name) };');
     L.push('};');
     L.push('const tsDateName = (c) => /(^|[^a-z])(date|time|day|month|year|quarter|week)([^a-z]|$)/i.test(c);');
-    L.push('const tsEpochSec = (v) => {');
+    L.push('// `known` = the caller already PROVED this is a date column (ThoughtSpot wrapped it in a');
+    L.push('// bucket). The magnitude window is only a heuristic for unwrapped columns, and it starts at');
+    L.push('// 1973-03-03 - on a proven date it would drop every earlier day as an unrecognised string.');
+    L.push('const tsEpochSec = (v, known) => {');
     L.push('  const n = Number(v);');
     L.push('  if (!Number.isInteger(n)) return null;');
-    L.push('  if (n >= 1e8 && n < 1e11) return n;                      // epoch seconds');
     L.push('  if (n >= 1e11 && n < 1e14) return Math.floor(n / 1000);  // epoch milliseconds');
+    L.push('  if (known) return n;                                     // proven date: no window needed');
+    L.push('  if (n >= 1e8 && n < 1e11) return n;                      // epoch seconds');
     L.push('  return null;');
     L.push('};');
     L.push('// Inclusive last second of the bucket, in UTC - local midnight offsets the value by the viewer\'s');
     L.push('// timezone and the filter silently misses.');
     L.push('const tsBucketEnd = (bucket, sec) => {');
     L.push('  const d = new Date(sec * 1000), y = d.getUTCFullYear(), mo = d.getUTCMonth(), da = d.getUTCDate();');
+    L.push('  const h = d.getUTCHours(), mi = d.getUTCMinutes(), se = d.getUTCSeconds();');
+    L.push('  // The sub-day buckets need their own arms: folding them into the day arm makes an');
+    L.push('  // Hour(...) click 24x too wide (a Second(...) click 86400x).');
     L.push('  const next = bucket === \'week\' ? Date.UTC(y, mo, da + 7)');
     L.push('    : bucket === \'month\' ? Date.UTC(y, mo + 1, 1)');
     L.push('    : bucket === \'quarter\' ? Date.UTC(y, mo - (mo % 3) + 3, 1)');
     L.push('    : bucket === \'year\' ? Date.UTC(y + 1, 0, 1)');
+    L.push('    : bucket === \'hour\' ? Date.UTC(y, mo, da, h + 1)');
+    L.push('    : bucket === \'minute\' ? Date.UTC(y, mo, da, h, mi + 1)');
+    L.push('    : bucket === \'second\' ? Date.UTC(y, mo, da, h, mi, se + 1)');
     L.push('    : Date.UTC(y, mo, da + 1);');
     L.push('  return Math.floor(next / 1000) - 1;');
     L.push('};');
@@ -6491,15 +6579,27 @@ function generateCode() {
     L.push('  const a = p.selectedAttributes?.length ? p.selectedAttributes : (p.deselectedAttributes ?? []);');
     L.push('  return a.filter((x) => x?.value != null && x.value !== \'\' && x.value !== \'{Null}\');');
     L.push('};');
-    L.push('// One search clause. A bucketed date becomes a RANGE in the same token syntax the day clause uses.');
+    L.push('// One search clause. A Week/Month/Quarter/Year bucket covers a RANGE of days, so emitting only');
+    L.push('// its start would list the 1st of the month while the KPI covers the whole month. Sub-day');
+    L.push('// buckets are NOT in this set: a MM/DD/YYYY literal has day granularity, so an Hour(...) range');
+    L.push('// would read as the whole day anyway - the plain day clause is the honest widest-true form.');
+    L.push('// CAVEAT: only the single-day form `[Col] = \'MM/DD/YYYY\'` is confirmed on a live cluster. This');
+    L.push('// parser fails SILENTLY (`[Col].daily = \'…\'` returned HTTP 200 with the wrong rows), so treat an');
+    L.push('// empty result from a range clause as "not understood" and retry with the day clause.');
+    L.push('const TS_RANGE_BUCKETS = new Set([\'week\', \'month\', \'quarter\', \'year\']);');
     L.push('const tsClause = (name, values) => {');
     L.push('  const { bucket, column } = tsBucket(name);');
-    L.push('  const one = values.length === 1 ? tsEpochSec(values[0]) : null;');
-    L.push('  if (bucket && bucket !== \'day\' && one !== null) {');
-    L.push('    return \'[\' + column + "] >= \'" + tsMDY(one) + "\' [" + column + "] <= \'" + tsMDY(tsBucketEnd(bucket, one)) + "\'";');
+    L.push('  const starts = TS_RANGE_BUCKETS.has(bucket)');
+    L.push('    ? values.map((v) => tsEpochSec(v, true)).filter((v) => v !== null) : [];');
+    L.push('  if (starts.length) {');
+    L.push('    // Several bucket starts span ONE range: clauses are ANDed, so an OR of disjoint ranges is');
+    L.push('    // not expressible - and collapsing to the starts would scope to the 1st of each month.');
+    L.push('    const lo = tsMDY(Math.min(...starts));');
+    L.push('    const hi = tsMDY(Math.max(...starts.map((e) => tsBucketEnd(bucket, e))));');
+    L.push('    return \'[\' + column + "] >= \'" + lo + "\' [" + column + "] <= \'" + hi + "\'";');
     L.push('  }');
     L.push('  const lit = (v) => {');
-    L.push('    const e = tsEpochSec(v);');
+    L.push('    const e = tsEpochSec(v, !!bucket);');
     L.push('    return e !== null && (bucket || tsDateName(column)) ? tsMDY(e) : String(v).replace(/\'/g, \'\');');
     L.push('  };');
     L.push('  return values.length === 1');
@@ -6512,12 +6612,16 @@ function generateCode() {
       L.push('// whole month instead of collapsing to the 1st.');
       L.push('const tsFilter = (name, values, op) => {');
       L.push('  const { bucket, column } = tsBucket(name);');
-      L.push('  const secs = values.map(tsEpochSec);');
+      L.push('  const secs = values.map((v) => tsEpochSec(v, !!bucket));');
       L.push('  if (!values.length || !secs.every((x) => x !== null) || !(bucket || tsDateName(column))) {');
       L.push('    return { columnName: column, operator: op ?? RuntimeFilterOp.IN, values: values.map(String) };');
       L.push('  }');
-      L.push('  if (bucket && bucket !== \'day\' && secs.length === 1) {');
-      L.push('    return { columnName: column, operator: RuntimeFilterOp.BW_INC, values: [secs[0], tsBucketEnd(bucket, secs[0])] };');
+      L.push('  if (bucket && bucket !== \'day\') {');
+      L.push('    // A runtime filter carries epoch SECONDS, so it can range over ANY bucket, sub-day');
+      L.push('    // included. Several starts span one inclusive range (BW_INC takes exactly two bounds).');
+      L.push('    const lo = Math.min(...secs);');
+      L.push('    const hi = Math.max(...secs.map((e) => tsBucketEnd(bucket, e)));');
+      L.push('    return { columnName: column, operator: RuntimeFilterOp.BW_INC, values: [lo, hi] };');
       L.push('  }');
       L.push('  return { columnName: column, operator: op ?? RuntimeFilterOp.IN, values: secs };');
       L.push('};');

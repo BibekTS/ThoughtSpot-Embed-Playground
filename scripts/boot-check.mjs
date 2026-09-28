@@ -329,6 +329,13 @@ function importGapsIn(code) {
   return [...used].filter((u) => !imported.has(u));
 }
 
+/**
+ * The only two rail sections that legitimately emit no Visual Embed SDK import: both are host-side
+ * REST/MCP flows, not embeds. Every OTHER section must emit one, so the coverage count cannot drift
+ * downwards unnoticed.
+ */
+const NON_SDK_SECTIONS = new Set(['ai-insights', 'spotter-chat']);
+
 async function runCodeGenImportProbe(browser) {
   // Drill-through demo defaults: enabled + summaryModelId + measureColumn, no other actions or
   // filters — the setup a reader lands on from the inspector, and the one that emitted
@@ -365,14 +372,19 @@ async function runCodeGenImportProbe(browser) {
       return { ids, out };
     });
     const gaps = [];
+    const skipped = [];
     let checked = 0;
     snippets.out.forEach(({ id, code }) => {
       const missing = importGapsIn(code);
-      if (missing === null) return;
+      // A snippet with no SDK import line is SKIPPED by the gap check, so counting only the checked
+      // ones lets a code-view regression in any section quietly shrink the coverage and stay green.
+      // Everything except the two known non-SDK sections must therefore emit an SDK import.
+      if (missing === null) { skipped.push(id); return; }
       checked++;
       if (missing.length) gaps.push(`${id}: ${missing.join(', ')}`);
     });
-    return { sections: snippets.ids.length, checked, gaps, probeErrors };
+    const unexpectedSkips = skipped.filter((id) => !NON_SDK_SECTIONS.has(id));
+    return { sections: snippets.ids.length, checked, gaps, skipped, unexpectedSkips, probeErrors };
   } finally {
     await probe.close();
   }
@@ -597,6 +609,7 @@ async function runDrillthroughProbe(browser) {
       // there surfaces as a rejected promise here rather than a page error.
       document.getElementById('dt-panel')?.remove();
       st.setState({ drill: { ...st.getState().drill, trigger: 'action', drillLiveboardId: 'lb-detail', drillVizId: '', scopeColumn: '' } });
+      window.__TS_PLAYGROUND_PROBE = true;   // opt in to the carried-filter diagnostic
       window.__lastDrillFilters = null;
       // Park the embed container so the drill's doRender cannot create a live iframe against the
       // (deliberately absent) host. The SDK then fails fast INSIDE the async dispatcher, which is
@@ -659,6 +672,55 @@ async function runDrillthroughProbe(browser) {
       && /Order Date: 2026-01-29/.test(run.carried.bar);
     return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk,
       drillScopeOk, monthRangeOk, raceOk, carriedOk, monthQuery: run.monthQuery, carried: run.carried, probeErrors };
+  } finally {
+    await probe.close();
+  }
+}
+
+/**
+ * A shared link's `flags` are NOT key-whitelisted by state.js sanitize, so a link can carry
+ * `flags.<section>.liveboardId`. doRender spreads the explicit ids AFTER ...flags, so the render
+ * uses the picked board — and the generated snippet must agree, or the user copies code aimed at a
+ * different object than the tool just showed them.
+ */
+async function runFlagOverrideProbe(browser) {
+  const hash = Buffer.from(JSON.stringify({
+    section: 'liveboard', liveboardId: 'GOOD-LB',
+    // Only liveboardId is planted: `vizId` is NOT spread after ...flags for the 'liveboard' case,
+    // so a flags vizId legitimately reaches the real embed there and the snippet must keep matching
+    // it. The claim under test is narrower — a flag cannot re-point the PICKED object.
+    flags: { liveboard: { liveboardId: 'ATTACKER-LB', fullHeight: true } },
+  }), 'utf8').toString('base64url');
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    await sleep(900);
+    const r = await probe.evaluate(async () => {
+      const st = await import('./js/state.js');
+      document.querySelector('[data-tab="code"]')?.click();
+      await new Promise((r2) => setTimeout(r2, 400));
+      return {
+        // POSITIVE CONTROL: the hostile flag must actually have survived sanitize, or every
+        // assertion below passes vacuously.
+        flagSurvived: st.getState().flags?.liveboard?.liveboardId === 'ATTACKER-LB',
+        benignFlagSurvived: st.getState().flags?.liveboard?.fullHeight === true,
+        renderedId: window.TS_CONFIG?.liveboardId,
+        code: document.getElementById('code-view')?.textContent || '',
+      };
+    });
+    return {
+      flagSurvived: r.flagSurvived,
+      benignFlagSurvived: r.benignFlagSurvived,
+      renderUsesPicked: r.renderedId === 'GOOD-LB',
+      // The snippet must name the picked board, must not mention the attacker's at all, and must
+      // still carry the benign flag (proof the filter is narrow, not a blanket flag drop).
+      codeUsesPicked: /liveboardId: 'GOOD-LB'/.test(r.code),
+      codeFreeOfAttacker: !/ATTACKER/.test(r.code),
+      codeKeepsBenignFlag: /fullHeight: true/.test(r.code),
+      probeErrors,
+    };
   } finally {
     await probe.close();
   }
@@ -809,6 +871,18 @@ try {
   const urlActOk = urlAct.dispatcherReady && !urlAct.pwned && urlAct.hostileOpened.length === 0
     && urlAct.goodOpened && urlAct.probeErrors.length === 0;
 
+  const flagOv = await runFlagOverrideProbe(browser);
+  console.log('');
+  console.log(`Flag-override probe (S29) — hostile flags.<section>.liveboardId survived sanitize (positive control): ${flagOv.flagSurvived}`);
+  console.log(`Flag-override probe (S29) — render uses the PICKED liveboardId: ${flagOv.renderUsesPicked}`);
+  console.log(`Flag-override probe (S29) — generated snippet uses the PICKED liveboardId: ${flagOv.codeUsesPicked}`);
+  console.log(`Flag-override probe (S29) — generated snippet never mentions the flag's id: ${flagOv.codeFreeOfAttacker}`);
+  console.log(`Flag-override probe (S29) — a BENIGN flag is still emitted (filter is narrow): ${flagOv.codeKeepsBenignFlag}`);
+  flagOv.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const flagOvOk = flagOv.flagSurvived && flagOv.benignFlagSurvived && flagOv.renderUsesPicked
+    && flagOv.codeUsesPicked && flagOv.codeFreeOfAttacker && flagOv.codeKeepsBenignFlag
+    && flagOv.probeErrors.length === 0;
+
   const dtp = await runDrillthroughProbe(browser);
   console.log('');
   console.log(`Drill-through probe (S22) — rail item + inspector panel render: ${dtp.railOk && dtp.panelOk}`);
@@ -835,12 +909,15 @@ try {
   console.log(`Code-gen import probe (S29) — sections walked: ${gen.sections} (snippets with an SDK import: ${gen.checked})`);
   console.log(`Code-gen import probe (S29) — every SDK identifier used is also imported: ${gen.gaps.length === 0}`);
   gen.gaps.forEach((g) => console.log('  - missing import:', g));
+  console.log(`Code-gen import probe (S29) — every embed section still emits SDK code: ${gen.unexpectedSkips.length === 0}`);
+  gen.unexpectedSkips.forEach((id) => console.log('  - section emitted no SDK import:', id));
   gen.probeErrors.forEach((e) => console.log('  - probe page:', e));
-  const genOk = gen.checked > 0 && gen.gaps.length === 0 && gen.probeErrors.length === 0;
+  const genOk = gen.checked > 0 && gen.gaps.length === 0 && gen.unexpectedSkips.length === 0
+    && gen.probeErrors.length === 0;
 
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
-    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk && dtOk && genOk;
+    && s3pre.confirmShown && s3pre.noDiscoveryContact && urlActOk && dtOk && genOk && flagOvOk;
   console.log(ok ? '\nBOOT CHECK: PASS' : '\nBOOT CHECK: FAIL');
 } finally {
   try { await browser?.close(); } catch { /* already gone */ }

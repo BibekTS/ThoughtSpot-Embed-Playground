@@ -420,11 +420,14 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   with a RAW EPOCH value, so three separate coercions are needed and they differ by destination:
   (a) carrying into another Liveboard needs the UNWRAPPED column and NUMERIC epochs — a string
   epoch on `Day(Order Date)` matches nothing and loses the day scope silently;
-  (b) a non-Day bucket must become a RANGE — as a runtime filter a `BW_INC` over
-  [bucket start, bucket end] (UTC), as a search clause two space-joined comparison clauses
-  (`[Order Date] >= '12/01/2024' [Order Date] <= '12/31/2024'`); emitting only the bucket's start
-  lists the 1st of the month while the KPI covers the whole month, and `dtReconcile()` then flags a
-  mismatch that is not real;
+  (b) a non-Day bucket must become a RANGE, but **the two destinations do not agree on which
+  buckets can express one.** A RUNTIME FILTER carries epoch seconds, so `BW_INC` over
+  [bucket start, bucket end] (UTC) works for ANY bucket, sub-day included. A SEARCH CLAUSE is
+  limited to `MM/DD/YYYY`, which is day-granular — so only Week/Month/Quarter/Year become a range
+  (`[Order Date] >= '12/01/2024' [Order Date] <= '12/31/2024'`, two space-joined clauses) and
+  Hour/Minute/Second fall back to the plain day-equality clause, the widest true statement the
+  literal can make. Emitting only the bucket's start lists the 1st of the month while the KPI covers
+  the whole month, and `dtReconcile()` then flags a mismatch that is not real;
   (c) DISPLAY wants the ISO day. `dtBucket`/`dtEpochSec`/`dtBucketEndSec`/`dtMDY`/`dtCarryFilter`
   in `js/app.js` encode all of this; `dtSearchColumn()` is now just `dtBucket().column`.
   Consequence for any column comparison: normalise BOTH sides — a user configuring `scopeColumn`
@@ -449,3 +452,50 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   (`liveboardId`/`vizId`/`answerId`/`hideSearchBar`) now spread AFTER `...flags`, so a shared
   link's flags cannot re-point an embed at a different object. The `search`/`spotter` cases still
   spread `dataSources`/`worksheetId` BEFORE `...flags` — same latent shape, not yet closed.
+- 2026-09-27 (S29–S32 round 2, review): **a bucket-end calculation must enumerate EVERY bucket the
+  range branch fires for.** `dtBucketEndSec` folded Hour/Minute/Second into the `day` arm while the
+  caller ranged over every non-day bucket, so an `Hour(Order Date)` click scoped the detail set to a
+  whole day — 24x too wide, 86400x for `Second(...)` — producing exactly the false `dtReconcile`
+  mismatch the range work was written to remove. The generated snippet's `tsBucketEnd` twin had the
+  identical hole: **an emitted helper is a SECOND implementation and drifts silently**, so every
+  round-2 fix here had to be applied twice and is now cross-checked (runtime vs emitted) rather than
+  eyeballed.
+- 2026-09-27 (S30 round 2): **the epoch magnitude window (1e8..1e11) is a heuristic for "is this
+  integer a date at all", not a validity test.** It starts at 1973-03-03, so zero, negatives and
+  every earlier date failed it and were carried on as STRING epochs that ThoughtSpot silently
+  ignores. When ThoughtSpot has already wrapped the column in a `Day(...)`/`Month(...)` bucket the
+  column IS a date and the heuristic is not merely unnecessary but harmful — hence
+  `dtEpochSec(v, known)`. The millisecond window still applies on the proven path (1e11..1e14
+  SECONDS would be the year 5138+, never the intended reading). `cfbFmtDate` (`js/app.js:4868`) has
+  the same blind spot and was deliberately NOT widened: it is the custom-filter-bar's display
+  heuristic, and accepting any integer there would render a plain count column named "day count" as
+  1970-01-01. `dtMDY` therefore formats from epoch seconds itself instead of routing through it.
+- 2026-09-27 (S29 round 2, the sharpest one): **`state.js` does not key-whitelist `flags`** —
+  `cleanMap(raw.flags, sectionFlags => cleanMap(sectionFlags, …))` (`js/state.js:308-309`) keeps ANY
+  key name under a 200-char cap. So a shared link can carry `flags.<section>.liveboardId`. Wherever
+  flags and explicit ids are merged, the two must agree on which wins: `doRender` spreads the ids
+  AFTER `...flags` (so the picked object wins), and the code generator emitted the ids BEFORE its
+  flags loop (so the later duplicate key won) — the tool rendered the picked board while generating
+  a snippet aimed at the attacker's. The fix pins the id keys per section out of the generator's
+  flags loop, in lockstep with the constructors in `js/embed.js`. Note the pinned set is
+  section-dependent: `vizId` is NOT spread after flags for the plain `liveboard` case, so a flags
+  `vizId` legitimately reaches that embed and the snippet must keep matching it.
+- 2026-09-27 (S32 round 2): `enterDrill` must call `dtClosePanel()` — `render()` already does
+  (`js/app.js:684`). Without it a drill navigation leaves the PARENT board's detail panel mounted
+  over the DETAIL Liveboard, and an in-flight `dtFetchPage` writes into it perfectly legitimately
+  (`dt === mine`, so the S32 staleness guard cannot catch this one — closing the view is what makes
+  the guard fire).
+- 2026-09-27 (gates, round 2): **a probe that SKIPS what it cannot check silently loses teeth.**
+  `runCodeGenImportProbe` returned `null` for a snippet with no SDK import line and passed on
+  `checked > 0`, so a code-view regression in any one section would merely lower the count and stay
+  green. The fix is a closed expectation: an explicit `NON_SDK_SECTIONS` allow-list of the two
+  host-side (REST/MCP) sections, and any OTHER section that emits no SDK import is a failure. Same
+  shape as the governance lesson that rules partitioning a repo must be allow-lists.
+- 2026-09-27 (S31, UNVERIFIED — the one thing this work cannot self-certify): the bucket range
+  clause `[Col] >= 'MM/DD/YYYY' [Col] <= 'MM/DD/YYYY'` is **extrapolated** from the confirmed
+  single-day form. It is unverified against a live cluster, and this parser's failure mode is not an
+  error — `[Order Date].daily = '…'` returned HTTP 200 with the WRONG rows. `dtFetchPage` therefore
+  treats an EMPTY first page from a range clause as "not understood": it retries once with the
+  bucket-start day clause and logs the downgrade (`rangeDowngraded` on the view, so it happens at
+  most once and subsequent pages keep the downgraded form). A live `Month(...)` click is still
+  needed to confirm the syntax; if it is rejected, the fallback is a per-day `IN` list.
