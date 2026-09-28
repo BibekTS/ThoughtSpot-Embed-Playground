@@ -112,7 +112,7 @@ async function bootServer(port, overrides = {}) {
   proc.stderr.on('data', d => { err += d.toString(); });
   spawned.push(proc);
   const ready = await waitForReady(base);
-  return { base, ready, err: () => err };
+  return { base, ready, err: () => err, kill: () => { try { proc.kill('SIGTERM'); } catch { /* gone */ } } };
 }
 
 const server = spawn('node', ['server.js'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -269,16 +269,18 @@ try {
 // This used to fail OPEN — the guard was skipped when the set was empty, so ANY username minted.
 {
   const b = await bootServer(PORT_EMPTY_ALLOWLIST, { TS_USERNAME_ALLOWLIST: '', TS_DEFAULT_USERNAME: '' });
-  check('server boots with an empty allowlist', b.ready, b.ready ? '' : b.err());
-  if (b.ready) {
-    const r = await fetch(`${b.base}/api/auth/token`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'anyone-at-all' }),
-    });
-    check('empty allowlist refuses every mint → 403', r.status === 403, `status ${r.status}`);
-    const cfg = await (await fetch(`${b.base}/api/auth/config`)).json();
-    check('config reports the empty allowlist', cfg.allowlistEmpty === true, `allowlistEmpty=${cfg.allowlistEmpty}`);
-  }
+  try {
+    check('server boots with an empty allowlist', b.ready, b.ready ? '' : b.err());
+    if (b.ready) {
+      const r = await fetch(`${b.base}/api/auth/token`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'anyone-at-all' }),
+      });
+      check('empty allowlist refuses every mint → 403', r.status === 403, `status ${r.status}`);
+      const cfg = await (await fetch(`${b.base}/api/auth/config`)).json();
+      check('config reports the empty allowlist', cfg.allowlistEmpty === true, `allowlistEmpty=${cfg.allowlistEmpty}`);
+    }
+  } finally { b.kill(); } // a throw here must not leave the child listening — the next run would EADDRINUSE
 }
 
 // ── Server C: webhook sink ON, tiny attachment budget ─────────────────────────────────────────
@@ -290,6 +292,7 @@ try {
     TS_USERNAME_ALLOWLIST: 'tsadmin',
     TS_WEBHOOK_MAX_BYTES: String(BUDGET),
   });
+  try {
   check('server boots with the webhook sink enabled', c.ready, c.ready ? '' : c.err());
 
   if (c.ready) {
@@ -341,24 +344,48 @@ try {
       }
     }
 
+    /** Sum the bytes still downloadable across every event in the inbox, plus how many files live. */
+    const liveAttachments = async () => {
+      const ev = await (await fetch(`${c.base}/api/webhook/events`)).json();
+      let bytes = 0; let live = 0; const ids = new Set(); let dupes = 0;
+      for (const e of ev.events || []) {
+        if (ids.has(e.id)) dupes += 1; else ids.add(e.id);
+        for (const f of e.files || []) {
+          const r = await fetch(`${c.base}${f.href}`);
+          if (r.status === 200) { bytes += (await r.arrayBuffer()).byteLength; live += 1; }
+        }
+      }
+      return { bytes, live, dupes, events: (ev.events || []).length };
+    };
+
     // S28: retained attachment bytes stay inside TS_WEBHOOK_MAX_BYTES, however many deliveries
     // arrive. Send enough to blow past the budget several times over, then add up what is STILL
     // downloadable — a count-only ring buffer would keep all of it.
     {
       const chunk = Buffer.alloc(24 * 1024, 0x41); // 24 KB each, 8 of them = 192 KB > 64 KB budget
       for (let i = 0; i < 8; i += 1) await postAttachment('application/pdf', `report-${i}.pdf`, chunk);
-      const ev = await (await fetch(`${c.base}/api/webhook/events`)).json();
-      let retained = 0;
-      for (const e of ev.events || []) {
-        for (const f of e.files || []) {
-          const r = await fetch(`${c.base}${f.href}`);
-          if (r.status === 200) retained += (await r.arrayBuffer()).byteLength;
-        }
-      }
+      const a = await liveAttachments();
       check('retained webhook attachment bytes stay within the budget',
-        retained > 0 && retained <= BUDGET, `${retained} bytes retained, budget ${BUDGET}`);
+        a.bytes > 0 && a.bytes <= BUDGET, `${a.bytes} bytes retained, budget ${BUDGET}`);
+    }
+
+    // S28 regression guard: SATURATE the 50-event ring. `recId` used to be
+    // `whk-${Date.now()}-${webhookEvents.length}`, and `length` pins at the ring max once full — so
+    // same-millisecond deliveries reused an id, the byte counter charged for both copies but was
+    // credited back only once, and the drift eventually evicted EVERY attachment forever (every
+    // download 404ing "it may have aged out" until restart). Retention must still work after the
+    // ring has turned over several times, and ids must stay unique.
+    {
+      const chunk = Buffer.alloc(8 * 1024, 0x42);
+      for (let i = 0; i < 120; i += 1) await postAttachment('application/pdf', `sat-${i}.pdf`, chunk);
+      const a = await liveAttachments();
+      check('event ids stay unique after the ring saturates', a.dupes === 0, `${a.dupes} duplicate id(s) in ${a.events} events`);
+      check('attachments are still retained after the ring saturates', a.live > 0, `${a.live} live file(s), ${a.bytes} bytes`);
+      check('retained bytes still within the budget after saturation',
+        a.bytes > 0 && a.bytes <= BUDGET, `${a.bytes} bytes retained, budget ${BUDGET}`);
     }
   }
+  } finally { c.kill(); } // never leave the child listening — a throw here would EADDRINUSE the next run
 }
 
 spawned.forEach(p => { try { p.kill('SIGTERM'); } catch { /* already gone */ } });

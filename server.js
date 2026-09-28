@@ -286,7 +286,10 @@ function hostnameOf(req) {
 const isLoopbackHost = (req) => LOOPBACK_HOSTS.has(hostnameOf(req));
 const hostAllowed = (req) => isLoopbackHost(req) || (!!PUBLIC_HOST && hostnameOf(req) === PUBLIC_HOST.toLowerCase());
 app.use((req, res, next) => {
-  if (req.path === '/api/webhook') return next(); // the receiver is the one public-by-design route
+  // The receiver is the one public-by-design route. Match the way Express's non-strict router does,
+  // or an operator who registered the webhook URL with a trailing slash gets silent 403s: the route
+  // still fires for '/api/webhook/', so the exemption has to fire for it too.
+  if (req.path.replace(/\/+$/, '') === '/api/webhook') return next();
   if (hostAllowed(req)) return next();
   res.status(403).json({ error: 'Host not permitted. This server answers on localhost only (set TS_PUBLIC_HOST to add one).' });
 });
@@ -472,6 +475,7 @@ const webhookEvents = []; // newest first, capped at WEBHOOK_BUFFER_MAX
 // `${recId}/${fileId}`; entries are dropped when their event falls out of the ring buffer.
 const webhookFiles = new Map(); // key -> { filename, contentType, buffer }
 let webhookBytes = 0;           // running total of retained attachment bytes (see WEBHOOK_MAX_BYTES)
+let webhookSeq = 0;             // monotonic — makes every recId unique (see the recId comment below)
 
 /** Forget one attachment and give its bytes back to the budget. */
 function dropWebhookFile(key) {
@@ -479,6 +483,17 @@ function dropWebhookFile(key) {
   if (!entry) return;
   webhookBytes -= entry.buffer.length;
   webhookFiles.delete(key);
+}
+
+/**
+ * Retain one attachment's bytes under `key`. Accounting is the whole point: it drops whatever was
+ * there first, so the running total can never double-count a replaced key (which is what made the
+ * budget drift upward and evict everything). Belt and braces alongside the unique recId.
+ */
+function retainWebhookFile(key, entry) {
+  dropWebhookFile(key);
+  webhookFiles.set(key, entry);
+  webhookBytes += entry.buffer.length;
 }
 
 /**
@@ -539,7 +554,11 @@ app.post('/api/webhook', requireWebhookSink, captureMultipart, (req, res) => {
   const ctype = String(req.get('content-type') || '');
   const isMultipart = /multipart\/form-data/i.test(ctype) && Buffer.isBuffer(req.body);
 
-  const recId = `whk-${Date.now()}-${webhookEvents.length}`;
+  // Collision-proof: `webhookEvents.length` pins at WEBHOOK_BUFFER_MAX once the ring saturates, so
+  // same-millisecond deliveries used to reuse an id. That silently overwrote the earlier event's
+  // attachment while webhookBytes had counted BOTH — the counter drifted up forever and the byte
+  // budget eventually evicted every attachment permanently. A monotonic counter never repeats.
+  const recId = `whk-${Date.now()}-${webhookSeq += 1}`;
   let payload = {};
   let files = [];         // UI-facing metadata (no bytes)
   let rawBytes;
@@ -556,12 +575,11 @@ app.post('/api/webhook', requireWebhookSink, captureMultipart, (req, res) => {
     files = split.files.slice(0, WEBHOOK_MAX_FILES).map((f, i) => {
       const fileId = String(i);
       if (retain) {
-        webhookFiles.set(`${recId}/${fileId}`, {
+        retainWebhookFile(`${recId}/${fileId}`, {
           filename: f.filename || `attachment-${i}`,
           contentType: f.contentType || 'application/octet-stream',
           buffer: f.data,
         });
-        webhookBytes += f.data.length;
       }
       return {
         fileId,

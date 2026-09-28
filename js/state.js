@@ -220,7 +220,11 @@ const strArr = (v) => arr(v).map(x => str(x)).filter(x => x !== '');
 // re-interpret them, so `https://good.com\n@evil.com`-style strings must never survive sanitize.
 const CTRL_OR_SPACE = /[\u0000- \u007f]/;
 
-/** Is this an http(s) URL? The single source of truth for the `/^https?:\/\//` guards. */
+/**
+ * Is this an http(s) URL? Shared with the controller (app.js's `connect()` uses it to check the
+ * normalized host) so the writer and this module's sanitizers agree on what counts as http(s) —
+ * a bare `/^https?:\/\//` regex would accept the embedded-control-character forms this rejects.
+ */
 export function isHttpUrl(v) {
   if (typeof v !== 'string' || CTRL_OR_SPACE.test(v.trim()) ) return false;
   let u; try { u = new URL(v.trim()); } catch { return false; }

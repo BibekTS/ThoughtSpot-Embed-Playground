@@ -10,7 +10,7 @@
     "setup": "node scripts/setup.mjs",
     "doctor": "node scripts/doctor.mjs",
     "test": "node scripts/smoke-test.mjs",
-    "test:spotter-mcp": "node --test \"lib/spotter-mcp/*.test.mjs\"",
+    "test:spotter-mcp": "node --test lib/spotter-mcp/customize.test.mjs lib/spotter-mcp/router.test.mjs",
     "boot-check": "node scripts/boot-check.mjs",
     "vendor-sdk": "node scripts/vendor-sdk.mjs",
     "register-webhook": "node scripts/register-webhook.mjs",

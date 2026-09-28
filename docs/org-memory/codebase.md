@@ -310,3 +310,32 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   glob form works: `node --test "lib/spotter-mcp/*.test.mjs"` (quoted, so node expands it, not the
   shell). `package.json` `test:spotter-mcp` used to name only `customize.test.mjs`, so
   `router.test.mjs`'s 11 tests had never run in CI; both files pass (23 tests).
+- 2026-09-27 (S25–S28 round 2): **`whk-${Date.now()}-${webhookEvents.length}` is not a unique id.**
+  `length` PINS at `WEBHOOK_BUFFER_MAX` once the ring saturates, so every same-millisecond delivery
+  after the 50th reused an id. Harmless while attachments were only count-evicted (one mis-served
+  file); fatal once a byte counter existed — `webhookBytes` charged for both copies but
+  `webhookFiles` held one, so the counter drifted monotonically up and the budget evicted EVERY
+  attachment forever (~60 deliveries into a demo, all downloads 404 "aged out" until restart). Now a
+  monotonic `webhookSeq` (`server.js:~478`) plus `retainWebhookFile()` which credits the old bytes
+  back before replacing a key. **Lesson: adding a resource counter to a keyed cache turns any latent
+  key collision from cosmetic into permanent.** A budget assertion must SATURATE the ring — the first
+  version sent 9 deliveries and could not see this.
+- 2026-09-27 (CI): **`node --test <non-matching-glob>` exits 0 with `# tests 0`.** A glob-based test
+  step is therefore green-when-empty, and Node's own glob expansion is a late-20.x feature while CI
+  pins Node 20 — so the pattern may match nothing on CI while working locally on 22. `package.json`
+  `test:spotter-mcp` now NAMES both files, and `.github/workflows/ci.yml` has a tripwire step that
+  fails if any `lib/**/*.test.mjs` is absent from the script (the other half of the same hazard).
+- 2026-09-27 (S38): **a sanitizer is only half a guard — the WRITER must normalize to the same
+  shape.** `validOrigin()` accepts origins only, but `connect()` (`js/app.js:~486`) wrote the user's
+  raw string and `setState` does not sanitize, so a pasted `https://host/#/home` connected fine and
+  then silently blanked on the next load. `connect()` now normalizes via `new URL(host).origin`. Same
+  writer/sanitizer lockstep rule the org already recorded for `safeNavUrl`.
+- 2026-09-27 (S25): **Express non-strict routing matches `/api/webhook/` for a route declared as
+  `/api/webhook`, so an exact-string path exemption in a preceding middleware desynchronizes from it.**
+  A tunnel URL registered with a trailing slash got silent 403s with an empty inbox. Any
+  path-matching guard placed in front of a router must normalize trailing slashes the way the router
+  does (`server.js:~292`).
+- 2026-09-27 (smoke harness): a child process spawned outside a `try/finally` survives a throw and
+  the NEXT `npm test` reds with EADDRINUSE — a phantom failure that looks like the code under test.
+  Every `bootServer()` call in `scripts/smoke-test.mjs` is now wrapped, and the handle exposes
+  `.kill()`.
