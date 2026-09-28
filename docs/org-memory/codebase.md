@@ -351,3 +351,60 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   now removed in a `finally` (`ask()` delegates to `askTurn()`), and the relay-supplied
   `iframe_url` is scheme-checked before it reaches `frame.src` — an iframe src is a navigation sink
   in THIS document's context, same class as the S13 `window.open` hole.
+
+## Review-round corrections to the S33/S35/S37 work (2026-09-27)
+
+- 2026-09-27 (S35, review must-fix): a row ceiling on a document that prints a **Total** is not a
+  performance knob, it is a disclosure obligation. The first cut capped at 50k and only
+  `console.warn`'d, while `fetchAllRows` returned `{rows, schema}` — so the per-region Total
+  (`js/invoice-pdf.js:348`) and the "from N row(s)" success log (`js/app.js:5270`) were both computed
+  over the capped set and read as complete: a 60k-row viz produced a financial-looking PDF
+  understating revenue by ~10k rows behind a green success toast. Two comments actively claimed the
+  opposite ("the export says so"). Now `fetchAllRows` returns `truncated`, `groupStatements(rows,
+  schema, {truncated})` sets `totalLabel: 'Total (partial)'` + an "INCOMPLETE EXPORT — capped at N
+  rows" footer line, and `handleInvoicePdf` logs ⚠ and raises an error toast. **Rule of thumb: a
+  truncation that a downstream aggregate is computed over must travel in the RETURN VALUE; a console
+  line is not a disclosure.** Verified: 60k-row fake service → rows=50000, truncated=true, printed
+  total 50000 with the partial label on every page.
+- 2026-09-27 (S37, review must-fix): the non-executing paste parser must accept **arrays**. Rejecting
+  them was a real workflow regression, not a hardening win: `findRulesUnstable` (`js/app.js:4082`)
+  exists precisely so a user can paste a whole customizations/ViewConfig wrapper, and those wrappers
+  routinely carry `visibleActions:['save','edit']` / `hiddenActions` / `runtimeFilters` — every one of
+  which `new Function` used to accept. Arrays are safe here because they leave through the same
+  `JSON.stringify` → `JSON.parse` path as every other value; `readArray` adds no evaluation. An
+  expression *inside* an array (`[(window.x=1)]`) is still refused. Lesson: when replacing an
+  evaluator with a parser, enumerate what the evaluator ACCEPTED, not just what it must now refuse.
+- 2026-09-27 (S33, review must-fix — the fence's real boundary): fencing `connect()` was not enough
+  because the last thing `connect()` does is **fire-and-forget** `refreshPersonalCopies()`
+  (`js/app.js:5654`, launched at `:553`), which has its own two unfenced awaits and writes both module globals
+  (`currentUserLogin`/`currentUserName`) and PERSISTED state (`setState({personalLb.copies})`).
+  Connect A → switch to B before A's `getCurrentUser` returns → host A's login lands in the live
+  host-B session, which then scopes its owner-filtered tag search to A's login (the cross-user leak
+  its own comment warns about), and A's copy GUIDs get persisted to localStorage and serialised into
+  B's share link. **A fence stops at the function boundary; every fire-and-forget launched from
+  inside it needs its own.** `refreshPersonalCopies` now carries the same `connectSeq` + captured-host
+  `isStale()` check after each await. Its `finally` clears `plbDiscovering` unconditionally by
+  design — gating that on `!isStale()` strands the spinner forever when the newer connect returns
+  early (host B with no `liveboardId`).
+- 2026-09-27 (S34, review must-fix, EMPIRICALLY CONFIRMED): an `import.meta.url` vs `process.argv[1]`
+  direct-run guard **must realpath both sides**. Node resolves symlinks for the ESM module path but
+  NOT for `argv[1]`, so a symlinked invocation makes them disagree and the guarded block never runs:
+  measured `OLD guard (path.resolve equality): false` / `NEW guard (realpathSync equality): true` for
+  `node <symlink-to-script>`. For a detector that is the worst possible failure — `main()` never
+  runs, the process exits **0**, and the weekly routine reads that as "no drift" while the check has
+  gone blind. `scripts/check-ts-updates.mjs` `invokedDirectly()` realpaths both and fails OPEN to
+  running: a spurious run is harmless, a spurious skip is undetectable.
+- 2026-09-27 (S35): `console.warn(..., d)` where `d` is a live response object is a customer-data
+  leak into devtools, screen shares and captured browser logs, exactly like `console.log` — the
+  earlier "console dumps removed" pass missed it because it grepped only for `console.log`. Grep for
+  **`console.` followed by a bare object argument**, not for one method name.
+- 2026-09-27 (S33, KNOWN-VACUOUS, filed as backlog not fixed): the boot-check connect-race probe
+  never asserts host A's late response actually **arrived**. It relies on puppeteer running the two
+  interception handlers concurrently; if a future version serialised them, B would win by ordering
+  alone and the probe would pass with the fence deleted. Same vacuity family as the recorded S13
+  `window.open` stub. Today it has teeth (mutation-proven: pill read "USER_A · ORG_A"), but the
+  assertion needs an "A responded" counter to STAY meaningful.
+- 2026-09-27 (S35, still open, filed as backlog): the per-row objects in `normalizeRows`
+  (`js/invoice-pdf.js:133-136`) are still plain `{}` keyed by column DISPLAY NAME, so a column named
+  `__proto__` silently vanishes from the PDF. `groupStatements` was converted to a `Map`; the row
+  builder was not. Same class, one layer down.

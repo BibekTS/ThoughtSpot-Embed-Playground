@@ -4095,8 +4095,13 @@ function findRulesUnstable(obj) {
 // converted to strict JSON, so nothing is ever evaluated.
 //
 // Grammar accepted: { key: value, … } where a key is a quoted string or a bare JS identifier, and a
-// value is a nested object, a quoted string, a number, or true/false/null. Anything else — a call,
-// a template literal, an expression, an array — is a parse error and takes the existing error path.
+// value is a nested object, an ARRAY, a quoted string, a number, or true/false/null. Anything else
+// — a call, a template literal, any other expression — is a parse error and takes the existing
+// error path. Arrays are load-bearing, not a convenience: `findRulesUnstable` exists so a user can
+// paste a whole customizations/ViewConfig wrapper and have the rules dug out of it, and such a
+// wrapper routinely carries `visibleActions: ['save','edit']` / `hiddenActions` / `runtimeFilters`.
+// Rejecting them broke a paste that `new Function` used to accept. They stay non-executing because
+// they go out through the same JSON.stringify → JSON.parse path as every other value.
 // Advance past whitespace and // or /* */ comments — all three are legal in the shape people paste.
 // Standalone so the wrapping decision below can look past a leading comment too.
 function skipTrivia(s, i) {
@@ -4164,10 +4169,11 @@ function jsObjectLiteralToJson(text) {
     ws();
     const c = s[i];
     if (c === '{') return readObject();
+    if (c === '[') return readArray();
     if (c === '"' || c === "'") return JSON.stringify(readString());
     LITERAL.lastIndex = i;
     const m = LITERAL.exec(s);
-    if (!m) fail('unsupported value — only strings, numbers, true/false/null and nested objects are allowed');
+    if (!m) fail('unsupported value — only strings, numbers, true/false/null, arrays and nested objects are allowed');
     i = LITERAL.lastIndex;
     return m[0];
   };
@@ -4192,6 +4198,23 @@ function jsObjectLiteralToJson(text) {
       fail("expected ',' or '}'");
     }
     return '{' + parts.join(',') + '}';
+  };
+
+  const readArray = () => {
+    if (s[i] !== '[') fail("expected '['");
+    i++;
+    const items = [];
+    for (;;) {
+      ws();
+      if (s[i] === ']') { i++; break; } // also how a trailing comma lands here
+      if (s[i] === undefined) fail("unterminated array — missing ']'");
+      items.push(readValue());
+      ws();
+      if (s[i] === ',') { i++; continue; }
+      if (s[i] === ']') { i++; break; }
+      fail("expected ',' or ']'");
+    }
+    return '[' + items.join(',') + ']';
   };
 
   ws();
@@ -5232,8 +5255,8 @@ async function handleInvoicePdf(payload) {
       toast('Download invoice PDF: no data session available — see console.');
       return;
     }
-    const { rows, schema } = await fetchAllRows(svc);
-    const docs = groupStatements(rows, schema);
+    const { rows, schema, truncated } = await fetchAllRows(svc);
+    const docs = groupStatements(rows, schema, { truncated });
     if (!docs.length) {
       logEvent('CustomAction', '✗ Download invoice PDF — 0 rows returned from the viz');
       done();
@@ -5241,8 +5264,16 @@ async function handleInvoicePdf(payload) {
       return;
     }
     downloadStatementsPdf(docs);
-    logEvent('CustomAction', `✓ Download invoice PDF — ${docs.length} statement(s) from ${rows.length} row(s) → sales-statements.pdf`);
-    done('✓ PDF downloaded', 'success');
+    // A capped row set means every printed Total understates the real one — say so in the log AND to
+    // the user's face. A green "PDF downloaded" over a partial financial document is the failure mode.
+    const rowNote = `${rows.length} row(s)${truncated ? ' (TRUNCATED at the export ceiling — totals are partial)' : ''}`;
+    logEvent('CustomAction', `${truncated ? '⚠' : '✓'} Download invoice PDF — ${docs.length} statement(s) from ${rowNote} → sales-statements.pdf`);
+    if (truncated) {
+      done('⚠ PDF downloaded — partial', 'warn');
+      toast(`Download invoice PDF: the viz has more rows than the export ceiling. The PDF covers the first ${rows.length.toLocaleString()} rows only, so its totals are PARTIAL — filter the viz down for a complete statement.`, 'error');
+    } else {
+      done('✓ PDF downloaded', 'success');
+    }
   } catch (e) {
     console.error('Invoice PDF export failed', e);
     logEvent('CustomAction', `✗ Download invoice PDF failed — ${e.message}`);
@@ -5625,16 +5656,27 @@ async function refreshPersonalCopies() {
   if (!s.personalLb.enabled || !s.host || !connected || !s.liveboardId) return;
   const sourceId = s.liveboardId;
   const tag = s.personalLb.tag || 'Personal';
+  // Same in-flight fence as connect() (which launches this fire-and-forget, so nothing else is
+  // awaiting it): this writes the session identity AND persisted state, so a response that arrives
+  // after the user switched hosts would put host A's login into a live host-B session — which then
+  // scopes its owner-filtered tag search to A's login, the exact cross-user leak the comment below
+  // warns about — and would serialise A's copy GUIDs into host B's share link. The connectSeq leg
+  // is load-bearing on top of the host check: a re-Connect to the SAME host is also a new session.
+  const host = s.host;
+  const seq = connectSeq;
+  const isStale = () => seq !== connectSeq || getState().host !== host;
   plbDiscovering = true; renderPersonalStrip();
   try {
     // Resolve the scoping identity lazily (covers enabling the feature AFTER connect). Without it we
     // must NOT query — an owner-less tag search would surface other users' copies (a cross-user leak).
     if (!currentUserLogin) {
-      const u = await Discovery.getCurrentUser(s.host);
+      const u = await Discovery.getCurrentUser(host);
+      if (isStale()) return; // a newer connect owns the session — this identity is the wrong host's
       if (u.ok) { currentUserLogin = u.userId || u.userName || ''; if (u.displayName) currentUserName = u.displayName; }
     }
     if (!currentUserLogin) { logEvent('Personalize', '⚠ could not resolve current user — copy discovery skipped'); return; }
-    const r = await Discovery.listPersonalCopies(s.host, sourceId, { userName: currentUserLogin, tag });
+    const r = await Discovery.listPersonalCopies(host, sourceId, { userName: currentUserLogin, tag });
+    if (isStale()) return; // ditto — never persist one host's copy GUIDs into another host's state
     if (!r.ok) { logEvent('Personalize', `⚠ copy discovery failed: ${r.error}`); return; }
 
     const cur = getState();
@@ -5655,6 +5697,9 @@ async function refreshPersonalCopies() {
       // If the active copy was deleted in another session, fall back to Standard.
       activeCopyId: liveIds.has(cur.personalLb.activeCopyId) ? cur.personalLb.activeCopyId : '' } });
   } finally {
+    // Cleared unconditionally, including on the stale paths above. Deliberate: gating it on
+    // !isStale() would leave the spinner stuck forever whenever the newer connect returns early
+    // (e.g. host B has no liveboardId), and a spinner that stops a beat early is only cosmetic.
     plbDiscovering = false;
     renderPersonalStrip();
   }

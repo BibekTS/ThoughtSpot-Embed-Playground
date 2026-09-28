@@ -23,6 +23,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -229,7 +230,24 @@ async function main() {
 export { main };
 
 // Run only when invoked as a script — importing this module (the unit test does) must not fetch.
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+//
+// Both sides are realpath'd. Node resolves symlinks for the ESM module path in import.meta.url but
+// NOT for process.argv[1], so a symlinked invocation (`node /some/link/check-ts-updates.mjs`, or a
+// checkout reached through a symlinked directory) makes the two disagree — and the failure mode is
+// the worst one available: the script does nothing, main() never runs, and the process exits 0.
+// The weekly routine reads that as "no drift" and the detector goes quietly blind. Fail OPEN to
+// running if realpath throws: a spurious run is harmless, a spurious skip is undetectable.
+function invokedDirectly() {
+  if (!process.argv[1]) return false;
+  const self = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(self);
+  } catch {
+    return path.resolve(process.argv[1]) === path.resolve(self);
+  }
+}
+
+if (invokedDirectly()) {
   main().then((code) => process.exit(code)).catch((e) => {
     console.error('ts-watch detector crashed:', e);
     process.exit(1);

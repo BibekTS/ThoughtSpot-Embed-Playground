@@ -30,15 +30,19 @@ function fmtUSD(v) {
 ------------------------------------------------------------ */
 
 // Upper bound on rows pulled into a single client-side PDF — a guard against a viz with millions
-// of rows, not a business rule. Paging stops here and the export says so.
+// of rows, not a business rule.
 const MAX_PDF_ROWS = 50_000;
 
-// Pull every row from the viz behind the action. Returns { rows, schema }.
+// Pull every row from the viz behind the action. Returns { rows, schema, truncated }.
+// `truncated` is load-bearing, not diagnostic: this PDF prints a per-region Total, and a total
+// computed over a silently-capped row set is a financial-looking document asserting a number it
+// did not compute. Every caller MUST propagate it to the document and to the user.
 // answerService.fetchData(offset, size) → { columns, data } (column-oriented `columnDataLite`).
 export async function fetchAllRows(answerService, pageSize = 1000) {
   let offset = 0;
   let all = [];
   let schema = null;
+  let truncated = false;
   for (;;) {
     const res = await answerService.fetchData(offset, pageSize);
     if (!schema) schema = extractSchema(res);
@@ -50,14 +54,14 @@ export async function fetchAllRows(answerService, pageSize = 1000) {
     if (rows.length === 0) break;
     if (rows.length < pageSize) break; // last (partial) page
     if (all.length >= MAX_PDF_ROWS) {
-      // Ceiling, not a silent truncation: a runaway viz would otherwise pull the whole table into
-      // memory and hang the tab building a PDF nobody can read.
-      console.warn(`[invoice-pdf] row ceiling reached (${MAX_PDF_ROWS.toLocaleString()} rows) — the PDF covers the first ${all.length.toLocaleString()} rows only.`);
+      // A runaway viz would otherwise pull the whole table into memory and hang the tab building a
+      // PDF nobody can read. Reported through the return value — a console line is not a disclosure.
+      truncated = true;
       break;
     }
     offset += pageSize;
   }
-  return { rows: all, schema: schema || [] };
+  return { rows: all, schema: schema || [], truncated };
 }
 
 // Column schema from a fetchData response. Confirmed shape: columns = [{ column: { id, name, type, dataType } }].
@@ -140,7 +144,10 @@ function normalizeRows(res) {
         return row;
       });
     } else {
-      console.warn('[invoice-pdf] normalizeRows: unexpected shape — inspect res.data', d);
+      // Shape only — never the payload. `d` holds live customer rows; dumping it to the console
+      // puts them in anyone's devtools, in screen shares, and in captured browser logs.
+      console.warn('[invoice-pdf] normalizeRows: unexpected response shape; res.data keys =',
+        d && typeof d === 'object' ? Object.keys(d).join(',') : typeof d);
     }
   }
 
@@ -172,7 +179,12 @@ const isMeasure = (t) => String(t).toUpperCase() === 'MEASURE';
 const isDimension = (t) => { const u = String(t).toUpperCase(); return u === 'ATTRIBUTE' || u === 'DIMENSION'; };
 
 // Group normalized rows into printable statement "docs" (one per region).
-export function groupStatements(rows, schema = []) {
+//
+// `truncated` (from fetchAllRows) says the row set was capped at MAX_PDF_ROWS. It MUST be passed
+// through: every per-region Total is a sum over `rows`, so on a capped set the printed total
+// understates the real one. The document then labels the total "Total (partial)" and carries the
+// cap in its footer, so no page asserts a number it did not compute.
+export function groupStatements(rows, schema = [], { truncated = false } = {}) {
   const schemaNames = schema.length ? schema.map((c) => c.name) : Object.keys(rows[0] || {});
 
   const COL_REGION = pickCol(schemaNames, ['Region']);
@@ -221,7 +233,11 @@ export function groupStatements(rows, schema = []) {
       items: s.items,
       descLabel: DESC_LABEL,
       amountLabel: AMOUNT,
-      footerLeft: ['Generated from ThoughtSpot search data'],
+      totalLabel: truncated ? 'Total (partial)' : 'Total',
+      footerLeft: truncated
+        ? [`INCOMPLETE EXPORT — capped at ${MAX_PDF_ROWS.toLocaleString()} rows; totals cover only the rows listed.`,
+           'Generated from ThoughtSpot search data']
+        : ['Generated from ThoughtSpot search data'],
       footerRight: `* Amounts reflect ${AMOUNT}`,
     };
   });
@@ -329,7 +345,7 @@ function buildStatementsPdf(list) {
       if (isLast) {
         ty += 24;
         hline(M, RX, ty - 14, 0.47, 1);
-        text(M, ty - 4, 'Total', 11, 'b');
+        text(M, ty - 4, doc.totalLabel || 'Total', 11, 'b');
         rtext(RX, ty - 4, fmtUSD(running), 11, 'b');
       }
 
