@@ -24,6 +24,19 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Smoke test (security guards + static restrictions)
         run: npm test
+      # The script names its test files EXPLICITLY. A glob would be worse than useless here: a
+      # pattern Node's runner can't expand (glob support is late-20.x) exits 0 with "# tests 0",
+      # so the step would go green having run nothing. This tripwire catches the other half — a
+      # new test file that nobody added to the script would otherwise never run.
+      - name: Every lib test file is wired into the test script
+        run: |
+          set -e
+          for f in $(find lib -name '*.test.mjs' | sort); do
+            grep -q -- "$f" package.json || { echo "::error::$f is not in package.json test:spotter-mcp"; exit 1; }
+            echo "wired $f"
+          done
+      - name: Unit tests (lib/spotter-mcp)
+        run: npm run test:spotter-mcp
 
   esm-parse:
     name: esm-parse
@@ -45,6 +58,12 @@ jobs:
             echo "OK $f"
           done
           for f in scripts/*.mjs server.js config.js; do
+            node --check "$f"
+            echo "OK $f"
+          done
+          # lib/ — the CommonJS helpers plus the ESM spotter-mcp modules (.mjs parses as ESM
+          # already, so these need no copy). `find` rather than `**` so no shell globstar is needed.
+          for f in $(find lib -name '*.js' -o -name '*.mjs' | sort); do
             node --check "$f"
             echo "OK $f"
           done

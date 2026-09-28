@@ -9,7 +9,7 @@
  */
 
 import { initSDK, doRender, HostEvent, Action, RuntimeFilterOp, CustomActionsPosition, CustomActionTarget } from './embed.js';
-import { getState, setState, subscribe, loadState, resetState, getHostSource, holdHostPersist } from './state.js';
+import { getState, setState, subscribe, loadState, resetState, getHostSource, holdHostPersist, isHttpUrl } from './state.js';
 import * as Discovery from './discovery.js';
 import { openAuthModal, buildTrustedAuthConfig, seedAuthHooks } from './auth.js';
 import { fetchAllRows, groupStatements, downloadStatementsPdf } from './invoice-pdf.js';
@@ -205,6 +205,12 @@ const RANGE_OPERATORS = new Set(['BW_INC', 'BW', 'BW_INC_MIN', 'BW_INC_MAX']);
 // ── Runtime (non-shared) state ────────────────────────────────────────────────
 let currentEmbed = null;
 let connected = false;
+// Monotonic connect ticket. Each connect() takes the next number; after every await it checks that
+// it is still the newest attempt (and that the host it captured is still the state's host) before
+// writing any of the module globals below. Without it a slow probe of a mistyped host lands after a
+// good connection and marks the live session "Unreachable" / fills the pickers with the wrong
+// instance's objects. Same fence loadAnswers() uses, widened to the whole connect sequence.
+let connectSeq = 0;
 let discovered = { worksheets: [], liveboards: [] };
 let vizCache = {};      // liveboardId -> [{id,name}] | null (failed) | undefined (not loaded)
 const _vizLoading = new Set(); // liveboardIds with a fetch in flight
@@ -328,9 +334,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindStateOverlay();
   // When a trusted-auth token is minted & applied, feed it to REST discovery so object lists
   // populate for token-only users (no browser session), then re-discover against the host.
+  // A token applied from the modal must NOT be a back door around the confirm overlay: connect()
+  // is what clears pendingHostConfirm/holdHostPersist, so calling it here would trust an
+  // unconfirmed shared-link host without a click (S10). applyConfig() is itself a no-op on the
+  // host while unconfirmed; Confirm re-runs both.
   seedAuthHooks({ logEvent, onTokenApplied: (token) => {
     if (token) Discovery.setBearerToken(token);
     applyConfig();
+    if (pendingHostConfirm) { showHostConfirm(getState().host); return; }
     if (token && getState().host) connect({ silent: true });
     else render();
   } });
@@ -345,7 +356,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   pendingHostConfirm = !!(s.host && getHostSource() === 'hash');
   // While unconfirmed, keep the hash host out of localStorage so a dismissed shared link can't
   // auto-connect on the user's NEXT visit (the URL hash already carries it — no need to store it).
-  if (pendingHostConfirm) holdHostPersist(true);
+  // holdAllPersist() extends that to the REST of the payload (authType, auth.*, styles.cssUrl…).
+  if (pendingHostConfirm) { holdHostPersist(true); holdAllPersist(); }
 
   applyConfig();
   renderInspector();
@@ -387,13 +399,92 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
-// A shared link proposed a host. Show it and require a click before we touch it.
+// A shared link proposed a host. Show it — along with everything else the link carries that has
+// security weight — and require a click before we touch it. The Confirm button is the ONLY caller
+// that may trust the host (trustHost), because it is the only one the user reaches via this
+// disclosure (S10).
 function showHostConfirm(host) {
   setOverlay('confirm-host');
   const label = $('#confirm-host-name');
   if (label) label.textContent = host;
+  renderConfirmExtras();
   const btn = $('#confirm-host-go');
-  if (btn) btn.onclick = () => connect();
+  if (btn) btn.onclick = () => connect({ trustHost: true });
+}
+
+/**
+ * List the non-host parts of the shared link that decide what happens on Connect. The auth mode is
+ * the important one: a trusted-auth link makes THIS browser's token server mint a real token and
+ * hand it to the named host. All values are link-derived, so they go in via textContent only.
+ */
+function renderConfirmExtras() {
+  const ul = $('#confirm-host-extras');
+  if (!ul) return;
+  const s = getState();
+  const rows = [];
+  if (s.authType && s.authType !== 'None') {
+    rows.push(`Auth mode: ${s.authType} — connecting mints a sign-in token on your token server and sends it to that host.`);
+  } else {
+    rows.push('Auth mode: None (your existing browser session with that host).');
+  }
+  if (s.auth?.username) rows.push(`Mint tokens for user: ${s.auth.username}`);
+  if (s.auth?.orgId) rows.push(`Org: ${s.auth.orgId}`);
+  if (s.styles?.cssUrl) rows.push(`Loads a remote stylesheet: ${s.styles.cssUrl}`);
+  ul.textContent = '';
+  rows.forEach(t => { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
+  ul.hidden = false; // rows always carries at least the auth-mode line
+}
+
+// ── Unconfirmed-link persistence hold ─────────────────────────────────────────
+// state.js's holdHostPersist() blanks only `host` from localStorage, so the rest of an unconfirmed
+// #s= payload (authType, auth.username/orgId, styles.cssUrl…) would still be written and outlive a
+// dismissed link. state.js is the guard-protected sanitize layer, so the hold is completed here:
+// snapshot whatever localStorage held BEFORE the link was opened and restore it, on a short poll,
+// until the user confirms.
+//
+// Two reasons this POLLS rather than hanging off subscribe():
+//   • `setState(patch, {silent:true})` skips notify() but still calls schedulePersist(), so a
+//     subscribe-driven restore would silently never fire for a silent write.
+//   • schedulePersist() writes 250ms after the last change; a restore scheduled behind that left a
+//     ~150ms window in which the tab could be closed with the link's payload in storage. Polling
+//     cuts that to at most one interval.
+// RESIDUAL RISK (unavoidable without state.js, which is guard-protected): this is a
+// write-then-revert, not a suppression. A tab closed inside one poll interval of a persist still
+// leaves the link's non-host payload in localStorage. The real fix is to generalise
+// `_holdHostPersist` (state.js:159) to omit the whole payload rather than just `host`.
+const LS_STATE_KEY = 'tsp_state_v1'; // must match STORAGE_KEY in js/state.js
+const PERSIST_HOLD_POLL_MS = 50;     // upper bound on the exposure window
+let preLinkStorage = null;           // the pre-link localStorage entry (null = there was none)
+let persistHoldTimer = null;         // the poll handle; non-null means the hold is armed
+
+function restorePreLinkStorage() {
+  try {
+    if (preLinkStorage === null) localStorage.removeItem(LS_STATE_KEY);
+    else localStorage.setItem(LS_STATE_KEY, preLinkStorage);
+  } catch (_) {}
+}
+function holdAllPersist() {
+  if (persistHoldTimer) return;
+  try { preLinkStorage = localStorage.getItem(LS_STATE_KEY); } catch (_) { preLinkStorage = null; }
+  restorePreLinkStorage();
+  persistHoldTimer = setInterval(() => {
+    try { if (localStorage.getItem(LS_STATE_KEY) !== preLinkStorage) restorePreLinkStorage(); } catch (_) {}
+  }, PERSIST_HOLD_POLL_MS);
+}
+function releaseAllPersist() {
+  clearInterval(persistHoldTimer);
+  persistHoldTimer = null;
+  preLinkStorage = null;
+}
+
+/** Open the trusted-auth modal — never while a shared-link host is unconfirmed (it can mint). */
+function openAuthModalGuarded() {
+  if (pendingHostConfirm) {
+    toast('Confirm the shared host first — token minting is blocked until you do.');
+    showHostConfirm(getState().host);
+    return;
+  }
+  openAuthModal();
 }
 
 // ── Trusted-auth availability ─────────────────────────────────────────────────
@@ -487,17 +578,43 @@ function buildConfig() {
   window.TS_CONFIG = cfg; // keep a single consistent config object around
   return cfg;
 }
-function applyConfig() { initSDK(buildConfig()); }
+function applyConfig() {
+  const cfg = buildConfig(); // always refresh window.TS_CONFIG — the code generator reads it
+  // S10: initSDK() must never see an unconfirmed (#s=-supplied) host. SDK init() authenticates
+  // IMMEDIATELY — under trusted auth it calls getAuthToken (minting a REAL token on this user's
+  // own token server) and ships it to thoughtSpotHost, with no embed render and no click. Every
+  // applyConfig() call site funnels through here, so the short-circuit covers all of them; Connect
+  // clears pendingHostConfirm and re-runs applyConfig(), so nothing is lost.
+  if (pendingHostConfirm) return;
+  initSDK(cfg);
+}
 
 // ── Connection ────────────────────────────────────────────────────────────────
-async function connect({ silent = false } = {}) {
+async function connect({ silent = false, trustHost = false } = {}) {
   let host = $('#host-input').value.trim().replace(/\/+$/, '');
   if (!host) { toast('Enter a host URL first.'); return; }
   // Auto-prefix https:// when the user omits the scheme (e.g. "my-co.thoughtspot.cloud").
-  if (!/^https?:\/\//i.test(host)) { host = 'https://' + host; $('#host-input').value = host; }
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) { host = 'https://' + host; }
+  // Normalize to the bare ORIGIN, in lockstep with state.js's sanitize(): that guard accepts only
+  // an origin, so writing anything richer here (a pasted '…/#/home') would connect fine now and
+  // then silently vanish on the next load when sanitize blanks it. The writer and the sanitizer
+  // must agree — same rule the org recorded for safeNavUrl.
+  try { host = new URL(host).origin; } catch { toast('That does not look like a valid host URL.'); return; }
+  if (!isHttpUrl(host)) { toast('Host must be an http(s) URL.'); return; }
+  $('#host-input').value = host;
+  // S10: only the confirm overlay's own button may trust a shared-link host. Any other route here
+  // — notably the token-applied auto-connect — must leave the overlay standing. Typing a DIFFERENT
+  // host and connecting is the user authoring their own host, so that is trusted as before.
+  if (pendingHostConfirm && !trustHost && host === getState().host) {
+    showHostConfirm(getState().host);
+    return;
+  }
   pendingHostConfirm = false; // an explicit Connect trusts this host for the session
   holdHostPersist(false);     // lift the localStorage suppression now that host is confirmed
+  releaseAllPersist();        // …and the whole-payload hold that rode along with it
   setState({ host });
+  const seq = ++connectSeq;                       // this attempt's ticket
+  const isStale = () => seq !== connectSeq || getState().host !== host;
   setStatus('connecting', 'Connecting…');
   // Show a prominent connecting state on the main stage immediately — discovery below can take a
   // few seconds, and until now the stage kept showing the "not connected" walkthrough (only the
@@ -507,10 +624,14 @@ async function connect({ silent = false } = {}) {
   applyConfig();
 
   const org = await Discovery.discoverOrg(host);
+  if (isStale()) return; // a newer connect() owns the UI now — drop this response entirely
   if (!org.ok) {
     connected = false;
     const isCors = org.reason === 'cors';
-    const label = org.status === 401 ? 'Not logged in' : isCors ? 'CORS blocked' : 'Unreachable';
+    // 'proxy' = the host answered 200 with something that is not ThoughtSpot JSON (an SSO or
+    // corporate-proxy login page). Reporting that as "Unreachable" sent people debugging DNS.
+    const isProxy = org.reason === 'proxy';
+    const label = org.status === 401 ? 'Not logged in' : isCors ? 'CORS blocked' : isProxy ? 'Not ThoughtSpot' : 'Unreachable';
     const detail = isCors
       ? `Host is reachable, but the browser blocked the cross-origin REST call. Add ${location.origin} to ThoughtSpot’s CORS allowlist (Develop → Customizations → Security Settings). The embed iframe is unaffected.`
       : org.error;
@@ -540,6 +661,7 @@ async function connect({ silent = false } = {}) {
   currentUserLogin = ''; // re-resolved (scoped to this session's identity) by refreshPersonalCopies()
   setConnectPhase(1); // session verified — now loading the object catalog (the slow metadata searches)
   const objs = await Discovery.discoverObjects(host);
+  if (isStale()) return; // ditto — never let a stale catalog overwrite the newer host's objects
   if (objs.ok) discovered = { worksheets: objs.worksheets, liveboards: objs.liveboards };
   // Standalone saved Answers are cached in a flat session global (not keyed by host), so clear it
   // on (re)connect — otherwise a host switch keeps showing the prior host's answers and the picker's
@@ -890,7 +1012,7 @@ function bindStateOverlay() {
     const act = ev.target.dataset.act;
     if (act === 'retry') connect();
     if (act === 'proceed') render();
-    if (act === 'open-claims') openAuthModal();
+    if (act === 'open-claims') openAuthModalGuarded();
   });
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
@@ -925,11 +1047,11 @@ function bindTopbar() {
     $('#auth-config-btn').hidden = e.target.value === 'None';
     // Modal first — it carries the setup guide, and must appear even if the SDK
     // re-init below throws (e.g. a malformed host typed into the top bar).
-    if (e.target.value !== 'None') openAuthModal();
+    if (e.target.value !== 'None') openAuthModalGuarded();
     applyConfig();
     render();
   });
-  $('#auth-config-btn').addEventListener('click', openAuthModal);
+  $('#auth-config-btn').addEventListener('click', openAuthModalGuarded);
   // Reset wipes every applied option — arm on first click, act on the second,
   // so a stray click next to "Best practices" can't silently destroy a setup.
   const resetBtn = $('#reset-btn');
@@ -1068,6 +1190,7 @@ function toggleBottom(force) {
   const open = force != null ? force : bp.dataset.open === 'false';
   bp.dataset.open = String(open);
   $('#bp-toggle').classList.toggle('open', open);
+  $('#bp-toggle').setAttribute('aria-expanded', String(open)); // keep the a11y state with the visual one
 }
 
 function logEvent(type, data) {
@@ -2374,8 +2497,12 @@ function sectionObject(s) {
   }
   if (needs === 'viz') {
     // Lazy-load vizzes when the inspector renders with a pre-selected liveboard but a cold
-    // cache — happens on page reload or when arriving via a shared link.
-    if (s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
+    // cache — happens on page reload or when arriving via a shared link. Auto-load ONLY when
+    // connected (same fence as the standalone-Answer auto-load below): discoverViz issues a
+    // CREDENTIALED (`credentials:'include'`) POST, and renderInspector() runs at boot while a
+    // shared-link host is still awaiting confirmation — so an unfenced call here contacts the
+    // attacker's host with the user's cookies, zero clicks (S10 review).
+    if (connected && s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
       loadViz(s.liveboardId).then(() => renderInspector());
     }
     const isLoading = _vizLoading.has(s.liveboardId);
@@ -4128,13 +4255,146 @@ function findRulesUnstable(obj) {
   return null;
 }
 // Parse a pasted object literal into the same { selector: { prop: 'value' } } shape parseCssText
-// returns. Evaluated as an expression (wrapped in parens) so single quotes, unquoted keys, and
-// trailing commas all work. When there's no rules_UNSTABLE key, the object IS the rules map.
+// returns. When there's no rules_UNSTABLE key, the object IS the rules map.
+//
+// This is a NON-EXECUTING parser. It used to be `new Function('return (' + raw + ')')()`, i.e. the
+// paste box ran arbitrary pasted JavaScript in the page's origin — with no CSP to fall back on, a
+// "copy this snippet from a colleague" flow was remote code execution. The tolerant JS-literal
+// grammar (single quotes, unquoted keys, trailing commas, comments) is reproduced by hand below and
+// converted to strict JSON, so nothing is ever evaluated.
+//
+// Grammar accepted: { key: value, … } where a key is a quoted string or a bare JS identifier, and a
+// value is a nested object, an ARRAY, a quoted string, a number, or true/false/null. Anything else
+// — a call, a template literal, any other expression — is a parse error and takes the existing
+// error path. Arrays are load-bearing, not a convenience: `findRulesUnstable` exists so a user can
+// paste a whole customizations/ViewConfig wrapper and have the rules dug out of it, and such a
+// wrapper routinely carries `visibleActions: ['save','edit']` / `hiddenActions` / `runtimeFilters`.
+// Rejecting them broke a paste that `new Function` used to accept. They stay non-executing because
+// they go out through the same JSON.stringify → JSON.parse path as every other value.
+// Advance past whitespace and // or /* */ comments — all three are legal in the shape people paste.
+// Standalone so the wrapping decision below can look past a leading comment too.
+function skipTrivia(s, i) {
+  for (;;) {
+    const c = s[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+    if (c === '/' && s[i + 1] === '/') { while (i < s.length && s[i] !== '\n') i++; continue; }
+    if (c === '/' && s[i + 1] === '*') {
+      const e = s.indexOf('*/', i + 2);
+      if (e === -1) return s.length; // unterminated — the caller's parse fails on the missing '{'
+      i = e + 2;
+      continue;
+    }
+    return i;
+  }
+}
+function jsObjectLiteralToJson(text) {
+  // A bare `rules_UNSTABLE: { … }` fragment gets braces; a full `{ … }` literal does not. The
+  // decision looks PAST leading trivia, or a paste that opens with a comment gets wrapped twice.
+  const s = text[skipTrivia(text, 0)] === '{' ? text : `{${text}}`;
+  let i = 0;
+  const fail = (m) => { throw new Error(`${m} at character ${i + 1}`); };
+  const ws = () => { i = skipTrivia(s, i); };
+
+  // Read a quoted string into its VALUE; the caller re-emits it with JSON.stringify, which is what
+  // normalises single quotes and any escape JSON would otherwise reject.
+  const readString = () => {
+    const quote = s[i++];
+    let out = '';
+    for (;;) {
+      const c = s[i];
+      if (c === undefined) fail('unterminated string');
+      if (c === '\\') {
+        const n = s[i + 1];
+        if (n === undefined) fail('unterminated escape');
+        if (n === 'u' && /^[0-9a-fA-F]{4}$/.test(s.slice(i + 2, i + 6))) {
+          out += String.fromCharCode(parseInt(s.slice(i + 2, i + 6), 16));
+          i += 6;
+          continue;
+        }
+        out += ({ n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', 0: '\0' })[n] ?? n;
+        i += 2;
+        continue;
+      }
+      if (c === quote) { i++; return out; }
+      out += c;
+      i++;
+    }
+  };
+
+  const IDENT = /[A-Za-z_$][A-Za-z0-9_$-]*/y; // bare keys: rules_UNSTABLE, display, backgroundColor
+  const readKey = () => {
+    ws();
+    const c = s[i];
+    if (c === '"' || c === "'") return readString();
+    IDENT.lastIndex = i;
+    const m = IDENT.exec(s);
+    if (!m) fail('expected a property name (quote a selector that is not a plain identifier)');
+    i = IDENT.lastIndex;
+    return m[0];
+  };
+
+  const LITERAL = /-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|true|false|null/y;
+  const readValue = () => {
+    ws();
+    const c = s[i];
+    if (c === '{') return readObject();
+    if (c === '[') return readArray();
+    if (c === '"' || c === "'") return JSON.stringify(readString());
+    LITERAL.lastIndex = i;
+    const m = LITERAL.exec(s);
+    if (!m) fail('unsupported value — only strings, numbers, true/false/null, arrays and nested objects are allowed');
+    i = LITERAL.lastIndex;
+    return m[0];
+  };
+
+  const readObject = () => {
+    if (s[i] !== '{') fail("expected '{'");
+    i++;
+    const parts = [];
+    for (;;) {
+      ws();
+      if (s[i] === '}') { i++; break; } // also how a trailing comma lands here
+      if (s[i] === undefined) fail("unterminated object — missing '}'");
+      const key = readKey();
+      ws();
+      if (s[i] !== ':') fail("expected ':' after the property name");
+      i++;
+      const val = readValue();
+      parts.push(JSON.stringify(key) + ':' + val);
+      ws();
+      if (s[i] === ',') { i++; continue; }
+      if (s[i] === '}') { i++; break; }
+      fail("expected ',' or '}'");
+    }
+    return '{' + parts.join(',') + '}';
+  };
+
+  const readArray = () => {
+    if (s[i] !== '[') fail("expected '['");
+    i++;
+    const items = [];
+    for (;;) {
+      ws();
+      if (s[i] === ']') { i++; break; } // also how a trailing comma lands here
+      if (s[i] === undefined) fail("unterminated array — missing ']'");
+      items.push(readValue());
+      ws();
+      if (s[i] === ',') { i++; continue; }
+      if (s[i] === ']') { i++; break; }
+      fail("expected ',' or ']'");
+    }
+    return '[' + items.join(',') + ']';
+  };
+
+  ws();
+  const json = readObject();
+  ws();
+  if (i < s.length) fail('unexpected trailing input');
+  return json;
+}
 function parseRulesObject(raw) {
-  const t = raw.trim();
-  const expr = t.startsWith('{') ? `(${t})` : `({${t}})`;
   let obj;
-  try { obj = new Function(`return ${expr};`)(); }
+  try { obj = JSON.parse(jsObjectLiteralToJson(raw.trim())); }
   catch (e) { return { rules: {}, error: e.message }; }
   if (!obj || typeof obj !== 'object') return { rules: {}, error: 'Not an object literal.' };
   return { rules: normalizeRulesMap(findRulesUnstable(obj) || obj) };
@@ -5166,8 +5426,8 @@ async function handleInvoicePdf(payload) {
       toast('Download invoice PDF: no data session available — see console.');
       return;
     }
-    const { rows, schema } = await fetchAllRows(svc);
-    const docs = groupStatements(rows, schema);
+    const { rows, schema, truncated } = await fetchAllRows(svc);
+    const docs = groupStatements(rows, schema, { truncated });
     if (!docs.length) {
       logEvent('CustomAction', '✗ Download invoice PDF — 0 rows returned from the viz');
       done();
@@ -5175,8 +5435,16 @@ async function handleInvoicePdf(payload) {
       return;
     }
     downloadStatementsPdf(docs);
-    logEvent('CustomAction', `✓ Download invoice PDF — ${docs.length} statement(s) from ${rows.length} row(s) → sales-statements.pdf`);
-    done('✓ PDF downloaded', 'success');
+    // A capped row set means every printed Total understates the real one — say so in the log AND to
+    // the user's face. A green "PDF downloaded" over a partial financial document is the failure mode.
+    const rowNote = `${rows.length} row(s)${truncated ? ' (TRUNCATED at the export ceiling — totals are partial)' : ''}`;
+    logEvent('CustomAction', `${truncated ? '⚠' : '✓'} Download invoice PDF — ${docs.length} statement(s) from ${rowNote} → sales-statements.pdf`);
+    if (truncated) {
+      done('⚠ PDF downloaded — partial', 'warn');
+      toast(`Download invoice PDF: the viz has more rows than the export ceiling. The PDF covers the first ${rows.length.toLocaleString()} rows only, so its totals are PARTIAL — filter the viz down for a complete statement.`, 'error');
+    } else {
+      done('✓ PDF downloaded', 'success');
+    }
   } catch (e) {
     console.error('Invoice PDF export failed', e);
     logEvent('CustomAction', `✗ Download invoice PDF failed — ${e.message}`);
@@ -5194,10 +5462,7 @@ async function handleInvoicePdf(payload) {
 async function resolveAnswerService(payload) {
   // 1) If the event already carries a usable session, use it as-is (viz-context invocation).
   const fromEvent = payload?.answerService || payload?.data?.answerService;
-  if (fromEvent && fromEvent.getSession?.()?.sessionId) {
-    console.log('[invoice-pdf] using answerService from the event payload');
-    return fromEvent;
-  }
+  if (fromEvent && fromEvent.getSession?.()?.sessionId) return fromEvent;
 
   if (!currentEmbed?.getAnswerService) {
     console.warn('[invoice-pdf] no embed.getAnswerService available');
@@ -5210,16 +5475,12 @@ async function resolveAnswerService(payload) {
   const ids = [];
   containers.forEach((c) => { [c.id, c.refVizId, c.answerId].forEach((x) => { if (x && !ids.includes(x)) ids.push(x); }); });
   ids.push(undefined); // last resort: let the host pick (works when the board has one viz)
-  console.log('[invoice-pdf] candidate viz ids for getAnswerService:', ids);
 
   for (const vizId of ids) {
     try {
       const svc = await currentEmbed.getAnswerService(vizId);
       const sid = svc?.getSession?.()?.sessionId;
-      if (sid) {
-        console.log(`[invoice-pdf] got answer session via getAnswerService(${vizId ?? 'no-vizId'}) → session ${sid}`);
-        return svc;
-      }
+      if (sid) return svc;
       console.warn(`[invoice-pdf] getAnswerService(${vizId ?? 'no-vizId'}) returned no session`);
     } catch (e) {
       console.warn(`[invoice-pdf] getAnswerService(${vizId ?? 'no-vizId'}) failed:`, e?.message || e);
@@ -6390,16 +6651,27 @@ async function refreshPersonalCopies() {
   if (!s.personalLb.enabled || !s.host || !connected || !s.liveboardId) return;
   const sourceId = s.liveboardId;
   const tag = s.personalLb.tag || 'Personal';
+  // Same in-flight fence as connect() (which launches this fire-and-forget, so nothing else is
+  // awaiting it): this writes the session identity AND persisted state, so a response that arrives
+  // after the user switched hosts would put host A's login into a live host-B session — which then
+  // scopes its owner-filtered tag search to A's login, the exact cross-user leak the comment below
+  // warns about — and would serialise A's copy GUIDs into host B's share link. The connectSeq leg
+  // is load-bearing on top of the host check: a re-Connect to the SAME host is also a new session.
+  const host = s.host;
+  const seq = connectSeq;
+  const isStale = () => seq !== connectSeq || getState().host !== host;
   plbDiscovering = true; renderPersonalStrip();
   try {
     // Resolve the scoping identity lazily (covers enabling the feature AFTER connect). Without it we
     // must NOT query — an owner-less tag search would surface other users' copies (a cross-user leak).
     if (!currentUserLogin) {
-      const u = await Discovery.getCurrentUser(s.host);
+      const u = await Discovery.getCurrentUser(host);
+      if (isStale()) return; // a newer connect owns the session — this identity is the wrong host's
       if (u.ok) { currentUserLogin = u.userId || u.userName || ''; if (u.displayName) currentUserName = u.displayName; }
     }
     if (!currentUserLogin) { logEvent('Personalize', '⚠ could not resolve current user — copy discovery skipped'); return; }
-    const r = await Discovery.listPersonalCopies(s.host, sourceId, { userName: currentUserLogin, tag });
+    const r = await Discovery.listPersonalCopies(host, sourceId, { userName: currentUserLogin, tag });
+    if (isStale()) return; // ditto — never persist one host's copy GUIDs into another host's state
     if (!r.ok) { logEvent('Personalize', `⚠ copy discovery failed: ${r.error}`); return; }
 
     const cur = getState();
@@ -6420,6 +6692,9 @@ async function refreshPersonalCopies() {
       // If the active copy was deleted in another session, fall back to Standard.
       activeCopyId: liveIds.has(cur.personalLb.activeCopyId) ? cur.personalLb.activeCopyId : '' } });
   } finally {
+    // Cleared unconditionally, including on the stale paths above. Deliberate: gating it on
+    // !isStale() would leave the spinner stuck forever whenever the newer connect returns early
+    // (e.g. host B has no liveboardId), and a spinner that stops a beat early is only cosmetic.
     plbDiscovering = false;
     renderPersonalStrip();
   }

@@ -507,3 +507,331 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   table cells both fire it (verified separately), so the rule is: point-click interception works for
   ThoughtSpot's own chart types, not for BYOC/Muze Studio charts. A custom-chart author can of course
   emit their own postMessage, but nothing arrives through the SDK event by default.
+- 2026-09-25 (S10, P1 credential exfiltration — fixed on this branch): **SDK `init()` authenticates
+  IMMEDIATELY; no embed render and no click are required.** On the pinned 1.49.0, calling
+  `init({authType: TrustedAuthTokenCookieless, autoLogin: true, getAuthToken})` makes the SDK invoke
+  `getAuthToken` at once — which is `fetchTrustedAuthToken` (`js/embed.js:71`, POST `/api/auth/token`
+  on the victim's OWN token server, minting a real token for the default user) — and then GET
+  `${thoughtSpotHost}/callosum/v1/session/isactive` with `Authorization: Bearer <token>`;
+  `TrustedAuthToken` mints and POSTs `${host}/callosum/v1/session/login/token`. So `initSDK()`
+  (`js/embed.js:104`, which guards only on an empty host) is a **credential sink**, not a passive
+  configuration step: any `applyConfig()` reached while a `#s=`-supplied host is unconfirmed hands
+  an attacker a live token with zero clicks. `applyConfig()` (`js/app.js`) now short-circuits before
+  `initSDK` while `pendingHostConfirm`; `buildConfig()` still runs so the code generator stays live.
+  Corollary: `pendingHostConfirm` must be cleared by the Confirm click ALONE — `connect()` used to
+  clear it for every caller, so `onTokenApplied`'s `connect({silent:true})` was a second route to
+  the same sink. (That one is NOT clickless — it needs the user to click "Mint & apply" in the
+  trusted-auth modal — but it clears the confirm state without the confirm gesture, so the modal is
+  now blocked outright while `pendingHostConfirm`.)
+- 2026-09-25 (S10, gates): **both gate servers run with `TS_SECRET_KEY=''`, so anything
+  mint-dependent 503s and a probe that merely asserts "no token leaked" passes vacuously.** A probe
+  covering a mint path MUST stub the route — puppeteer `setRequestInterception(true)` +
+  `r.respond({body: JSON.stringify({token:'FAKE-TOKEN'})})` on `POST /api/auth/token` — and pair it
+  with a positive control that the mint DOES happen once the guard is satisfied
+  (`runPreauthExfilProbe` in `scripts/boot-check.mjs`). Same interception answers the attacker host
+  (`https://evil.invalid` does not resolve, so without a stub the SDK's calls die in DNS and the
+  negative assertion is again vacuous).
+- 2026-09-25 (S10): `holdHostPersist()` (`js/state.js:150`/`:159`) blanks **only `host`** from
+  localStorage; the rest of an unconfirmed link payload (`authType`, `auth.username`/`orgId`,
+  `styles.cssUrl`) was still written and outlived a dismissed link. `js/state.js` is guard-protected,
+  so the hold is completed from `js/app.js` (`holdAllPersist()`): snapshot the pre-link
+  `tsp_state_v1` entry and restore it ~400ms behind `schedulePersist()`'s 250ms debounce on every
+  50ms poll until Confirm. **This is a write-then-revert, not a suppression — the payload IS
+  briefly in `localStorage`, and a tab closed inside one poll interval of a persist leaves the
+  attacker's `authType`/`auth.username`/`styles.cssUrl`/`customActions` (host blanked) behind, to be
+  applied against the victim's OWN host on their next visit.** The first cut restored on a
+  `subscribe()` callback at +400ms against `schedulePersist`'s +250ms write, i.e. a ~150ms exposure
+  window; polling shortens it but cannot close it. Polling is also required for correctness:
+  `setState(patch, {silent:true})` (`js/state.js:132`) skips `notify()` but still calls
+  `schedulePersist()`, so a `subscribe()`-driven restore never fires for a silent write (only
+  `persistCfb()` is silent today, and it is not reachable pre-confirm — latent trap). The real fix
+  is to generalise `_holdHostPersist` (`js/state.js:159`) to omit the whole payload instead of just
+  `host`; that is a guard-protected change. Note the storage-key constant is now duplicated in
+  `js/app.js` (`LS_STATE_KEY`) — it must stay in lockstep with `STORAGE_KEY` (`js/state.js:20`).
+- 2026-09-25 (S10 review, a SECOND zero-click host contact the first fix missed): gating
+  `initSDK()` is not sufficient — **`renderInspector()` also runs at boot while
+  `pendingHostConfirm`** (`js/app.js`, right after the confirm state is computed), and
+  `sectionObject`'s `needs === 'viz'` branch auto-fired `loadViz()` → `Discovery.discoverViz` →
+  a `credentials:'include'` POST `${host}/api/rest/2.0/metadata/liveboard/data`, with no
+  `connected &&` fence — unlike the standalone-Answer auto-load ~25 lines below, which S3 had
+  fenced. A link encoding `{host, section:'viz', liveboardId}` (both fields survive sanitize)
+  therefore shipped the visitor's cookies to the attacker's host with zero clicks. **Rule: every
+  auto-loader reachable from `renderInspector()` needs the `connected &&` fence**, because
+  `connected` is the only flag that is provably false pre-confirm (set only in `connect()`, after
+  `pendingHostConfirm=false`). Swept the other inspector sections at the time of the fix: the
+  remaining discovery calls (`refreshPersonalCopies`, the export/CFB/AI-Insights REST calls) are all
+  behind explicit user gestures.
+- 2026-09-25 (S10 review, why the probes missed it): **a negative security probe is only as strong
+  as the state its fixture reaches.** All three pre-existing pre-confirm probes defaulted to
+  `section:'search'`, and the one that did use `{section:'viz'}` omitted `liveboardId` — precisely
+  the input that makes `loadViz()` return early at its first line. The probe passed against
+  genuinely vulnerable code. When a fence guards a lazy loader, the fixture must carry whatever
+  makes that loader *actually run*, and the probe should assert on ANY request to the host, not
+  only on the one path the author had in mind.
+
+## Hygiene / a11y / CSS (S41, 2026-09-25)
+
+- 2026-09-25 (S41): **`INSTRUCTIONS.md` cannot be deleted.** `scripts/smoke-test.mjs` probes that
+  `/INSTRUCTIONS.md` is NOT statically served; removing the file makes that assertion vacuous (a
+  missing file 404s trivially), and `smoke-test.mjs` is guard-protected, so the probe cannot be
+  re-pointed without a human `human-approved` PR. Keep the file, or move the probe and the file in
+  one human-labelled PR. It still contains a real instance hostname + GUIDs.
+- 2026-09-25 (S41): `node --test lib/spotter-mcp/` **fails on Node 22** with
+  `Cannot find module …/lib/spotter-mcp` — a directory argument is resolved as a module specifier.
+  Use `node --test 'lib/spotter-mcp/*.test.mjs'` (23 pass). Separately, `npm run test:spotter-mcp`
+  runs **only** `customize.test.mjs`, so `router.test.mjs` is in no gate at all (that is M15).
+- 2026-09-25 (S41): of the 36 `.aip-*` rules in `css/styles.css`, exactly 14 class names are dead;
+  the other 22 are built at runtime by the AI Insights panel via `el()` in `js/app.js`. "The aip
+  block is dead CSS" is **false** — check each class name, not the block.
+- 2026-09-25 (S41): `var(--warn, …)`, `var(--danger, …)` and `var(--success, …)` fallbacks were
+  removable because `:root` defines all three. `var(--err, #c0392b)` in `.flow-step.failed .fs-dot`
+  is **not** — `--err` is defined nowhere, so that fallback is load-bearing. Left in place.
+- 2026-09-25 (S41): `index.html` now ships `<link rel="icon" href="data:,">`, so the browser never
+  requests `/favicon.ico`, and `scripts/boot-check.mjs`'s favicon 4xx exemption is **removed** — the
+  gate now fails on ANY 4xx/5xx. Verified on a private port (45301, clean env): 0 responses >= 400,
+  0 JS errors. **`CLAUDE.md` is now stale on this point** (it still says "no non-favicon 4xx … the
+  only allowed console 404 is `/favicon.ico`"); it is guard-protected, so a human PR must fix it —
+  filed as **M19**.
+- 2026-09-25 (UX O8/O9): `--accent` (`#00c9de`) is **2.02:1 on white** — it is a fill colour, not
+  an ink. Every accent-coloured label in `css/styles.css` failed WCAG AA, and the `:focus-visible`
+  rule added by S41 (`outline: 2px solid var(--accent)`) failed the 3:1 non-text floor of WCAG
+  1.4.11 too. `css/styles.css:23-24` now defines `--accent-ink: #067a87` (5.07:1 on `#fff`,
+  4.65:1 on `--accent-soft`, 4.82:1 on `--bg`, but only **4.45:1 on `--surface-3` `#eaf1f7`** — do
+  not put accent text there) and `--accent-2-ink: #4f46e5` (6.29:1). Rule, now in `THEME.md` §8:
+  **`--accent` paints, `--accent-ink` writes.** Roughly 50 further `color: var(--accent)` sites
+  remain in the sheet (`.st-link`, `.lr-type`, `.wh-*`, `.cfb-*`, `.flow-lane`, `.badge-good`, …) —
+  same defect, not yet converted; that is a follow-up.
+- 2026-09-25 (UX O2/O5): `#topbar` is a single non-wrapping, non-scrolling flex row inside
+  `body{overflow:hidden}`, so anything that does not fit is **unreachable**, not scrolled to. Two
+  independent failures came out of that: at 390px `#connect-btn` sat at x=411 off-screen, and at
+  1440px-connected the utilities wrapped inside their fixed 30px height. The fix needs BOTH halves
+  or it just moves the overflow: `.tb-right{flex:0 0 auto}` + `.tb-icon-btn{white-space:nowrap}`
+  stops the wrap, but then `#conn-status` (which was `flex:0 0 auto` with `max-width:440px`) pushes
+  the whole right cluster past the viewport edge. `#conn-status` must be `flex:0 1 auto` with a
+  `min-width` floor (`css/styles.css:134`). Measure `#reset-btn`'s `getBoundingClientRect()
+  .right <= innerWidth`, not just `scrollWidth`.
+- 2026-09-25 (UX O1): the inspector can be a mobile drawer with **zero JS**. `index.html:17-19`
+  puts a visually-hidden checkbox as the first element in `<body>` (NOT `hidden` — `[hidden]` is
+  `display:none !important` in this sheet, which kills focusability) and a `<label for=…>` in the
+  topbar's `.tb-right`; `.mobile-opt-cb:checked ~ #app #inspector` then wins on specificity over
+  the `@media (max-width:860px) { #inspector{display:none} }` rule. The checkbox must stay a
+  *preceding sibling of `#app`* for that combinator to work. Keyboard focus lands on the invisible
+  checkbox, so the ring is painted on the label via
+  `.mobile-opt-cb:focus-visible ~ #app .mobile-opt-btn`.
+- 2026-09-25 (UX O1, follow-up): the onboarding copy in `index.html` says "in the options panel
+  **on the right**", which is wrong once the panel is a bottom sheet. The `st-needs` variant of
+  that string is generated in `js/app.js`, so both must change together in a JS pass — not done
+  here (CSS/HTML-only scope).
+- 2026-09-25 (UX O11): `index.html` had **zero** `h1`–`h4`. The static overlay titles, inspector
+  title and modal titles are now real `<h2>`s and the wordmark an `<h1>`; `.tb-name` needed
+  `font-size/font-weight/line-height: inherit` added (`css/styles.css:113`) because the UA
+  `h1` sizing would otherwise blow up the 14px brand scale. `js/app.js` still builds two
+  `.modal-title` **divs** (`js/app.js:2793`, `:2996`) — those stay unheaded until a JS pass.
+
+## In-flight fences / async races (S33)
+
+- 2026-09-25 (S33, this PR): `connect()` (`js/app.js:488`) is the THIRD site of the same defect
+  class as S3/S11 and the widest: it awaits `discoverOrg` then `discoverObjects` and writes four
+  module globals (`connected`, the status pill, the overlay, `discovered`). It is now fenced with a
+  monotonic `connectSeq` ticket (`js/app.js:210`) plus the captured-host check, evaluated as
+  `isStale()` after EVERY await (`:507`, `:544`). The ticket alone is not enough and the host check
+  alone is not enough — a second connect to the SAME host also needs the seq. `loadAnswers()`
+  (`js/app.js:2401`) keeps its host-only fence; it is idempotent per host, `connect()` is not.
+- 2026-09-25 (S33, boot-check): a race probe does NOT need a cross-origin stub. Point both "hosts"
+  at SAME-ORIGIN paths on the gate's own server (`${BASE}/s33a`, `${BASE}/s33b`) — `validHost()`
+  (`js/state.js:188`) accepts them (scheme + `new URL` only, no host shape), so plain puppeteer
+  request interception can stub `/api/rest/2.0/auth/session/user` and `/metadata/search` with no
+  CORS headers and, crucially, no preflight — a cross-origin stub needs an OPTIONS response that
+  CDP interception does not reliably surface. `discovered.worksheets` is observable by clicking the
+  "Worksheet / Model" `.sel-btn` (the `.sel-item` list renders lazily on open).
+
+## Code execution in the UI (S37)
+
+- 2026-09-25 (S37, FIXED, this PR): the custom-styles paste box ran `new Function` on pasted text
+  (`parseRulesObject`, formerly `js/app.js:4106`) — arbitrary JS in the page's origin, with no CSP
+  anywhere in the repo to fall back on. Replaced by `jsObjectLiteralToJson()` + `JSON.parse`
+  (`js/app.js:4102-4211`): a hand-written tokenizer for the tolerant JS-literal grammar (single
+  quotes, bare identifier keys, trailing commas, `//` and `/* */` comments), values restricted to
+  string / number / true / false / null / nested object. The wrap-in-braces decision for a bare
+  `rules_UNSTABLE: {…}` fragment MUST look past leading trivia (`skipTrivia`) — testing
+  `text.startsWith('{')` wraps a paste that opens with a comment twice and rejects it.
+- 2026-09-25 (S37): `grep -n "new Function" js/` returning only the explanatory comment is the
+  standing check. Note the paste box was reachable without any ThoughtSpot contact at all — the
+  boot-check probe just opens the "CSS rules (rules_UNSTABLE)" accordion on a host-free page.
+
+## Gates (additions)
+
+- 2026-09-25 (S33/S37): a port-shifted COPY of a gate script (`sed 's/const PORT = 34921;/…/'` into
+  `scripts/boot-check.local.mjs`, run, delete) lets a worktree-isolated implementer verify and
+  mutation-test frontend probes without touching the shared 34917/34921 ports (M8). Both scripts
+  derive ROOT from `import.meta.url`, so the copy must live in `scripts/` of the same worktree.
+  This is verification, never weakening: the committed gate scripts are unchanged by it.
+- 2026-09-25 (S33/S37, mutation-proven): reverting `parseRulesObject` to `new Function` flips the
+  S37 probe's "did NOT execute" AND "hostile paste rejected" to false; deleting the two `isStale()`
+  lines flips the S33 probe's status and discovered-objects assertions (final pill read
+  "USER_A · ORG_A", picker showed WS_A). Unlike the S13 `window.open` stub, the S37 `__pwned`
+  assertion is NOT vacuous — nothing stubs the evaluator, so the flag really does get set.
+- 2026-09-25 (S33/S37): the boot-check whole-run watchdog was raised 120s → 180s
+  (`scripts/boot-check.mjs:55`) — the S33 probe deliberately holds a response 2.5s and then waits
+  3.5s more, so it alone spends ~7s inside a budget that was already ~60% consumed.
+
+## Detector / tooling
+
+- 2026-09-25 (S34, FIXED): `scripts/check-ts-updates.mjs` pushed ANY `!r.ok` watched-doc response
+  onto `changes`, so a transient 503/429 at developers.thoughtspot.com produced "CHANGES DETECTED"
+  (exit 10) and sent the weekly cloud routine off to open a PR about nothing. Only 404/410 is drift
+  now; everything else is a warning, matching the npm/GitHub branches. `main` is exported and the
+  bottom-of-file invocation is guarded by an `import.meta.url === process.argv[1]` check so
+  `scripts/check-ts-updates.test.mjs` (`npm run test:ts-watch`) can import it and stub global fetch.
+
+## Client-side PDF / Spotter chat
+
+- 2026-09-25 (S35): `groupStatements` in `js/invoice-pdf.js` keyed a plain `{}` by LIVE TS ROW DATA.
+  A group value of `constructor`/`toString` makes the `if (!statements[key])` init test truthy
+  (inherited member) and `__proto__` assignment is swallowed — one row's text aborted or corrupted
+  the whole export. Now a `Map`. Any object keyed by TS row/column data in this repo is the same
+  bug waiting to happen. `fetchAllRows` also gained a 50k row ceiling and an empty-page break.
+- 2026-09-25 (S36): `js/spotter-mcp.js` `createLiveboard()` built its link base as
+  `https://${tsHost}` while `js/app.js` passes an ALREADY-SCHEMED host — a relative `dashboard_url`
+  resolved to `https://https/…`. The module already normalises the host once for `tsOrigin`
+  (`js/spotter-mcp.js:196`); reuse it rather than re-deriving. Same file: the typing indicator is
+  now removed in a `finally` (`ask()` delegates to `askTurn()`), and the relay-supplied
+  `iframe_url` is scheme-checked before it reaches `frame.src` — an iframe src is a navigation sink
+  in THIS document's context, same class as the S13 `window.open` hole.
+
+## Review-round corrections to the S33/S35/S37 work (2026-09-27)
+
+- 2026-09-27 (S35, review must-fix): a row ceiling on a document that prints a **Total** is not a
+  performance knob, it is a disclosure obligation. The first cut capped at 50k and only
+  `console.warn`'d, while `fetchAllRows` returned `{rows, schema}` — so the per-region Total
+  (`js/invoice-pdf.js:348`) and the "from N row(s)" success log (`js/app.js:5270`) were both computed
+  over the capped set and read as complete: a 60k-row viz produced a financial-looking PDF
+  understating revenue by ~10k rows behind a green success toast. Two comments actively claimed the
+  opposite ("the export says so"). Now `fetchAllRows` returns `truncated`, `groupStatements(rows,
+  schema, {truncated})` sets `totalLabel: 'Total (partial)'` + an "INCOMPLETE EXPORT — capped at N
+  rows" footer line, and `handleInvoicePdf` logs ⚠ and raises an error toast. **Rule of thumb: a
+  truncation that a downstream aggregate is computed over must travel in the RETURN VALUE; a console
+  line is not a disclosure.** Verified: 60k-row fake service → rows=50000, truncated=true, printed
+  total 50000 with the partial label on every page.
+- 2026-09-27 (S37, review must-fix): the non-executing paste parser must accept **arrays**. Rejecting
+  them was a real workflow regression, not a hardening win: `findRulesUnstable` (`js/app.js:4082`)
+  exists precisely so a user can paste a whole customizations/ViewConfig wrapper, and those wrappers
+  routinely carry `visibleActions:['save','edit']` / `hiddenActions` / `runtimeFilters` — every one of
+  which `new Function` used to accept. Arrays are safe here because they leave through the same
+  `JSON.stringify` → `JSON.parse` path as every other value; `readArray` adds no evaluation. An
+  expression *inside* an array (`[(window.x=1)]`) is still refused. Lesson: when replacing an
+  evaluator with a parser, enumerate what the evaluator ACCEPTED, not just what it must now refuse.
+- 2026-09-27 (S33, review must-fix — the fence's real boundary): fencing `connect()` was not enough
+  because the last thing `connect()` does is **fire-and-forget** `refreshPersonalCopies()`
+  (`js/app.js:5654`, launched at `:553`), which has its own two unfenced awaits and writes both module globals
+  (`currentUserLogin`/`currentUserName`) and PERSISTED state (`setState({personalLb.copies})`).
+  Connect A → switch to B before A's `getCurrentUser` returns → host A's login lands in the live
+  host-B session, which then scopes its owner-filtered tag search to A's login (the cross-user leak
+  its own comment warns about), and A's copy GUIDs get persisted to localStorage and serialised into
+  B's share link. **A fence stops at the function boundary; every fire-and-forget launched from
+  inside it needs its own.** `refreshPersonalCopies` now carries the same `connectSeq` + captured-host
+  `isStale()` check after each await. Its `finally` clears `plbDiscovering` unconditionally by
+  design — gating that on `!isStale()` strands the spinner forever when the newer connect returns
+  early (host B with no `liveboardId`).
+- 2026-09-27 (S34, review must-fix, EMPIRICALLY CONFIRMED): an `import.meta.url` vs `process.argv[1]`
+  direct-run guard **must realpath both sides**. Node resolves symlinks for the ESM module path but
+  NOT for `argv[1]`, so a symlinked invocation makes them disagree and the guarded block never runs:
+  measured `OLD guard (path.resolve equality): false` / `NEW guard (realpathSync equality): true` for
+  `node <symlink-to-script>`. For a detector that is the worst possible failure — `main()` never
+  runs, the process exits **0**, and the weekly routine reads that as "no drift" while the check has
+  gone blind. `scripts/check-ts-updates.mjs` `invokedDirectly()` realpaths both and fails OPEN to
+  running: a spurious run is harmless, a spurious skip is undetectable.
+- 2026-09-27 (S35): `console.warn(..., d)` where `d` is a live response object is a customer-data
+  leak into devtools, screen shares and captured browser logs, exactly like `console.log` — the
+  earlier "console dumps removed" pass missed it because it grepped only for `console.log`. Grep for
+  **`console.` followed by a bare object argument**, not for one method name.
+- 2026-09-27 (S33, KNOWN-VACUOUS, filed as backlog not fixed): the boot-check connect-race probe
+  never asserts host A's late response actually **arrived**. It relies on puppeteer running the two
+  interception handlers concurrently; if a future version serialised them, B would win by ordering
+  alone and the probe would pass with the fence deleted. Same vacuity family as the recorded S13
+  `window.open` stub. Today it has teeth (mutation-proven: pill read "USER_A · ORG_A"), but the
+  assertion needs an "A responded" counter to STAY meaningful.
+- 2026-09-27 (S35, still open, filed as backlog): the per-row objects in `normalizeRows`
+  (`js/invoice-pdf.js:133-136`) are still plain `{}` keyed by column DISPLAY NAME, so a column named
+  `__proto__` silently vanishes from the PDF. `groupStatements` was converted to a `Map`; the row
+  builder was not. Same class, one layer down.
+- 2026-09-25 (S25–S28, S38/S39): **`fetch` (undici) silently DROPS a caller-supplied `Host` header.**
+  Any smoke assertion about the Host allowlist written with `fetch` tests nothing — it passes a
+  loopback Host and the guard never fires. `scripts/smoke-test.mjs:~90` now has a `rawRequest()`
+  helper built on `node:http`, which does honour an explicit `Host`. Verified empirically both ways.
+- 2026-09-25 (S27): **`app.set('trust proxy', true)` is a rate-limiter bypass, not a convenience.**
+  With it on, `req.ip` is the caller-supplied leftmost `X-Forwarded-For`, so rotating that header
+  makes every request look like a new client. `'loopback'` is no better *here*: the server binds to
+  127.0.0.1, so loopback is exactly the hop every real client arrives on. Default is now `false`
+  (`server.js:~240`, env `TS_TRUST_PROXY`). Measured: 16×429 in 71 rotating-XFF requests after the
+  fix, 0 before.
+- 2026-09-25 (S26): **`if (SET.size && !SET.has(x))` is a fail-OPEN idiom.** An empty allowlist
+  skipped the guard entirely, so a server with neither `TS_USERNAME_ALLOWLIST` nor
+  `TS_DEFAULT_USERNAME` minted for any username (`server.js:~296` before the fix). Separately,
+  `!autoCreate &&` on the same line meant `auto_create:true` bypassed the allowlist for EXISTING
+  users — JIT must govern creation only. Both now explicit branches at `server.js:~330`.
+- 2026-09-25 (S25): **`/api/webhook/file/*` shares an origin with the token mint endpoint.** A
+  multipart part's `Content-Type` is sender-controlled, so serving it back `inline` made a
+  `text/html` attachment stored XSS against `POST /api/auth/token`. Fixed with an allowlisted
+  Content-Type + `attachment` + `nosniff` (`server.js:~560`). The same reasoning is why the Host
+  allowlist exempts ONLY `POST /api/webhook`, not the `/api/webhook/*` prefix.
+- 2026-09-25 (S39): **`state.flags[section]` is spread LAST into every embed constructor**
+  (`js/embed.js:~253`), so before the per-section key allowlist a crafted `#s=` link could set any
+  constructor option — `flags.viz.answerId` silently overriding the explicit one. `FLAG_KEYS` in
+  `js/state.js:~28` mirrors app.js's `DISPLAY` table by hand (state.js must not import the
+  controller); **a new DISPLAY flag that isn't added there is silently dropped from shared links.**
+- 2026-09-25 (CI): **`node --test <directory>` fails on Node 22.17** with
+  `MODULE_NOT_FOUND: Cannot find module '<dir>'` — it tries to run the directory as a module. The
+  glob form works: `node --test "lib/spotter-mcp/*.test.mjs"` (quoted, so node expands it, not the
+  shell). `package.json` `test:spotter-mcp` used to name only `customize.test.mjs`, so
+  `router.test.mjs`'s 11 tests had never run in CI; both files pass (23 tests).
+- 2026-09-27 (S25–S28 round 2): **`whk-${Date.now()}-${webhookEvents.length}` is not a unique id.**
+  `length` PINS at `WEBHOOK_BUFFER_MAX` once the ring saturates, so every same-millisecond delivery
+  after the 50th reused an id. Harmless while attachments were only count-evicted (one mis-served
+  file); fatal once a byte counter existed — `webhookBytes` charged for both copies but
+  `webhookFiles` held one, so the counter drifted monotonically up and the budget evicted EVERY
+  attachment forever (~60 deliveries into a demo, all downloads 404 "aged out" until restart). Now a
+  monotonic `webhookSeq` (`server.js:~478`) plus `retainWebhookFile()` which credits the old bytes
+  back before replacing a key. **Lesson: adding a resource counter to a keyed cache turns any latent
+  key collision from cosmetic into permanent.** A budget assertion must SATURATE the ring — the first
+  version sent 9 deliveries and could not see this.
+- 2026-09-27 (CI): **`node --test <non-matching-glob>` exits 0 with `# tests 0`.** A glob-based test
+  step is therefore green-when-empty, and Node's own glob expansion is a late-20.x feature while CI
+  pins Node 20 — so the pattern may match nothing on CI while working locally on 22. `package.json`
+  `test:spotter-mcp` now NAMES both files, and `.github/workflows/ci.yml` has a tripwire step that
+  fails if any `lib/**/*.test.mjs` is absent from the script (the other half of the same hazard).
+- 2026-09-27 (S38): **a sanitizer is only half a guard — the WRITER must normalize to the same
+  shape.** `validOrigin()` accepts origins only, but `connect()` (`js/app.js:~486`) wrote the user's
+  raw string and `setState` does not sanitize, so a pasted `https://host/#/home` connected fine and
+  then silently blanked on the next load. `connect()` now normalizes via `new URL(host).origin`. Same
+  writer/sanitizer lockstep rule the org already recorded for `safeNavUrl`.
+- 2026-09-27 (S25): **Express non-strict routing matches `/api/webhook/` for a route declared as
+  `/api/webhook`, so an exact-string path exemption in a preceding middleware desynchronizes from it.**
+  A tunnel URL registered with a trailing slash got silent 403s with an empty inbox. Any
+  path-matching guard placed in front of a router must normalize trailing slashes the way the router
+  does (`server.js:~292`).
+- 2026-09-27 (smoke harness): a child process spawned outside a `try/finally` survives a throw and
+  the NEXT `npm test` reds with EADDRINUSE — a phantom failure that looks like the code under test.
+  Every `bootServer()` call in `scripts/smoke-test.mjs` is now wrapped, and the handle exposes
+  `.kill()`.
+- 2026-09-27 (S28 test integrity): **a burst written as `for (…) await post(…)` cannot reproduce a
+  same-millisecond id collision** — each iteration gets a fresh `Date.now()`, so the assertion passes
+  with the bug fully restored. The three ring-saturation checks in `scripts/smoke-test.mjs` were
+  vacuous until the burst became `15 × Promise.all(8)`. Mutation-tested all four ways: colliding
+  recId + sequential burst = GREEN (vacuous); colliding recId + concurrent burst = RED, 40 duplicate
+  ids / 0 live files. **Concurrency is load-bearing in that test and is commented as such** — a
+  "tidying" refactor back to a sequential loop silently disarms it. General rule: a regression test
+  for a timestamp-keyed collision MUST issue its requests concurrently, and the way to know it bites
+  is to re-break the code and watch it go red.
+- 2026-09-27 (S28): `retainWebhookFile()`'s `dropWebhookFile(key)` is **unreachable defence in depth**
+  once recIds are unique — no test can cover it, because a key is never replaced. Mutation-tested:
+  removing it with unique ids stays 45/45 green. Kept deliberately; do not "prove it with a test",
+  and do not delete it as dead code either — it is the second line against any future id scheme that
+  can repeat.
+- 2026-09-27 (merge of S25 onto S33, found at merge time): **a probe fixture must satisfy the same
+  input normalization as the code it drives.** S33's connect-race probe told its two fake clusters
+  apart by PATH (`${BASE}/s33a`, `/s33b`); S25 made `connect()` normalize every host to its ORIGIN
+  (lockstep with `sanitize()`), so both collapsed into one host and the probe failed on correct code.
+  It now uses two distinct fake origins and stubs `window.fetch` via `evaluateOnNewDocument` (request
+  interception cannot reliably answer the CORS preflight a cross-origin JSON POST needs). Re-proven
+  by mutation: `isStale = () => false` → pill reads "USER_A · ORG_A", gate FAILS.

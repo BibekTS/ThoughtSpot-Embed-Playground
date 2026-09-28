@@ -25,6 +25,38 @@ const MAX_STR = 4000;
 const MAX_ARR = 500;
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
+/**
+ * Per-section allowlist of embed display-flag keys a shared link may carry.
+ *
+ * WHY: `flags[section]` is spread LAST into the embed constructor, so without a key allowlist a
+ * crafted #s= link could smuggle ANY constructor option in — `flags.viz.answerId` would silently
+ * override the explicit answerId, and options far outside the display schema become reachable.
+ *
+ * These keys MIRROR the `DISPLAY` table in js/app.js (search/spotter/liveboard/viz/fullapp, with
+ * liveboard-custom and ai-highlights reusing liveboard's). state.js must not import app.js — the
+ * controller is not a dependency of the state layer — so the list is copied here. When a flag is
+ * added to DISPLAY, add it here too or shared links will silently drop it.
+ */
+const LIVEBOARD_FLAG_KEYS = [
+  'fullHeight', 'hideLiveboardHeader', 'showLiveboardTitle', 'hideTabPanel', 'enableVizTransformations',
+  'isLiveboardCompactHeaderEnabled', 'hideIrrelevantChipsInLiveboardTabs', 'coverAndFilterOptionInPDF',
+  'isLiveboardXLSXCSVDownloadEnabled', 'isContinuousLiveboardPDFEnabled', 'isLiveboardMasterpiecesEnabled',
+  'isEnhancedFilterInteractivityEnabled', 'isCentralizedLiveboardFilterUXEnabled',
+];
+const FLAG_KEYS = {
+  search: new Set(['collapseDataSources', 'hideDataSources', 'enableSearchAssist',
+    'focusSearchBarOnRender', 'hideResults', 'forceTable']),
+  spotter: new Set(['disableSourceSelection', 'hideSourceSelection', 'hideSampleQuestions',
+    'updatedSpotterChatPrompt', 'enablePastConversationsSidebar', 'enableStopAnswerGenerationEmbed',
+    'showSpotterLimitations']),
+  liveboard: new Set(LIVEBOARD_FLAG_KEYS),
+  'liveboard-custom': new Set(LIVEBOARD_FLAG_KEYS),
+  'ai-highlights': new Set(LIVEBOARD_FLAG_KEYS),
+  viz: new Set(['fullHeight', 'hideLiveboardHeader', 'enableVizTransformations']),
+  fullapp: new Set(['showPrimaryNavbar', 'hideHamburger', 'disableProfileAndHelp',
+    'hideObjectSearch', 'pageId']),
+};
+
 /** The canonical default shape. Anything not here is not shareable. */
 export function defaultState() {
   return {
@@ -207,14 +239,52 @@ const num = (v, def) => (Number.isFinite(Number(v)) ? Number(v) : def);
 const arr = (v, max = MAX_ARR) => (Array.isArray(v) ? v.slice(0, max) : []);
 const strArr = (v) => arr(v).map(x => str(x)).filter(x => x !== '');
 
-/** A http(s) URL with trailing slashes stripped, or '' if invalid (blocks javascript:/data:/etc). */
+// Control characters and whitespace inside a URL string: browsers and some parsers strip or
+// re-interpret them, so `https://good.com\n@evil.com`-style strings must never survive sanitize.
+const CTRL_OR_SPACE = /[\u0000- \u007f]/;
+
+/**
+ * Is this an http(s) URL? Shared with the controller (app.js's `connect()` uses it to check the
+ * normalized host) so the writer and this module's sanitizers agree on what counts as http(s) —
+ * a bare `/^https?:\/\//` regex would accept the embedded-control-character forms this rejects.
+ */
+export function isHttpUrl(v) {
+  if (typeof v !== 'string' || CTRL_OR_SPACE.test(v.trim()) ) return false;
+  let u; try { u = new URL(v.trim()); } catch { return false; }
+  return u.protocol === 'https:' || u.protocol === 'http:';
+}
+
+/**
+ * A http(s) URL with trailing slashes stripped, or '' if invalid (blocks javascript:/data:/etc).
+ * KEEPS path/query/fragment — this is for URL-shaped fields (styles.cssUrl and friends), not for
+ * the connection host. It refuses userinfo (`https://app.thoughtspot.com@evil.com` reads as the
+ * host `evil.com`) and any embedded control/whitespace character.
+ */
 function validHost(v) {
   if (typeof v !== 'string') return '';
   const t = v.trim();
-  if (!t) return '';
+  if (!t || CTRL_OR_SPACE.test(t)) return '';
   let u; try { u = new URL(t); } catch { return ''; }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+  if (u.username || u.password) return ''; // userinfo disguises the real host
   return t.replace(/\/+$/, '');
+}
+
+/**
+ * The strict form used for `state.host` — the origin the app CONNECTS to (SDK init, credentialed
+ * REST). Returns the parsed `u.origin`, never the caller's raw string, so nothing a link author
+ * appended can ride along: userinfo, a path, a query, a fragment or embedded control characters
+ * all reject outright rather than being silently trimmed.
+ */
+function validOrigin(v) {
+  if (typeof v !== 'string') return '';
+  const t = v.trim().replace(/\/+$/, '');
+  if (!t || CTRL_OR_SPACE.test(t)) return '';
+  let u; try { u = new URL(t); } catch { return ''; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return '';
+  if (u.username || u.password) return '';
+  if (u.pathname !== '/' || u.search || u.hash) return '';
+  return u.origin;
 }
 
 /** Copy a plain object's safe own keys through valFn, skipping prototype-polluting keys. */
@@ -267,7 +337,7 @@ function sanitize(raw) {
   const out = {};
   const has = (k) => Object.prototype.hasOwnProperty.call(raw, k);
 
-  if (has('host')) out.host = validHost(raw.host);
+  if (has('host')) out.host = validOrigin(raw.host); // stricter than validHost: origin only
   if (has('authType')) out.authType = AUTH_TYPES.has(raw.authType) ? raw.authType : 'None';
   if (has('section')) out.section = SECTIONS.has(raw.section) ? raw.section : 'search';
   if (has('worksheetId')) out.worksheetId = str(raw.worksheetId, 128);
@@ -305,8 +375,13 @@ function sanitize(raw) {
     return { col: str(v.col, 256), agg, dir: v.dir === 'asc' ? 'asc' : 'desc' };
   });
 
-  if (has('flags')) out.flags = cleanMap(raw.flags, sectionFlags =>
-    cleanMap(sectionFlags, v => (typeof v === 'string' ? str(v, 512) : (typeof v === 'number' ? v : bool(v)))));
+  if (has('flags')) out.flags = cleanMap(raw.flags, (sectionFlags, section) => {
+    const allowed = FLAG_KEYS[section];
+    if (!allowed) return undefined; // unknown section → no flags at all
+    return cleanMap(sectionFlags, (v, k) => (allowed.has(k)
+      ? (typeof v === 'string' ? str(v, 512) : (typeof v === 'number' ? v : bool(v)))
+      : undefined));
+  });
 
   if (has('exportOpts') && raw.exportOpts && typeof raw.exportOpts === 'object') {
     const e = raw.exportOpts;
