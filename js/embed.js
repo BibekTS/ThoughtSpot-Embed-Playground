@@ -404,6 +404,13 @@ export function doRender(section, config, callbacks, options = {}) {
     })
     .on(EmbedEvent.Error, (e) => {
       let msg = _extractErrorMessage(e);
+      // Right-clicking a viz outside a code-based action's metadataIds.vizIds makes ThoughtSpot emit
+      // VIZ_ACTION_FILTER_VALIDATION (verified live, 26.8.0.cl) — the action being correctly withheld,
+      // not a render failure. Treating it as fatal replaced the whole board with "Could not render".
+      if (/VIZ_ACTION_FILTER_VALIDATION/.test(`${msg} ${JSON.stringify(e ?? {})}`)) {
+        onEvent('CustomAction', `ℹ scoped action not offered on this viz — ${msg}`);
+        return;
+      }
       onError(msg);
       onEvent('Error', msg);
     })

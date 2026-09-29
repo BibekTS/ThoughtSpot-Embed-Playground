@@ -285,7 +285,7 @@ async function runAnswerPickerProbe(browser) {
 // auto-load conditions are genuinely evaluated pre-connect:
 //   • the standalone-Answer load (`connected && answerList === undefined`) → POST /metadata/search
 //   • the viz load (`connected && s.liveboardId && vizCache[...] === undefined`, fenced by the S10
-//     review) → POST /metadata/liveboard/data via Discovery.discoverViz
+//     review) → POST /metadata/search (visualization headers) via Discovery.discoverViz
 // The `liveboardId` is what gives the second leg teeth: without it loadViz() returns early and the
 // assertion passes whether or not the fence exists. Both discovery calls send
 // `credentials:'include'` (discovery.js), so an unfenced one ships the visitor's cookies to an
@@ -459,6 +459,7 @@ async function runDrillthroughProbe(browser) {
       return document.getElementById('code-view')?.textContent || document.getElementById('bottom')?.textContent || '';
     });
     const codeOk = code.includes("modelColumnNames: ['model-a::Meeting count']")
+      && !/metadataIds/.test(code)   // nothing pinned yet, so no vizIds clause
       && code.includes('CustomActionsPosition.CONTEXTMENU') && code.includes('CustomActionTarget.VIZ')
       && code.includes('EmbedEvent.VizPointClick') && code.includes('HostEvent.GetFilters')
       && code.includes('record_offset: offset');
@@ -559,13 +560,11 @@ async function runDrillthroughProbe(browser) {
                 { column: { name: 'Employee Name' }, value: 'Lynn Tsoflias' },
                 { column: { name: 'Territory' }, value: 'Pacific' },
               ],
-              // The user right-clicked the QUOTA cell, so that is what ThoughtSpot reports as
-              // selected — modelColumnNames scopes the action to the VIZ, not to one column, so this
-              // is reachable in the real UI. The configured measureColumn must still win, otherwise
-              // the modal is titled after a '{Null}' quota (observed on a real screenshot).
-              selectedMeasures: [{ column: { name: 'Total Sales Amount Quota' }, value: '{Null}' }],
+              // The user right-clicked the Total Sales Amount cell: ThoughtSpot reports the clicked
+              // cell in selected*, the rest of the row in deselected* (verified live on 26.8.0.cl).
+              selectedMeasures: [{ column: { name: 'Total Sales Amount' }, value: '134280.9824' }],
               deselectedMeasures: [
-                { column: { name: 'Total Sales Amount' }, value: '134280.9824' },
+                { column: { name: 'Total Sales Amount Quota' }, value: '{Null}' },
                 { column: { name: 'Quota %' }, value: '{Null}' },
               ],
             },
@@ -580,6 +579,74 @@ async function runDrillthroughProbe(browser) {
         title: tp?.querySelector('.modal-title')?.textContent,
         summary: tp?.querySelector('.dt-summary')?.textContent,
       };
+      // The action shows on EVERY cell of the viz (no per-cell scoping exists), so a right-click on
+      // a cell that isn't the configured measure — here "Employee Name", captured live: the name in
+      // selectedAttributes, every measure in deselectedMeasures — must be refused, not drilled.
+      document.getElementById('dt-modal')?.remove();
+      const refuseIdx = bodies.length;
+      await window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: {
+          vizId: 'viz-TABLE',
+          contextMenuPoints: {
+            clickedPoint: {
+              selectedAttributes: [{ column: { name: 'Employee Name' }, value: 'Jae Pak' }],
+              deselectedAttributes: [{ column: { name: 'Territory' }, value: 'Europe' }],
+              selectedMeasures: [],
+              deselectedMeasures: [
+                { column: { name: 'Total Sales Amount Quota' }, value: '{Null}' },
+                { column: { name: 'Total Sales Amount' }, value: '280800' },
+                { column: { name: 'Quota %' }, value: '{Null}' },
+              ],
+            },
+            selectedPoints: [],
+          },
+        },
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      tableClick.refused = !document.getElementById('dt-modal') && bodies.length === refuseIdx;
+
+      // Presets: save the current setup, wipe the slice, reapply, confirm it came back. Also that a
+      // hand-edited localStorage entry cannot introduce keys the drill slice does not already have.
+      st.setState({ drill: { ...st.getState().drill, measureColumn: 'Meeting count', recordNoun: 'meetings' } });
+      const presets = {};
+      document.querySelector('.dpre-add')?.click();
+      await new Promise((r) => setTimeout(r, 200));
+      const nameInput = document.querySelector('.dpre-input');
+      if (nameInput) {
+        nameInput.value = 'probe setup';
+        document.querySelector('.dpre-add--cta')?.click();
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      presets.stored = !!(JSON.parse(localStorage.getItem('tsp_drill_presets_v1') || '{}')['probe setup']);
+      const raw = JSON.parse(localStorage.getItem('tsp_drill_presets_v1') || '{}');
+      if (raw['probe setup']) {
+        raw['probe setup'].drill.bogusKey = 'nope';                 // a key the slice does not have
+        raw['probe setup'].drill['__proto__'] = { polluted: 1 };    // and a polluting one
+        localStorage.setItem('tsp_drill_presets_v1', JSON.stringify(raw));
+      }
+      st.setState({ drill: { ...st.getState().drill, measureColumn: '', recordNoun: 'rows' } });
+      const keysBefore = Object.keys(st.getState().drill).length;
+      [...document.querySelectorAll('.dpre-go')].find((b) => b.textContent === 'probe setup')?.click();
+      await new Promise((r) => setTimeout(r, 300));
+      const back = st.getState().drill;
+      presets.restored = back.measureColumn === 'Meeting count' && back.recordNoun === 'meetings';
+      presets.noNewKeys = Object.keys(back).length === keysBefore && !('bogusKey' in back);
+      presets.noPollution = ({}).polluted === undefined;
+      // Pinning: naming visualizations must add metadataIds.vizIds to the declaration, and
+      // clearing it must take the clause back out. This is the contract the app controls; whether
+      // ThoughtSpot then hides the item on other vizzes is a live-UI behaviour, not asserted here.
+      const pinning = {};
+      st.setState({ drill: { ...st.getState().drill, actionVizIds: ['viz-ONLY-THIS'] } });
+      await new Promise((r) => setTimeout(r, 300));
+      const withPin = document.getElementById('code-view')?.textContent || '';
+      pinning.added = /metadataIds: \{ vizIds: \['viz-ONLY-THIS'\] \}/.test(withPin);
+      st.setState({ drill: { ...st.getState().drill, actionVizIds: [] } });
+      await new Promise((r) => setTimeout(r, 300));
+      pinning.removed = !/metadataIds/.test(document.getElementById('code-view')?.textContent || '');
+
+      presets.folded = [...document.querySelectorAll('.insp-sub')].length >= 3
+        && [...document.querySelectorAll('.insp-sub')].every((x) => !x.open);
 
       // Drill scoping: VizPointClick fires for EVERY viz on the board, so a click from a viz other
       // than the configured one must not drill away. Only the negative case is asserted here — the
@@ -676,7 +743,7 @@ async function runDrillthroughProbe(browser) {
         })),
         bar: document.querySelector('#drill-bar .drill-filters')?.textContent || '',
       };
-      return { bodies, first, after, mismatchShown, guard, modal, scoping, tableClick, monthQuery, race, carried };
+      return { pinning, presets, bodies, first, after, mismatchShown, guard, modal, scoping, tableClick, monthQuery, race, carried };
     });
 
     const scopedQuery = run.bodies[0]?.query_string === "[Meeting Id] [User Name] [Booked at] [Stage] = 'Prospecting'";
@@ -699,7 +766,11 @@ async function runDrillthroughProbe(browser) {
     const t = run.tableClick;
     const tableClickOk = t.query === "[Meeting Id] [User Name] [Booked at] [Employee Name] = 'Lynn Tsoflias'"
       && t.title === 'Total Sales Amount' && /134,280\.9824/.test(t.summary || '')
-      && /Employee Name: Lynn Tsoflias/.test(t.summary || '');
+      && /Employee Name: Lynn Tsoflias/.test(t.summary || '')
+      && t.refused === true;
+    const pr = run.presets || {};
+    const presetOk = pr.stored && pr.restored && pr.noNewKeys && pr.noPollution && pr.folded;
+    const pinOk = !!(run.pinning && run.pinning.added && run.pinning.removed);
     const drillScopeOk = run.scoping.otherVizDrilled === false;
     // 1733011200 = 2024-12-01 UTC. The whole month, in the same token syntax the day clause uses.
     const monthRangeOk = run.monthQuery
@@ -713,7 +784,7 @@ async function runDrillthroughProbe(browser) {
       && dateCarried.values[0] === 1769644800 && dateCarried.types[0] === 'number'
       && /Order Date: 2026-01-29/.test(run.carried.bar);
     return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk,
-      drillScopeOk, monthRangeOk, raceOk, carriedOk, monthQuery: run.monthQuery, carried: run.carried, probeErrors };
+      presetOk, pinOk, drillScopeOk, monthRangeOk, raceOk, carriedOk, monthQuery: run.monthQuery, carried: run.carried, probeErrors };
   } finally {
     await probe.close();
   }
@@ -1229,8 +1300,10 @@ try {
   console.log(`Drill-through probe (S22) — badge stays neutral ("N+") until the count is known, then reconciles: ${dtp.badgeOk}`);
   console.log(`Drill-through probe (S22) — {Column} link resolves; javascript: template refused: ${dtp.linkOk}`);
   console.log(`Drill-through probe (S22) — modal record list: title/period/summary, rows+chevrons, Esc closes: ${dtp.modalOk}`);
-  console.log(`Drill-through probe (S22) — TABLE right-click (deselectedAttributes) scopes the query + badge: ${dtp.tableClickOk}`);
+  console.log(`Drill-through probe (S22) — TABLE right-click (deselectedAttributes) scopes the query + badge; non-measure cell refused: ${dtp.tableClickOk}`);
   console.log(`Drill-through probe (S22) — a click from a DIFFERENT viz does not drill away: ${dtp.drillScopeOk}`);
+  console.log(`Drill-through probe (S42) — preset saves, reapplies, folds, admits no foreign keys: ${dtp.presetOk}`);
+  console.log(`Drill-through probe (S43) — naming visualizations adds and removes metadataIds.vizIds: ${dtp.pinOk}`);
   console.log(`Drill-through probe (S31) — a Month(...) click queries the WHOLE month, not just the 1st: ${dtp.monthRangeOk}`);
   console.log(`  query: ${dtp.monthQuery}`);
   console.log(`Drill-through probe (S32) — a slow first click's rows never land in the second click's panel: ${dtp.raceOk}`);
@@ -1239,7 +1312,8 @@ try {
   dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
   const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
     && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.tableClickOk && dtp.drillScopeOk
-    && dtp.monthRangeOk && dtp.raceOk && dtp.carriedOk && dtp.probeErrors.length === 0;
+    && dtp.monthRangeOk && dtp.raceOk && dtp.carriedOk && dtp.presetOk && dtp.pinOk
+    && dtp.probeErrors.length === 0;
 
   const gen = await runCodeGenImportProbe(browser);
   console.log('');

@@ -65,16 +65,17 @@ const LB_DOWNLOAD_ACTIONS = ['DownloadLiveboard', 'DownloadLiveboardAsContinuous
   'DownloadLiveboardAsA4Pdf', 'DownloadLiveboardAsCsv', 'DownloadLiveboardAsXlsx'];
 const VIZ_DOWNLOAD_ACTIONS = ['Download', 'DownloadAsPdf', 'DownloadAsCsv', 'DownloadAsXlsx'];
 const ACTIONS = {
-  search:   [...VIZ_DOWNLOAD_ACTIONS, 'Edit', 'Share', 'Pin', 'DrillDown', 'SpotIQAnalyze'],
+  search:   [...VIZ_DOWNLOAD_ACTIONS, 'Edit', 'Share', 'Pin', 'DrillDown', 'ShowUnderlyingData', 'SpotIQAnalyze'],
   spotter:  ['Share', 'Pin', 'SpotIQAnalyze'],
   liveboard: [...LB_DOWNLOAD_ACTIONS, ...VIZ_DOWNLOAD_ACTIONS,
-    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi'],
-  viz:      [...VIZ_DOWNLOAD_ACTIONS, 'Share', 'Pin', 'Explore', 'DrillDown', 'SpotIQAnalyze'],
+    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi'],
+  viz:      [...VIZ_DOWNLOAD_ACTIONS, 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'SpotIQAnalyze'],
   fullapp:  [...LB_DOWNLOAD_ACTIONS, ...VIZ_DOWNLOAD_ACTIONS,
-    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi'],
+    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi'],
 };
 ACTIONS['liveboard-custom'] = ACTIONS.liveboard;
 ACTIONS['ai-highlights'] = ACTIONS.liveboard;
+ACTIONS['drillthrough'] = ACTIONS.liveboard;
 
 // Per-action scope tooltips for the "Modify actions" rows (which surface to hover title).
 const ACTION_HINTS = {
@@ -90,6 +91,7 @@ const ACTION_HINTS = {
   LiveboardUsers: 'Liveboard header: the strip of viewer avatars at the top (people the board is shared with / who have access — “recently visited / social proof”). Hide to remove those faces. Also toggleable in Display options.',
   LiveboardInfo: 'Liveboard header: the “Show Liveboard details” menu item (author + created/updated timestamps). Opens a panel; not shown inline on the board.',
   MakeACopy: 'Liveboard header ⋯ menu: the “Make a copy” item that lets a viewer duplicate the whole board into their own editable copy. Hide to stop end users cloning the board.',
+  ShowUnderlyingData: 'Right-click menu: “Show underlying data”. Hiding it here applies to the WHOLE embed (every viz on the board). To hide it on only specific visualizations, pin them in the Drill-through panel and use its “Hide "Show underlying data" too” toggle (a per-tile CSS rule).',
   AskAi: 'The Spotter / “Ask AI” icon on a Liveboard or full app (SDK enum: Action.AskAi — there is no Action.Spotter). Disable it to grey the icon out; set a Disabled-action reason below for the “premium service, contact…” hover message.',
 };
 
@@ -532,8 +534,27 @@ function applyTrustedAuthAvailability() {
 }
 
 // ── Config bridge (state → embed.js/initSDK shape) ─────────────────────────────
+/**
+ * Hide "Show underlying data" in exactly the menus that offer the drill-through action. hiddenActions
+ * is embed-wide (no per-viz variant), so instead: ThoughtSpot renders a code-based action's menu item
+ * with its id as the DOM id, in the same popover as the built-in items — hide the built-in one in any
+ * popover that also holds ours. Follows the action's own scoping (pinned vizIds or column), and needs
+ * no focus tracking: a :focus-within version broke the moment the user pressed on the menu, because
+ * focus moves into the popover (verified live, 26.8.0.cl). rules_UNSTABLE depends on ThoughtSpot's
+ * internal DOM ids — re-verify after a cluster upgrade.
+ */
+function drillPerVizCssRules(s) {
+  const d = s.drill || {};
+  if (s.section !== 'drillthrough' || !d.enabled || !d.hideUnderlyingData) return {};
+  return {
+    [`[data-testid="popover-container"]:has([id="${DT_ACTION_ID}"]) #context-menu-item-show-underlying-data`]: { display: 'none !important' },
+  };
+}
+function effectiveCssRules(s) {
+  return { ...(s.styles.rules || {}), ...drillPerVizCssRules(s) };
+}
 function hasStyles(s) {
-  return Object.keys(s.styles.variables || {}).length || Object.keys(s.styles.rules || {}).length || !!s.styles.cssUrl;
+  return Object.keys(s.styles.variables || {}).length || Object.keys(effectiveCssRules(s)).length || !!s.styles.cssUrl;
 }
 // Beta: customizations.content (UI-text relabels) — separate from customizations.style above.
 function hasContent(s) {
@@ -557,7 +578,8 @@ function buildConfig() {
     if (s.styles.cssUrl) style.customCSSUrl = s.styles.cssUrl;
     const customCSS = {};
     if (Object.keys(s.styles.variables).length) customCSS.variables = s.styles.variables;
-    if (Object.keys(s.styles.rules).length) customCSS.rules_UNSTABLE = s.styles.rules;
+    const rules = effectiveCssRules(s);
+    if (Object.keys(rules).length) customCSS.rules_UNSTABLE = rules;
     if (Object.keys(customCSS).length) style.customCSS = customCSS;
     cfg._customStyles = style;
   }
@@ -2563,6 +2585,12 @@ async function loadViz(liveboardId) {
   }
 }
 
+/** Clear a poisoned (null) cache entry and try again — loadViz() only ever fetches once per id. */
+function retryLoadViz(liveboardId) {
+  delete vizCache[liveboardId];
+  loadViz(liveboardId).then(() => renderInspector());
+}
+
 // All standalone saved Answers on the instance. Flat session cache: undefined = not loaded,
 // null = failed (UI shows a GUID-paste fallback), array = loaded. Deduped by answersLoading.
 async function loadAnswers() {
@@ -2823,11 +2851,13 @@ function buildEmbedCustomActions(s) {
       target: CustomActionTarget.LIVEBOARD,
     });
   }
-  // Drill-through demo — "View detail", scoped to a SINGLE measure column so it shows up only in
-  // that column's right-click menu. The scoping key is dataModelIds.modelColumnNames, whose entries
-  // are '<modelGuid>::<columnName>' (verified against the SDK docs for 1.49.0; requires 1.43.0+ /
-  // 10.14.0.cl+). Without both the model GUID and the column the action would apply to every viz,
-  // so it is only injected when both are configured. The dispatcher routes it to openDetailPanel().
+  // Drill-through demo — "View detail". The scoping key is dataModelIds.modelColumnNames, whose
+  // entries are '<modelGuid>::<columnName>' (SDK 1.43.0+ / 10.14.0.cl+). NOTE it scopes to a
+  // VISUALIZATION, not to a cell: the action shows on every cell of any viz built on that column,
+  // neighbouring measures included (verified live on 26.8.0.cl). That is why dtClickedMeasure()
+  // reports the CONFIGURED measure rather than whichever cell was right-clicked. Without both the
+  // model GUID and the column it would apply to every viz, so it is only injected when both are
+  // set. The dispatcher routes it to openDetailPanel().
   const d = s.drill || {};
   if (s.section === 'drillthrough' && d.enabled && d.summaryModelId && d.measureColumn) {
     actions.push({
@@ -2835,7 +2865,12 @@ function buildEmbedCustomActions(s) {
       name: d.actionLabel || 'View detail',
       position: CustomActionsPosition.CONTEXTMENU,            // right-click menu on the data point
       target: CustomActionTarget.VIZ,                         // per-viz, so the clicked row comes through
-      dataModelIds: { modelColumnNames: [`${d.summaryModelId}::${d.measureColumn}`] },
+      // The scoping keys are a UNION, not an intersection (verified live on 26.8.0.cl): sending
+      // modelColumnNames alongside vizIds still put the action on every viz built on the column.
+      // So pinned vizzes REPLACE the column scope rather than narrowing it.
+      ...(d.actionVizIds?.length
+        ? { metadataIds: { vizIds: d.actionVizIds } }
+        : { dataModelIds: { modelColumnNames: [`${d.summaryModelId}::${d.measureColumn}`] } }),
     });
   }
   return actions;
@@ -5851,31 +5886,35 @@ const dtIsNull = (v) => v === null || v === undefined || v === '' || v === '{Nul
  * Prefer the configured `measureColumn` wherever it sits on the clicked point, because
  * `dataModelIds.modelColumnNames` scopes a custom action to a **visualization**, not to a column —
  * confirmed live: with the action scoped to 'Total Sales Amount', right-clicking the neighbouring
- * 'Total Sales Amount Quota' cell still shows it. Taking "whatever cell was clicked" then titles the
- * modal after the wrong measure and, on this Liveboard, prints a '{Null}' quota as the KPI.
- * The clicked cell's own measure is the fallback.
+ * 'Total Sales Amount Quota' cell still shows it. There is no column-level scoping to fall back on
+ * (verified: neither `dataModelIds` nor `metadataIds` accepts a "this cell only" scope), so a click
+ * on an unsupported cell is expected and must be reported, not disguised. Returns `matched: true`
+ * only when the CONFIGURED measure was actually on the clicked point; `matched: false` means the
+ * label/value shown is a fallback the caller must flag as such, not the measure that was clicked.
  */
 function dtClickedMeasure(payload) {
   const want = (getState().drill || {}).measureColumn;
-  const pick = (m) => ({ label: m.column?.name ?? m.columnName ?? 'KPI', value: m.value ?? m.dataValue });
+  const pick = (m, matched) => ({ label: m.column?.name ?? m.columnName ?? 'KPI', value: m.value ?? m.dataValue, matched });
   const points = clickedPoints(payload);
   if (want) {
     for (const p of points) {
       const all = [...(p.selectedMeasures || []), ...(p.deselectedMeasures || [])];
       const m = all.find(x => (x?.column?.name ?? x?.columnName) === want && !dtIsNull(x.value ?? x.dataValue));
-      if (m) return pick(m);
+      if (m) return pick(m, true);
     }
   }
   // Fallback order: the clicked cell's own measure, then any other measure on the row. Skip nulls
   // throughout — a modal titled "<measure>: {Null}" tells the viewer nothing and reconciles against
-  // nothing, so an adjacent real measure is strictly more useful than the empty cell they hit.
+  // nothing, so an adjacent real measure is strictly more useful than the empty cell they hit. Marked
+  // matched:false so dtSummaryLine() can say plainly that this isn't the configured measure, instead
+  // of quietly relabelling the modal as if it were.
   for (const p of points) {
     const m = (p.selectedMeasures || []).find(x => !dtIsNull(x.value ?? x.dataValue));
-    if (m) return pick(m);
+    if (m) return pick(m, false);
   }
   for (const p of points) {
     const m = (p.deselectedMeasures || []).find(x => !dtIsNull(x.value ?? x.dataValue));
-    if (m) return pick(m);
+    if (m) return pick(m, false);
   }
   return null;
 }
@@ -5956,7 +5995,24 @@ async function openDetailPanel(payload) {
   const wantScope = dtSearchColumn(d.scopeColumn || '');
   const scoped = d.scopeColumn ? attrs.filter(f => dtSearchColumn(f.columnName) === wantScope) : attrs;
   const filters = scoped.length ? scoped : attrs;
+  // The action shows on every cell of the viz (no per-cell scoping exists), so refuse a click whose
+  // CELL isn't the configured measure. `selected*` is the clicked cell, `deselected*` the rest of the
+  // row (verified live) — so a right-click on "Employee Name" has the measure only in deselected.
+  if (d.measureColumn) {
+    const cell = clickedPoints(payload).flatMap(p => p.selectedMeasures || [])
+      .find(m => (m?.column?.name ?? m?.columnName) === d.measureColumn);
+    if (!cell || dtIsNull(cell.value ?? cell.dataValue)) {
+      toast(`This value has no drill-down. Right-click a "${d.measureColumn}" value instead.`);
+      logEvent('Drill', `ℹ clicked cell is not "${d.measureColumn}" — drill refused`);
+      return;
+    }
+  }
   const kpi = dtClickedMeasure(payload);
+  if (d.measureColumn && (!kpi || kpi.matched === false)) {
+    logEvent('Drill', kpi
+      ? `⚠ configured measure "${d.measureColumn}" not on this selection — showing "${kpi.label}" instead (see the panel banner)`
+      : `⚠ configured measure "${d.measureColumn}" not on this selection — no measure on the clicked row`);
+  }
   const dropped = dtDroppedAttrs.slice();
 
   dt = { filters, kpi, dropped, columns: [], rows: [], reportedTotal: 0, exhausted: false, offset: 0, loading: true, error: '' };
@@ -6121,7 +6177,16 @@ function dtSummaryLine() {
   // An attribute the clicked row carried as {Null} cannot become a filter, so the detail query is
   // WIDER than the cell the user clicked. Say which ones rather than dropping them silently.
   const skipped = (dt.dropped || []).length ? ` · not scoped ({Null}): ${dt.dropped.join(', ')}` : '';
-  return `${r.text}${scope ? ` — ${scope}` : ''}${skipped}`;
+  // The action can't be scoped to one column (no such SDK option — see dtClickedMeasure), so a click
+  // on an unsupported cell is expected. Say so instead of quietly relabelling the modal after
+  // whichever measure happened to be on the row — that reads as a bug, not a boundary. Only warn
+  // when a measure was actually configured; a plain attribute click (no measureColumn set) legitimately
+  // carries no measure and is not an error.
+  const wantMeasure = (getState().drill || {}).measureColumn;
+  const unsupported = dt.kpi && dt.kpi.matched === false
+    ? ` · ⚠ configured measure "${wantMeasure}" not on this selection — showing "${dt.kpi.label}" instead`
+    : (wantMeasure && !dt.kpi ? ` · ⚠ configured measure "${wantMeasure}" not on this selection` : '');
+  return `${r.text}${scope ? ` — ${scope}` : ''}${skipped}${unsupported}`;
 }
 
 /** One record row: icon · title + meta · date · chevron. The whole row is the link when one resolves. */
@@ -6336,6 +6401,110 @@ function renderDetailPanel() {
   panel.appendChild(foot);
 }
 
+// ── Drill-through presets ────────────────────────────────────────────────────
+// A whole drill-through setup is ten-odd fields, and re-entering them (or hunting for an old
+// share link) every time is the main friction in demoing this. Presets live in localStorage, per
+// browser: they are a convenience, not shareable state, so they deliberately do NOT go through
+// state.js or the #s= hash. The share link remains the way to hand a setup to someone else.
+const DRILL_PRESETS_KEY = 'tsp_drill_presets_v1';
+let dpreNaming = false;      // the Save control is showing its name input
+let dpreArmed = '';          // preset name whose ✕ is armed for a second, confirming click
+
+function drillPresets() {
+  try {
+    const raw = localStorage.getItem(DRILL_PRESETS_KEY);
+    const obj = raw ? JSON.parse(raw) : null;
+    return (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : {};
+  } catch (_) { return {}; }
+}
+function writeDrillPresets(all) {
+  try { localStorage.setItem(DRILL_PRESETS_KEY, JSON.stringify(all)); } catch (_) { /* private mode */ }
+}
+
+/**
+ * Apply a saved preset. The patch is built by walking the CURRENT drill slice's own keys, so a
+ * hand-edited or corrupted localStorage entry can only ever set keys the app already has — no
+ * prototype-polluting key can make it through, and no unknown field is introduced.
+ */
+function applyDrillPreset(name) {
+  const p = drillPresets()[name];
+  if (!p) return;
+  const cur = getState().drill || {};
+  const patch = {};
+  for (const k of Object.keys(cur)) {
+    if (Object.prototype.hasOwnProperty.call(p.drill || {}, k)) patch[k] = p.drill[k];
+  }
+  const next = { drill: { ...cur, ...patch } };
+  if (p.liveboardId) next.liveboardId = String(p.liveboardId).slice(0, 128);
+  setState(next);
+  logEvent('Drill-through', `preset applied: ${name}`);
+  renderInspector();
+  render();
+}
+
+/** Collapsible sub-group inside an accordion, so the panel opens on the few fields that matter. */
+function subGroup(title, openByDefault = false) {
+  const wrap = el('details', 'insp-sub');
+  if (openByDefault) wrap.open = true;
+  const sum = el('summary', 'insp-sub-sum');
+  sum.textContent = title;                       // static, developer-authored
+  const body = el('div', 'insp-sub-body');
+  wrap.append(sum, body);
+  return { el: wrap, body };
+}
+
+/** The preset row: saved setups as chips, plus a control to name and store the current one. */
+function drillPresetBar(s) {
+  const all = drillPresets();
+  const names = Object.keys(all).sort((a, b) => a.localeCompare(b));
+  const bar = el('div', 'dpre');
+
+  names.forEach(name => {
+    const chip = el('span', 'dpre-chip');
+    const go = el('button', 'dpre-go'); go.type = 'button';
+    go.textContent = name;                       // user-typed — textContent, never innerHTML
+    go.title = 'Apply this setup';
+    go.addEventListener('click', () => { dpreArmed = ''; applyDrillPreset(name); });
+    const x = el('button', `dpre-x${dpreArmed === name ? ' dpre-x--armed' : ''}`); x.type = 'button';
+    x.textContent = dpreArmed === name ? 'Delete?' : '\u2715';
+    x.setAttribute('aria-label', `Delete preset ${name}`);
+    x.addEventListener('click', () => {
+      if (dpreArmed !== name) { dpreArmed = name; renderInspector(); return; }
+      const next = drillPresets(); delete next[name]; writeDrillPresets(next);
+      dpreArmed = ''; renderInspector();
+    });
+    chip.append(go, x);
+    bar.appendChild(chip);
+  });
+
+  if (dpreNaming) {
+    const inp = el('input', 'inp dpre-input'); inp.type = 'text';
+    inp.placeholder = 'Name this setup'; inp.maxLength = 60;
+    const commit = () => {
+      const name = inp.value.trim();
+      if (!name) { dpreNaming = false; renderInspector(); return; }
+      const cur = getState();
+      writeDrillPresets({ ...drillPresets(), [name]: { liveboardId: cur.liveboardId, drill: { ...cur.drill } } });
+      dpreNaming = false; renderInspector();
+    };
+    inp.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') commit();
+      if (ev.key === 'Escape') { dpreNaming = false; renderInspector(); }
+    });
+    const ok = el('button', 'dpre-add dpre-add--cta'); ok.type = 'button'; ok.textContent = 'Save';
+    ok.addEventListener('click', commit);
+    bar.append(inp, ok);
+    setTimeout(() => inp.focus(), 0);
+  } else {
+    const add = el('button', `dpre-add${names.length ? '' : ' dpre-add--cta'}`); add.type = 'button';
+    add.textContent = names.length ? '\uFF0B Save current' : '\uFF0B Save this setup as a preset';
+    add.title = 'Store these settings in this browser so you can reapply them in one click';
+    add.addEventListener('click', () => { dpreNaming = true; dpreArmed = ''; renderInspector(); });
+    bar.appendChild(add);
+  }
+  return bar;
+}
+
 // — Drill-through setup panel (inspector) —
 function sectionDrillthrough(s) {
   const d = s.drill || {};
@@ -6343,12 +6512,23 @@ function sectionDrillthrough(s) {
   const c = el('div', 'sec-body');
 
   c.appendChild(infoHint(
-    'Summary Liveboard → detail rows, entirely host-side.',
-    'Pick the Liveboard above as your summary board. A click on a data point carries that point’s '
-    + 'attributes (plus any filters set inside the iframe, via HostEvent.GetFilters) into the detail '
-    + 'Liveboard. Separately, a right-click action scoped to the summary Model\u2019s measure column opens a paged grid of '
-    + 'event-grain rows fetched with POST searchdata against a finer-grained Model. Needs SDK 1.43.0+ / '
-    + 'cluster 10.14.0.cl+ for the column scoping.'));
+    'Summary Liveboard \u2192 detail rows, entirely host-side.',
+    'Pick the Liveboard above as your summary board. A right-click action scoped to the summary '
+    + 'Model\u2019s measure column opens a paged list of event-grain rows fetched with POST searchdata '
+    + 'against a finer-grained Model. Separately, a point click can carry that point\u2019s attributes '
+    + '(plus any filters set inside the iframe, via HostEvent.GetFilters) into a second Liveboard. '
+    + 'Works the same on a KPI/single-value visualization: a click reports that number in '
+    + 'selectedMeasures with no dimensional attributes, so the record list opens unscoped by dimension '
+    + '(just whatever Liveboard filters are already active) \u2014 which is correct, since a KPI number '
+    + 'is a total, not one row of a chart. '
+    + 'Needs SDK 1.43.0+ / cluster 10.14.0.cl+ for the column scoping. '
+    + 'There is no column- or cell-level scoping for the action itself: it shows on every cell of a '
+    + 'visualization built on that column (or every pinned visualization\u2019s cells), so a click on the '
+    + 'wrong cell is expected and is reported in the panel rather than hidden \u2014 see the \u26a0 note in '
+    + 'the record list when it happens.'));
+
+  c.appendChild(drillPresetBar(s));
+  c.appendChild(el('div', 'fld-hint', 'Presets are stored in this browser only. To hand a setup to someone else, share the page URL instead.'));
 
   c.appendChild(toggleField('Enable drill-through', d.enabled, v => { set({ enabled: v }); renderInspector(); render(); },
     'Injects the column-scoped action and listens for point clicks on this section only.'));
@@ -6356,64 +6536,128 @@ function sectionDrillthrough(s) {
   const wsOpts = discovered.worksheets.map(w => ({ id: w.id, name: w.name }));
   const lbOpts = discovered.liveboards.map(l => ({ id: l.id, name: l.name }));
 
-  c.appendChild(el('div', 'insp-group-lbl', 'The action'));
+  // ── the five fields a working setup actually needs ──
   c.appendChild(labeledSelect('Summary Model', d.summaryModelId, wsOpts, v => { set({ summaryModelId: v }); renderInspector(); render(); },
-    'The Model behind the summary Liveboard. Its GUID is half of the modelColumnNames scoping key.', !connected));
+    'The Model behind the summary Liveboard.', !connected));
   c.appendChild(textField('Measure column', d.measureColumn, v => { set({ measureColumn: v }); render(); },
     'e.g. Meeting count'));
-  c.appendChild(el('div', 'fld-hint', 'The SDK scopes the action as "<modelGuid>::<column>", which limits it to VISUALIZATIONS built on that column — not to that column’s cells, so it shows on every cell of a matching viz. The record list always reports THIS measure, wherever on the row you right-click. Leave either field blank and no action is injected at all.'));
-  c.appendChild(textField('Action label', d.actionLabel, v => { set({ actionLabel: v }); render(); }, 'View detail'));
-  c.appendChild(enumSelect('Opened by', d.trigger, [
-    { value: 'action', label: 'Right-click → menu item' },
+  c.appendChild(el('div', 'fld-hint', 'Together these scope the action as &quot;&lt;modelGuid&gt;::&lt;column&gt;&quot;. Leave either blank and no action is injected.'));
+
+  // Column scoping alone puts the action on every viz built on that column. Naming visualizations
+  // here adds metadataIds.vizIds, which is the only way to keep it off the rest of the board.
+  const pinned = d.actionVizIds || [];
+  // connected-gated, matching the S10 fence on the 'viz' picker above: an unfenced call here would
+  // fire this CREDENTIALED POST before a shared-link host is confirmed. Because loadViz() only ever
+  // fetches once per liveboardId, firing it too early (or while briefly disconnected) permanently
+  // poisons the cache to null and leaves this picker disabled forever with no visible reason \u2014
+  // hence the explicit failure note + Retry below, rather than a silently-stuck dropdown.
+  if (connected && s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
+    loadViz(s.liveboardId).then(() => renderInspector());
+  }
+  const allViz = vizCache[s.liveboardId] || [];
+  const pickable = allViz.filter(v => !pinned.includes(v.id));
+  const vizFailed = s.liveboardId && (vizCache[s.liveboardId] === null || vizCache[s.liveboardId]?.length === 0);
+  c.appendChild(labeledSelect('Show the action only on', '', pickable,
+    v => { if (v) set({ actionVizIds: [...pinned, v] }); renderInspector(); render(); },
+    _vizLoading.has(s.liveboardId) ? 'Loading\u2026' : vizFailed ? 'Visualization list failed to load' : (pinned.length ? '' : 'Every visualization built on that column'),
+    !connected || !pickable.length));
+  if (vizFailed) {
+    const note = el('div', 'sec-note sec-note--warn');
+    note.textContent = vizCache[s.liveboardId] === null
+      ? 'Could not list this Liveboard\u2019s visualizations (permissions, or the connection dropped mid-request). '
+      : 'No visualizations came back for this Liveboard. ';
+    const retry = el('button', 'dpre-go'); retry.type = 'button'; retry.textContent = 'Retry';
+    retry.addEventListener('click', () => retryLoadViz(s.liveboardId));
+    note.appendChild(retry);
+    c.appendChild(note);
+  }
+  if (pinned.length) {
+    const chips = el('div', 'dpre');
+    pinned.forEach(id => {
+      const nm = (allViz.find(v => v.id === id) || {}).name || id;
+      const chip = el('span', 'dpre-chip');
+      const lbl = el('button', 'dpre-go'); lbl.type = 'button'; lbl.disabled = true;
+      lbl.textContent = nm;                      // viz names come from TS — textContent only
+      lbl.title = id;
+      const x = el('button', 'dpre-x'); x.type = 'button'; x.textContent = '\u2715';
+      x.setAttribute('aria-label', `Stop showing the action on ${nm}`);
+      x.addEventListener('click', () => { set({ actionVizIds: pinned.filter(p => p !== id) }); renderInspector(); render(); });
+      chip.append(lbl, x);
+      chips.appendChild(chip);
+    });
+    c.appendChild(chips);
+  }
+  c.appendChild(el('div', 'fld-hint', 'Leave empty and the action appears on every visualization built on the measure column, which on a busy Liveboard is most of the board.'));
+
+  c.appendChild(toggleField('Hide "Show underlying data" too', d.hideUnderlyingData, v => { set({ hideUnderlyingData: v }); render(); },
+    'Removes "Show underlying data" from exactly the right-click menus that show your action, via a CSS rule (rules_UNSTABLE). Every other visualization keeps it.'));
+  c.appendChild(el('div', 'fld-hint', 'Hidden only where your action appears; other visualizations keep it.'));
+
+  c.appendChild(labeledSelect('Detail Model', d.detailModelId, wsOpts, v => { set({ detailModelId: v }); renderInspector(); },
+    'The event-grain Model queried by POST searchdata, one row per event.', !connected));
+  c.appendChild(textField('Detail columns', (d.detailColumns || []).join(', '),
+    v => set({ detailColumns: v.split(',').map(x => x.trim()).filter(Boolean) }),
+    'Meeting Id, User Name, Booked at'));
+  c.appendChild(el('div', 'fld-hint', 'In order: the first becomes each row\u2019s title, a date-named one moves to the right. Add a grain suffix where you need it, e.g. Booked at.daily.'));
+
+  // ── everything else, folded away ──
+  const beh = subGroup('How it opens and pages');
+  beh.body.appendChild(enumSelect('Opened by', d.trigger, [
+    { value: 'action', label: 'Right-click \u2192 menu item' },
     { value: 'click', label: 'Plain left-click on the value' },
   ], v => { set({ trigger: v }); renderInspector(); render(); },
-  'Right-click opens ThoughtSpot\u2019s own menu with your item added to it, and nothing reaches your code until the user picks it. Left-click fires VizPointClick straight away with no menu at all, so your panel opens on the first click. Verified on 26.8.0.cl for both a table cell and a chart mark.'));
-
-  c.appendChild(el('div', 'insp-group-lbl', 'The record list'));
-  c.appendChild(enumSelect('Show as', d.presentation, [
+  'Right-click opens ThoughtSpot\u2019s own menu with your item added to it, and nothing reaches your code until the user picks it. Left-click fires VizPointClick straight away with no menu at all.'));
+  beh.body.appendChild(enumSelect('Show as', d.presentation, [
     { value: 'modal', label: 'Modal over the board' },
     { value: 'panel', label: 'Docked grid below' },
   ], v => { set({ presentation: v }); renderInspector(); }, 'Modal = a record list, one row per record. Panel = a dense table docked under the embed.'));
-  c.appendChild(textField('Period label', d.periodLabel, v => set({ periodLabel: v }), 'This Year'));
-  c.appendChild(textField('A row is a…', d.recordNoun, v => set({ recordNoun: v }), 'orders'));
-  c.appendChild(textField('“View all” link', d.viewAllUrl, v => set({ viewAllUrl: v }), 'https://…'));
-  c.appendChild(el('div', 'fld-hint', 'Optional footer CTA, like the “View all Conversations” button on the reference design. http(s) only.'));
+  beh.body.appendChild(textField('Scope column', d.scopeColumn, v => set({ scopeColumn: v }), 'blank = every attribute'));
+  beh.body.appendChild(el('div', 'fld-hint', 'Narrows the detail query to ONE clicked attribute. Leave blank so every attribute on the clicked cell is carried, which is what makes the totals reconcile.'));
+  beh.body.appendChild(textField('Page size', String(d.pageSize ?? 100), v => { const n = Number(v); set({ pageSize: Number.isFinite(n) ? Math.min(1000, Math.max(1, Math.round(n))) : 100 }); renderInspector(); }, '100'));
+  beh.body.appendChild(el('div', 'fld-hint', 'record_size per page. "Load more" advances record_offset, which is how you get past the 1,000-row response cap.'));
+  c.appendChild(beh.el);
 
-  c.appendChild(el('div', 'insp-group-lbl', 'The detail rows'));
-  c.appendChild(labeledSelect('Detail Model', d.detailModelId, wsOpts, v => { set({ detailModelId: v }); renderInspector(); },
-    'The event-grain Model queried by POST searchdata — one row per event, not the aggregate.', !connected));
-  c.appendChild(textField('Detail columns', (d.detailColumns || []).join(', '),
-    v => set({ detailColumns: v.split(',').map(x => x.trim()).filter(Boolean) }),
-    'Meeting Id, User Name, Booked at, Stage'));
-  c.appendChild(textField('Scope column', d.scopeColumn, v => set({ scopeColumn: v }), 'e.g. Stage'));
-  c.appendChild(el('div', 'fld-hint', 'Which clicked attribute filters the detail query. Blank = carry every attribute on the clicked point.'));
-  const ps = textField('Page size', String(d.pageSize ?? 100), v => { const n = Number(v); set({ pageSize: Number.isFinite(n) ? Math.min(1000, Math.max(1, Math.round(n))) : 100 }); renderInspector(); }, '100');
-  c.appendChild(ps);
-  c.appendChild(el('div', 'fld-hint', 'record_size per page. "Load more" advances record_offset, which is how you get past the 1,000-row response cap.'));
-  c.appendChild(textField('Row link template', d.linkTemplate, v => set({ linkTemplate: v }),
+  const lab = subGroup('Labels and links');
+  lab.body.appendChild(textField('Action label', d.actionLabel, v => { set({ actionLabel: v }); render(); }, 'View detail'));
+  lab.body.appendChild(textField('Period label', d.periodLabel, v => set({ periodLabel: v }), 'This Year'));
+  lab.body.appendChild(textField('A row is a\u2026', d.recordNoun, v => set({ recordNoun: v }), 'orders'));
+  lab.body.appendChild(textField('Row link template', d.linkTemplate, v => set({ linkTemplate: v }),
     'https://app.example.com/meetings/{Meeting Id}'));
-  c.appendChild(el('div', 'fld-hint', 'Per-row deep link. {Column} is replaced with that row’s value (URL-encoded). Only plain http(s) links are opened.'));
+  lab.body.appendChild(el('div', 'fld-hint', '{Column} is replaced with that row\u2019s value, URL-encoded. Only plain http(s) links open.'));
+  lab.body.appendChild(textField('\u201cView all\u201d link', d.viewAllUrl, v => set({ viewAllUrl: v }), 'https://\u2026'));
+  c.appendChild(lab.el);
 
-  c.appendChild(el('div', 'insp-group-lbl', 'The point click'));
-  c.appendChild(labeledSelect('Detail Liveboard', d.drillLiveboardId, lbOpts, v => { set({ drillLiveboardId: v }); renderInspector(); },
-    'Opened, filtered, when a point is clicked. Leave unset to demo the record list alone.', !connected));
+  const pc = subGroup('Click through to another Liveboard');
+  pc.body.appendChild(labeledSelect('Detail Liveboard', d.drillLiveboardId, lbOpts, v => { set({ drillLiveboardId: v }); renderInspector(); },
+    'Opened, filtered, on a point click. Leave unset to demo the record list alone.', !connected));
   if (d.drillLiveboardId) {
-    if (s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
+    // Same connected-gate as the actionVizIds picker above \u2014 see its comment.
+    if (connected && s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
       loadViz(s.liveboardId).then(() => renderInspector());
     }
     const vizzes = vizCache[s.liveboardId] || [];
-    c.appendChild(labeledSelect('Drill only from', d.drillVizId, vizzes, v => set({ drillVizId: v }),
-      _vizLoading.has(s.liveboardId) ? 'Loading…' : '', !connected));
-    c.appendChild(el('div', 'fld-hint', 'VizPointClick fires for every viz on the board. Pick one so a chart can drill while a table opens the record list — leave blank and any click drills.'));
+    const drillVizFailed = s.liveboardId && (vizCache[s.liveboardId] === null || vizCache[s.liveboardId]?.length === 0);
+    pc.body.appendChild(labeledSelect('Drill only from', d.drillVizId, vizzes, v => set({ drillVizId: v }),
+      _vizLoading.has(s.liveboardId) ? 'Loading\u2026' : drillVizFailed ? 'Visualization list failed to load' : '', !connected));
+    if (drillVizFailed) {
+      const note = el('div', 'sec-note sec-note--warn');
+      note.textContent = 'Could not list this Liveboard\u2019s visualizations. ';
+      const retry = el('button', 'dpre-go'); retry.type = 'button'; retry.textContent = 'Retry';
+      retry.addEventListener('click', () => retryLoadViz(s.liveboardId));
+      note.appendChild(retry);
+      pc.body.appendChild(note);
+    }
+    pc.body.appendChild(el('div', 'fld-hint', 'VizPointClick fires for every viz on the board. Pick one so a chart can drill while a table opens the record list.'));
     if (d.trigger === 'click') {
       const warn = el('div', 'sec-note sec-note--warn');
       warn.textContent = 'Opened by is set to left-click, so the record list owns the click and this drill will not fire. Switch to right-click to run both on one board.';
-      c.appendChild(warn);
+      pc.body.appendChild(warn);
     }
   }
+  c.appendChild(pc.el);
 
   const sec = el('div', 'sec-note sec-note--warn');
-  sec.textContent = 'Runtime filters are not a security boundary — they are visible and editable in the URL. The detail rows are safe because searchdata runs under the viewer’s own token, so RLS applies to them.';
+  sec.textContent = 'Runtime filters are not a security boundary, they are visible and editable in the URL. The detail rows are safe because searchdata runs under the viewer\u2019s own token, so RLS applies to them.';
   c.appendChild(sec);
 
   const count = [d.enabled, d.summaryModelId, d.measureColumn, d.detailModelId, (d.detailColumns || []).length, d.drillLiveboardId].filter(Boolean).length;
@@ -6754,12 +6998,15 @@ function generateCode() {
       // customCSSUrl loads first; inline customCSS overrides it. The URL host must be allowed
       // in the instance's CSP style-src (Develop → Security settings).
       if (s.styles.cssUrl) initLines.push(`      customCSSUrl: '${esc(s.styles.cssUrl)}', // host must be allowlisted in TS CSP style-src`);
-      if (Object.keys(s.styles.variables).length || Object.keys(s.styles.rules).length) {
+      const cssRules = effectiveCssRules(s);
+      const perViz = drillPerVizCssRules(s);
+      if (Object.keys(s.styles.variables).length || Object.keys(cssRules).length) {
         initLines.push('      customCSS: {');
         if (Object.keys(s.styles.variables).length) { initLines.push('        variables: {'); Object.entries(s.styles.variables).forEach(([k, v]) => initLines.push(`          '${esc(k)}': '${esc(v)}',`)); initLines.push('        },'); }
-        if (Object.keys(s.styles.rules).length) {
+        if (Object.keys(cssRules).length) {
           initLines.push('        rules_UNSTABLE: {');
-          Object.entries(s.styles.rules).forEach(([sel, decls]) => { initLines.push(`          '${esc(sel)}': {`); Object.entries(decls).forEach(([p, v]) => initLines.push(`            '${esc(p)}': '${esc(v)}',`)); initLines.push('          },'); });
+          if (Object.keys(perViz).length) initLines.push('          // Hide "Show underlying data" only in menus that also offer the drill-through action.');
+          Object.entries(cssRules).forEach(([sel, decls]) => { initLines.push(`          '${esc(sel)}': {`); Object.entries(decls).forEach(([p, v]) => initLines.push(`            '${esc(p)}': '${esc(v)}',`)); initLines.push('          },'); });
           initLines.push('        },');
         }
         initLines.push('      },');
@@ -6817,9 +7064,15 @@ function generateCode() {
     if (exportMenu) opt.push(`    { id: 'export', name: '${esc(s.exportOpts.actionLabel || 'Preconfigured pdf download')}', position: CustomActionsPosition.MENU, target: CustomActionTarget.LIVEBOARD },`);
     if (pickerMenu) opt.push(`    { id: 'export-customize', name: '${esc(s.exportOpts.pickerLabel || 'Customize Export')}', position: CustomActionsPosition.MENU, target: CustomActionTarget.LIVEBOARD },`);
     if (dateBtn) opt.push(`    { id: '${DATE_ACTION_ID}', name: 'Date', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.LIVEBOARD },`);
-    // Scoped to ONE column: dataModelIds.modelColumnNames entries are '<modelGuid>::<columnName>',
-    // so the action shows up only in that column's context menu (SDK 1.43.0+ / 10.14.0.cl+).
-    if (dtAction) opt.push(`    { id: '${DT_ACTION_ID}', name: '${esc(dtAction.actionLabel || 'View detail')}', position: CustomActionsPosition.CONTEXTMENU, target: CustomActionTarget.VIZ, dataModelIds: { modelColumnNames: ['${esc(dtAction.summaryModelId)}::${esc(dtAction.measureColumn)}'] } },`);
+    // Mirrors buildEmbedCustomActions(): the scoping keys are a UNION, so pinned vizIds must
+    // REPLACE modelColumnNames — sending both puts the action on every viz built on the column.
+    if (dtAction) {
+      const pinnedIds = (dtAction.actionVizIds || []).map(v => `'${esc(v)}'`).join(', ');
+      opt.push(`    { id: '${DT_ACTION_ID}', name: '${esc(dtAction.actionLabel || 'View detail')}', position: CustomActionsPosition.CONTEXTMENU, target: CustomActionTarget.VIZ,`);
+      if (pinnedIds) opt.push(`      metadataIds: { vizIds: [${pinnedIds}] }, // ONLY these visualizations — do not also send dataModelIds (keys are OR'd)`);
+      else opt.push(`      dataModelIds: { modelColumnNames: ['${esc(dtAction.summaryModelId)}::${esc(dtAction.measureColumn)}'] },`);
+      opt.push('    },');
+    }
     opt.push('  ],');
   }
   if (s.runtimeParameters.length) { opt.push('  runtimeParameters: ['); s.runtimeParameters.forEach(p => opt.push(`    { name: '${esc(p.name)}', value: '${esc(p.value)}' },`)); opt.push('  ],'); }

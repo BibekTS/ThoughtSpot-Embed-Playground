@@ -129,6 +129,7 @@ export function defaultState() {
     drill: {
       enabled: false,
       summaryModelId: '',             // model behind the SUMMARY liveboard — scopes the action (modelColumnNames)
+      actionVizIds: [],               // metadataIds.vizIds — pin the action to specific visualizations ([] = any viz on the column)
       measureColumn: '',              // the ONE column the "View detail" action attaches to, e.g. 'Meeting count'
       actionLabel: 'View detail',     // label of that context-menu action
       detailModelId: '',              // event-grain model queried for the detail rows
@@ -144,6 +145,8 @@ export function defaultState() {
       periodLabel: '',                // subtitle under the modal title, e.g. 'This Year'
       recordNoun: 'records',          // what one detail row IS, for the summary line ("57 Conversations")
       viewAllUrl: '',                 // optional footer CTA target ("View all …")
+      hideUnderlyingData: false,      // adds Action.ShowUnderlyingData to hiddenActions while this action is on
+                                       // (hiddenActions is embed-wide — there is no per-viz scoping for it)
     },
     styles: { variables: {}, rules: {}, cssUrl: '', strings: {}, stringIDs: {}, exposeIds: false }, // cssUrl → customizations.style.customCSSUrl; strings/stringIDs/exposeIds → customizations.content (Beta)
     // trusted-auth claims (NON-secret) — the token-claims playground
@@ -439,6 +442,7 @@ function sanitize(raw) {
     out.drill = {
       enabled: bool(d.enabled),
       summaryModelId: str(d.summaryModelId, 128),
+      actionVizIds: strArr(d.actionVizIds).slice(0, 50).map(v => str(v, 128)),
       measureColumn: str(d.measureColumn, 256),
       actionLabel: str(d.actionLabel, 64) || 'View detail',
       detailModelId: str(d.detailModelId, 128),
@@ -453,6 +457,7 @@ function sanitize(raw) {
       periodLabel: str(d.periodLabel, 120),
       recordNoun: str(d.recordNoun, 60) || 'records',
       viewAllUrl: validHost(d.viewAllUrl), // http(s) only — it is a navigation target from a shared link
+      hideUnderlyingData: bool(d.hideUnderlyingData),
     };
   }
 
