@@ -193,20 +193,30 @@ export async function discoverObjects(host, tagFilter = '') {
   }
 }
 
-/** List the visualizations on a liveboard. */
+/**
+ * List the visualizations on a liveboard. Uses metadata/search's visualization headers rather than
+ * metadata/liveboard/data: the latter EXECUTES every viz's query just to read the names (~3.9s vs
+ * ~0.3s on a 14-viz board, measured on 26.8.0.cl) and one erroring viz can sink the whole list.
+ * Unnamed headers (note/text tiles) are dropped — they can't carry a custom action.
+ */
 export async function discoverViz(host, liveboardId) {
   try {
-    const resp = await api(host, '/api/rest/2.0/metadata/liveboard/data', {
+    const resp = await api(host, '/api/rest/2.0/metadata/search', {
       method: 'POST',
-      body: JSON.stringify({ metadata_identifier: liveboardId, record_size: 1 }),
+      body: JSON.stringify({
+        metadata: [{ type: 'LIVEBOARD', identifier: liveboardId }],
+        include_visualization_headers: true,
+        record_size: 1,
+      }),
     });
     if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
     const data = await resp.json();
+    const headers = (Array.isArray(data) ? data[0]?.visualization_headers : null) || [];
     return {
       ok: true,
-      visualizations: (data.contents || [])
-        .filter(v => v.visualization_id)
-        .map(v => ({ id: v.visualization_id, name: v.visualization_name || 'Untitled' })),
+      visualizations: headers
+        .filter(v => v?.id && (v.name || '').trim())
+        .map(v => ({ id: v.id, name: v.name })),
     };
   } catch (err) {
     return { ok: false, error: err.message };

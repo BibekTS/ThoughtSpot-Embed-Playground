@@ -145,6 +145,8 @@ export function defaultState() {
       periodLabel: '',                // subtitle under the modal title, e.g. 'This Year'
       recordNoun: 'records',          // what one detail row IS, for the summary line ("57 Conversations")
       viewAllUrl: '',                 // optional footer CTA target ("View all …")
+      hideUnderlyingData: false,      // adds Action.ShowUnderlyingData to hiddenActions while this action is on
+                                       // (hiddenActions is embed-wide — there is no per-viz scoping for it)
     },
     styles: { variables: {}, rules: {}, cssUrl: '', strings: {}, stringIDs: {}, exposeIds: false }, // cssUrl → customizations.style.customCSSUrl; strings/stringIDs/exposeIds → customizations.content (Beta)
     // trusted-auth claims (NON-secret) — the token-claims playground
@@ -455,6 +457,7 @@ function sanitize(raw) {
       periodLabel: str(d.periodLabel, 120),
       recordNoun: str(d.recordNoun, 60) || 'records',
       viewAllUrl: validHost(d.viewAllUrl), // http(s) only — it is a navigation target from a shared link
+      hideUnderlyingData: bool(d.hideUnderlyingData),
     };
   }
 
