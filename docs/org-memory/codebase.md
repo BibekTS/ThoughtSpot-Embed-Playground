@@ -709,6 +709,11 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   get_data). ThoughtSpot docs recommend a DATED version for custom apps. By human decision
   both the relay default (`lib/spotter-mcp/mcp-client.mjs` `DEFAULT_MCP_URL`) and the generated
   snippet use `api-version=latest` (newest toolset; pin a date via `TS_MCP_URL` to freeze it). `.env.example` still claims "ONLY beta" (guard-protected, human follow-up).
+- 2026-10-01 (PR #37 review): **z-index scale — modals 200 > mobile inspector 190 > toasts 150 >
+  dropdowns 50/60**; only `.sel-panel`, `body::before` (1000) and `.demo-exit` (900) sit above.
+  `.modal` is 200, NOT 1000. Any new full-window overlay (the full-screen bottom panel is 120) must
+  stay below 150 or it hides the toasts and dialogs it can itself open. `highlightJs` was fuzzed
+  (200k inputs) to preserve text exactly, so `#code-view.textContent === generateCode()` holds.
 - 2026-10-01 (S45): the generated Spotter MCP snippet (`js/app.js` `spotterMcpCode`) set
   `frameEl.src = evt.iframe_url` — the EXACT bug a customer (Guidewire) hit: iframe_url carries the
   `tsmcp=true` marker and renders blank/unauthenticated as a raw src. It now emits `init()` (via the
