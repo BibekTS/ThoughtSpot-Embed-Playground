@@ -927,3 +927,14 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   (`js/auth.js:248`); `build(row)` returns `{cells, read}`. `read()`'s KEY ORDER lands in the
   shared-link hash — append new fields, don't reorder. `blank` is a factory so two "+ Add" clicks
   never share one `values` array.
+- 2026-10-01 (S46, resolved): the drill-through snippet's date helpers are now emitted from the live
+  source, e.g. `` L.push(`const tsEpochSec = ${dtEpochSec};`) `` (app.js ~L7120-7134). So
+  `dtEpochSec`/`dtBucketEndSec`/`dtMDY` must stay SELF-CONTAINED (globals only: Number/Math/Date/
+  String/isNaN); a reference to another module identifier would paste as a ReferenceError. Their
+  inner `//` comments ship in the snippet too. This relies on there being no build step
+  (`Function.prototype.toString` returns the authored text); a minifier would break it. Guarded by
+  boot-check's S46 line, which reads `CFB_DATE_NAME_RE` from app.js on disk and `node --check`s the snippet.
+- 2026-10-01 (S46 review): boot-check legs that run snippet code via `new Function` in Node inherit
+  the runner's TZ (UTC on GitHub), so they cannot catch a local-time-getter regression (the
+  "UTC, not local midnight" rule) unless run under a non-UTC TZ (e.g. a `TZ=America/Los_Angeles`
+  child process). The S46 leg does not do this yet.
