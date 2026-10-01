@@ -115,7 +115,8 @@ finding. BACKLOG M24 tracks promoting M1 and M2 to a real gate.
 
 How to run them:
 - **Point `CSS` at a real file.** To check a commit, write it out first:
-  `git show <SHA>:css/styles.css > /tmp/ui-sha.css && CSS=/tmp/ui-sha.css`. Never assign a
+  `CSS=$(mktemp "${TMPDIR:-/tmp}/ui-<SHA>.XXXXXX") && git show <SHA>:css/styles.css > "$CSS"`. Use a unique file
+  (agents run in parallel; a shared `/tmp/ui-sha.css` lets one judge another's CSS). Never assign a
   `<(…)` process substitution to `CSS`: it is a single-use pipe, so every check after the first
   fails with `Bad file descriptor`.
 - **Use `/usr/bin/grep`** (the block sets `G`). Agent shells can wrap `grep` in a function
@@ -134,23 +135,30 @@ CSS=css/styles.css
 G=/usr/bin/grep
 # M1  fill colours used as TEXT (U1). Expected: only .rail-tip-cls (navy tooltip).
 $G -niE '(^|[^-])color: *(var\(--(accent|accent-2|success|warn|danger)[,)]|#00c9de|#6366f1|#2d8b65|#c08930|#b85450)' "$CSS"
-# M2  white text on a fill that is not an ink token (U2). Expected: .tb-mark, plus
+# M2  white text on a light or bright fill (U2). Expected: .tb-mark, plus
 #     .flow-step.failed .fs-dot (#c0392b, 5.44:1). .plb-tab-close.armed is open in BACKLOG S48.
-#     Hex/rgb fills are listed for judgment (their ratio must be computed by hand).
+#     Hex/rgb/hsl fills are listed for judgment: compute the ratio. --danger is deliberately not
+#     listed (white on it is 4.75:1). Rule-level only: it cannot see the cascade (see below).
 awk 'BEGIN{RS="}"} { b=tolower($0) }
-  b ~ /(^|[^-])color: *(#fff([^0-9a-f]|$)|#ffffff|white)/ &&
-  b ~ /background(-color)?:[^;]*(var\(--(accent|accent-2|success|warn)[,)]|#[0-9a-f][0-9a-f][0-9a-f]|rgba?\()/ {
-    s=$0; sub(/\{.*/, "", s); gsub(/[ \t\n]+/, " ", s); print "M2:" s }' "$CSS"
+  b ~ /(^|[^-])color: *(#fff([^0-9a-f]|$)|#ffffff|white|rgba?\( *255[, ] *255[, ] *255|hsla?\( *0[, ]+0%[, ]+100%)/ &&
+  b ~ /background(-color|-image)?:[^;]*(var\(--(accent|accent-2|success|warn|accent-soft|violet-soft|surface|surface-2|surface-3|bg)[,)]|#[0-9a-f][0-9a-f][0-9a-f]|rgba?\(|hsla?\()/ {
+    s=$0; while ((i = index(s, "{")) > 0) { sel = substr(s, 1, i - 1); s = substr(s, i + 1) }
+    sub(/.*\*\//, "", sel); gsub(/[ \t\n]+/, " ", sel); print "M2:" sel }' "$CSS"
 # M3  opacity on text that is not disabled (U3). Judge each hit: icons, drag ghosts and
 #     already-added rows are fine. Known open hits: BACKLOG S48.
 $G -nE 'opacity: *0?\.[0-6]' "$CSS" | $G -vE 'disabled|unavailable|not-allowed|scrim|reduced-motion|::before|::after|@keyframes|[0-9]+% *\{'
 # M4  animations (U4). Each must be in a reduced-motion block or be a spinner.
 $G -nE 'animation(-name)?: *[^;]' "$CSS" | $G -vE 'animation(-name)?: *none'
 # M5  full-height vh without a dvh twin in the same rule (U6). Expected: nothing.
-awk 'BEGIN{RS="}"} /100vh/ && !/100dvh/ { s=$0; sub(/\{.*/, "", s); gsub(/[ \t\n]+/, " ", s); print "M5:" s }' "$CSS"
+awk 'BEGIN{RS="}"} /100vh/ && !/100dvh/ { s=$0; while ((i = index(s, "{")) > 0) { sel = substr(s, 1, i - 1); s = substr(s, i + 1) } gsub(/[ \t\n]+/, " ", sel); print "M5:" sel }' "$CSS"
 # M6  pure black (U7). Expected: only mask-image lines.
 $G -niE '#000([^0-9a-f]|$)|#000000|rgba?\( *0, *0, *0|rgba?\( *0 +0 +0|(^|[^-a-z])black([^-a-z]|$)' "$CSS" | $G -v mask-image
 ```
+
+**Coverage gap: the checks read one rule at a time and cannot see the cascade.** A white-text
+rule whose fill is changed by a `:hover`, `.is-*` or `--modifier` rule elsewhere passes M2 (the
+`.plb-add--cta:hover` comment in the CSS records exactly this failure). When a diff adds or changes
+a `background` in such a rule, read the white-text rule it lands on by hand.
 
 **Coverage gap: the checks only read CSS.** For `index.html` and DOM-building JS, also inspect
 inline styles by hand: `/usr/bin/grep -nE 'style="|\.style\.[a-zA-Z]|cssText|setProperty' index.html js/*.js`.
