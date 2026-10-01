@@ -10,15 +10,12 @@
 
 import 'dotenv/config';
 import { existsSync } from 'node:fs';
+import { ok, bad, warn, fetchT, isTimeout } from './lib/cli.mjs';
 
 const HOST = (process.env.THOUGHTSPOT_HOST || '').replace(/\/+$/, '');
 const SECRET = process.env.TS_SECRET_KEY || '';
 const USER = process.env.TS_DEFAULT_USERNAME || '';
 const ALLOW = (process.env.TS_USERNAME_ALLOWLIST || '').split(',').map(s => s.trim()).filter(Boolean);
-
-const ok = (m) => console.log(`  ✓ ${m}`);
-const bad = (m) => console.log(`  ✗ ${m}`);
-const warn = (m) => console.log(`  ! ${m}`);
 
 console.log('\nTrusted Auth doctor\n');
 
@@ -48,17 +45,13 @@ if (ALLOW.length && USER && !ALLOW.includes(USER)) warn(`Default user "${USER}" 
 if (fatal) { console.log('\nFix the ✗ items above, then re-run `npm run doctor`.\n'); process.exit(1); }
 
 // 3) Reachability
-const fetchT = (url, opts = {}, ms = 10000) => {
-  const c = new AbortController();
-  const t = setTimeout(() => c.abort(), ms);
-  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
-};
+const DOCTOR_MS = 10000;
 
 try {
-  await fetchT(`${HOST}/api/rest/2.0/auth/session/user`, { method: 'GET' });
+  await fetchT(`${HOST}/api/rest/2.0/auth/session/user`, { method: 'GET' }, DOCTOR_MS);
   ok('Instance is reachable');
 } catch (e) {
-  bad(`Could not reach ${HOST} — ${e.name === 'AbortError' ? 'timed out' : e.message}. Check the URL / your network.`);
+  bad(`Could not reach ${HOST} — ${isTimeout(e) ? 'timed out' : e.message}. Check the URL / your network.`);
   process.exit(1);
 }
 
@@ -69,7 +62,7 @@ try {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ username: mintUser, secret_key: SECRET, validity_time_in_sec: 60 }),
-  });
+  }, DOCTOR_MS);
   const text = await resp.text();
   let json; try { json = JSON.parse(text); } catch { json = null; }
   if (resp.ok && json?.token) {
@@ -87,6 +80,6 @@ try {
     console.log(`     → user "${mintUser}" may not exist. Set TS_DEFAULT_USERNAME to a real user.`);
   process.exit(1);
 } catch (e) {
-  bad(`Token mint errored — ${e.name === 'AbortError' ? 'timed out' : e.message}`);
+  bad(`Token mint errored — ${isTimeout(e) ? 'timed out' : e.message}`);
   process.exit(1);
 }

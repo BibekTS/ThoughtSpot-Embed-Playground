@@ -887,6 +887,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   vars that dotenv won't override; any move off dotenv (R9) must preserve that for `''` values.
 - 2026-10-01: CSS/index.html/config.js audited clean — dynamically built class names
   (`api-method--*`, `tier-*`, `badge-*`, `toast-*`, `wh-comp-*--*`) are why grep finds them unused.
+<<<<<<< HEAD
 - 2026-10-01 (R3, supersedes the "built 3×" note above): the trusted-auth token body has ONE owner,
   `tokenRequestBody(auth)` (`js/auth.js:45`). `buildTrustedAuthConfig` now returns only
   `{tokenEndpoint, autoLogin, requestBody}` — `cfg.trustedAuth` no longer carries the individual
@@ -906,3 +907,26 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   (`js/auth.js:248`); `build(row)` returns `{cells, read}`. `read()`'s KEY ORDER lands in the
   shared-link hash — append new fields, don't reorder. `blank` is a factory so two "+ Add" clicks
   never share one `values` array.
+=======
+- 2026-10-01 (R2): `restError()` (`discovery.js:73`) is now the ONLY TS-REST error-body parser in
+  discovery.js; `aiError()` (`:461`) is `restError()` + the 401/403 Spotter hints. Verified
+  restError is never less informative than the old aiError (it also surfaces top-level `.message`,
+  `.debug`, and raw non-JSON bodies, and never yields `[object Object]`). metadata/search parsing is
+  shared via `ofType(arr, kind)` (`:153`) + `tagNames(m)` (`:156`); the three mappers stay separate
+  because their shapes differ (`listPersonalCopies` uses `title`/'Copy', `discoverAnswers` has no
+  `tags`). `downloadLiveboardPdf`/`assignTag` are gone; `assignTags` now REQUIRES an array.
+- 2026-10-01 (R4): the ops scripts' shared helpers live in `scripts/lib/cli.mjs` (`ok/bad/warn`,
+  `cliArgs`, `fetchT`, `isTimeout`, `resolveToken`). `cliArgs()` is `util.parseArgs` with NO
+  declared options + `strict:false`, which reproduces the old regex parser exactly for `--k=v` /
+  bare `--k` / last-repeat-wins; `--k v` is still `k:true` (value NOT consumed) — declaring
+  `type:'string'` options would silently change that. `fetchT` uses `AbortSignal.timeout`, so a
+  timeout rejects as `TimeoutError` (not `AbortError`) and now also bounds the `resp.text()` body
+  read; check with `isTimeout(e)`, never `e.name`. Keep `import 'dotenv/config'` the FIRST import
+  in each script — cli.mjs reads no env at import time, so ordering is the only contract.
+- 2026-10-01 (R4 review): CI esm-parse covers `scripts/*.mjs` (top level) + repo-root `lib/` only;
+  `scripts/lib/cli.mjs` is under no gate until M24. undici refused-connection errors carry their
+  code on `e.cause`, not `e.code` (S48).
+- 2026-10-01 (R6): `lib/spotter-mcp/router.mjs` contains a literal NUL byte (the `getMcp` cache-key
+  separator, ~L177 `${host}<NUL>${token}`), so git shows the file as **binary** (`Bin` in `--stat`,
+  no hunks) and plain `grep` prints nothing. Use `git diff --text` / `grep -a`.
+>>>>>>> origin/main
