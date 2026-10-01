@@ -42,3 +42,8 @@ Report: each finding as `CONFIRMED` (you can state the failure scenario precisel
 (couldn't verify), most severe first, with file:line. If the diff survives your attack, say so
 plainly — a clean report is a valid outcome, not a failure to find something. End with a
 **Memory-worthy** section (durable facts for `docs/org-memory/codebase.md`, or "None").
+
+**Complexity lens (advisory; only when assigned).** Load the `ponytail-review` skill if available.
+Otherwise: one line per finding, `<file>:L<n>: <delete|stdlib|native|yagni|shrink> <what>. <replacement>.`,
+ending `net: -N lines possible.` or `Lean already. Ship.` These findings never block a merge and are
+never "confirmed correctness bugs"; anything that is actually a bug goes under Correctness instead.
