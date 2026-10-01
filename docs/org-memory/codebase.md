@@ -894,3 +894,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   inner `//` comments ship in the snippet too. This relies on there being no build step
   (`Function.prototype.toString` returns the authored text); a minifier would break it. Guarded by
   boot-check's S46 line, which reads `CFB_DATE_NAME_RE` from app.js on disk and `node --check`s the snippet.
+- 2026-10-01 (S46 review): boot-check legs that run snippet code via `new Function` in Node inherit
+  the runner's TZ (UTC on GitHub), so they cannot catch a local-time-getter regression (the
+  "UTC, not local midnight" rule) unless run under a non-UTC TZ (e.g. a `TZ=America/Los_Angeles`
+  child process). The S46 leg does not do this yet.
