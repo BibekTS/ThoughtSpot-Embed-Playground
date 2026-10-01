@@ -283,6 +283,21 @@ control boundaries. Every accent-coloured label in the original sheet failed AA.
 `--accent-ink` is 4.65:1 on `--accent-soft` and 4.82:1 on `--bg`, so it also clears AA on the
 soft-tinted surfaces. It is **4.45:1 on `--surface-3` (`#eaf1f7`)** — don't put accent text there.
 
+### Status inks: the same rule for success / warn / danger / violet
+
+The status colours have the same problem as the accent: as text they fail AA, most of all on
+their own `*-soft` pill fills. Each one has an ink twin, and the rule is the same: the original
+paints (dots, borders, left rules, soft fills), the ink writes.
+
+```css
+--success-ink: #1f6e4f;   /* 5.46:1 on --success-soft (was 3.72) */
+--warn-ink:    #8f5f17;   /* 4.96:1 on --warn-soft    (was 2.76) */
+--danger-ink:  #9c3f3b;   /* 5.62:1 on --danger-soft  (was 4.04) */
+/* violet text uses the existing --accent-2-ink (#4f46e5): 5.47:1 on #eeeefb (was 3.88) */
+```
+
+White text on a status fill (done-step markers, pills) also uses the ink as the fill.
+
 ### The focus indicator
 
 The halo is the theme's signature, but a `#ecf7f9` halo on a white page is invisible to a contrast
