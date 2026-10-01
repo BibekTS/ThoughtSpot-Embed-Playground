@@ -863,6 +863,9 @@ function render() {
     flowReset(s.section);
     refreshCode();
     mountSpotterMcp(s);
+    // init() ran on Connect and the panel just started the frame renderer — unless it reported
+    // the renderer unavailable, the SDK step is done and the flow waits for a question.
+    if (flowFailed < 0) { flowReached = 0; flowActive = -1; renderFlow(); }
     return;
   }
 
@@ -1181,6 +1184,7 @@ function bindBottomPanel() {
     $('#pane-apis').classList.toggle('active', bottomTab === 'apis');
     $('#pane-webhook').classList.toggle('active', bottomTab === 'webhook');
     $('#copy-code').hidden = bottomTab !== 'code';
+    $('#code-smaller').hidden = $('#code-bigger').hidden = bottomTab !== 'code';
     if ($('#bottom').dataset.open === 'false') toggleBottom(true);
     if (bottomTab === 'code') refreshCode();
     if (bottomTab === 'flow') renderFlow();
@@ -1205,6 +1209,21 @@ function bindBottomPanel() {
   if (em) em.querySelectorAll('[data-close="email"]').forEach(b => b.addEventListener('click', () => { em.hidden = true; }));
   $('#copy-code').addEventListener('click', () => {
     navigator.clipboard.writeText(generateCode()).then(() => toast('SDK code copied', 'success'));
+  });
+  let codeFs = applyCodeFontSize(readPref('pg.codeFontSize', 12));
+  $('#code-smaller').addEventListener('click', () => { codeFs = applyCodeFontSize(codeFs - 1); });
+  $('#code-bigger').addEventListener('click', () => { codeFs = applyCodeFontSize(codeFs + 1); });
+  setBottomExpanded(false);
+  $('#bp-expand').addEventListener('click', () => {
+    const on = $('#bottom').dataset.expanded !== 'true';
+    setBottomExpanded(on);
+    if (on && $('#bottom').dataset.open === 'false') toggleBottom(true); // full screen opens a closed panel
+  });
+  document.addEventListener('keydown', (e) => {
+    // Leave Esc to an open modal first; only exit full screen when nothing else claims it.
+    if (e.key !== 'Escape' || $('#bottom').dataset.expanded !== 'true') return;
+    if (document.querySelector('.modal:not([hidden]), [role="dialog"]:not([hidden])')) return;
+    setBottomExpanded(false);
   });
 }
 function toggleBottom(force) {
@@ -3659,7 +3678,8 @@ function mountSpotterMcp(s) {
       logEvent(kind, msg);
       if (kind !== 'MCP') return;
       const m = String(msg);
-      if (m.startsWith('POST /api/spotter-mcp/chat')) mcpFlowRestart();
+      if (m.startsWith('auto frame renderer unavailable')) flowFailAt('init');
+      else if (m.startsWith('POST /api/spotter-mcp/chat')) mcpFlowRestart();
       else if (m.startsWith('new analysis session')) mcpFlowMark('send');
       else if (m.startsWith('streaming session updates')) mcpFlowMark('poll');
       else if (m.startsWith('answer:') || m === 'turn complete') mcpFlowMark('render');
@@ -6945,6 +6965,18 @@ async function refreshPersonalCopies() {
 }
 
 // ═══ SDK CODE VIEW — full, runnable snippet ═══════════════════════════════════
+// The host + auth half of every generated init() block. Shared by generateCode() and
+// spotterMcpCode() so a copied snippet always targets the user's live host and auth mode.
+function sdkInitAuthLines(s, esc) {
+  const lines = [`  thoughtSpotHost: '${esc(s.host) || 'https://your-instance.thoughtspot.cloud'}',`, `  authType: AuthType.${s.authType},`];
+  if (s.authType !== 'None') {
+    lines.push('  autoLogin: true,');
+    lines.push('  // PROD: do NOT let the browser choose the user. Your token endpoint must derive the');
+    lines.push('  // identity from a verified server session (SSO/cookie), never from the request body.');
+    lines.push('  getAuthToken: () => fetch(\'/api/auth/token\', { method: \'POST\' }).then(r => r.json()).then(d => d.token),');
+  }
+  return lines;
+}
 function generateCode() {
   const s = getState();
   if (s.section === 'ai-insights') return aiInsightsCode(s);
@@ -6984,13 +7016,7 @@ function generateCode() {
   L.push(`import {\n  ${[...new Set(importNames)].join(', ')}\n} from '@thoughtspot/visual-embed-sdk';`);
   L.push('');
   // init()
-  const initLines = [`  thoughtSpotHost: '${esc(s.host) || 'https://your-instance.thoughtspot.cloud'}',`, `  authType: AuthType.${s.authType},`];
-  if (s.authType !== 'None') {
-    initLines.push('  autoLogin: true,');
-    initLines.push('  // PROD: do NOT let the browser choose the user. Your token endpoint must derive the');
-    initLines.push('  // identity from a verified server session (SSO/cookie), never from the request body.');
-    initLines.push('  getAuthToken: () => fetch(\'/api/auth/token\', { method: \'POST\' }).then(r => r.json()).then(d => d.token),');
-  }
+  const initLines = sdkInitAuthLines(s, esc);
   if (hasStyles(s) || hasContent(s)) {
     initLines.push('  customizations: {');
     if (hasStyles(s)) {
@@ -7472,12 +7498,107 @@ function generateCode() {
 }
 function refreshCode() {
   const pre = $('#code-view');
-  if (pre) pre.textContent = generateCode();
+  if (pre) pre.replaceChildren(highlightJs(generateCode()));
+}
+
+/**
+ * Colour generated JS for the code view. A small sequential scanner, not a parser: comments,
+ * strings (incl. template literals), regex literals, keywords and numbers become spans. It
+ * builds nodes with textContent only — the code embeds TS/shared-link values, so never
+ * innerHTML — and the pre's textContent stays byte-identical to the generated code.
+ */
+const JS_KEYWORDS = new Set(('const let var function async await return if else for of in new import from '
+  + 'export default true false null undefined try catch finally throw while do break continue typeof '
+  + 'instanceof class extends this switch case').split(' '));
+function highlightJs(code) {
+  const frag = document.createDocumentFragment();
+  let plain = '';
+  const flush = () => { if (plain) { frag.appendChild(document.createTextNode(plain)); plain = ''; } };
+  const tok = (cls, text) => {
+    flush();
+    const sp = document.createElement('span'); sp.className = cls; sp.textContent = text;
+    frag.appendChild(sp);
+  };
+  // A '/' starts a regex (not division) when the previous significant char can't end an operand.
+  let prevSig = '';
+  let i = 0;
+  const n = code.length;
+  while (i < n) {
+    const c = code[i], d = code[i + 1];
+    if (c === '/' && d === '/') {
+      let j = code.indexOf('\n', i); if (j < 0) j = n;
+      const text = code.slice(i, j);
+      tok(/^\/\/ ──/.test(text) ? 'tk-com tk-hdr' : 'tk-com', text); i = j; continue;
+    }
+    if (c === '/' && d === '*') {
+      let j = code.indexOf('*/', i + 2); j = j < 0 ? n : j + 2;
+      tok('tk-com', code.slice(i, j)); i = j; continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1;
+      while (j < n && code[j] !== c) { if (code[j] === '\\') j++; else if (c !== '`' && code[j] === '\n') break; j++; }
+      j = Math.min(j + 1, n);
+      tok('tk-str', code.slice(i, j)); i = j; prevSig = c; continue;
+    }
+    if (c === '/' && (prevSig === '' || '(,=:[!&|?{};+-*%<>~^'.includes(prevSig))) {
+      let j = i + 1, inClass = false;
+      while (j < n && code[j] !== '\n') {
+        if (code[j] === '\\') { j += 2; continue; }
+        if (code[j] === '[') inClass = true; else if (code[j] === ']') inClass = false;
+        else if (code[j] === '/' && !inClass) break;
+        j++;
+      }
+      if (code[j] === '/') {
+        j++; while (j < n && /[a-z]/i.test(code[j])) j++;
+        tok('tk-re', code.slice(i, j)); i = j; prevSig = '/'; continue;
+      }
+    }
+    if (/[A-Za-z_$]/.test(c)) {
+      let j = i + 1; while (j < n && /[\w$]/.test(code[j])) j++;
+      const w = code.slice(i, j);
+      // `return /re/` and `typeof x` — a keyword leaves the next '/' in regex position.
+      if (JS_KEYWORDS.has(w) && code[i - 1] !== '.') { tok('tk-kw', w); prevSig = w === 'return' || w === 'typeof' ? '(' : 'k'; }
+      else { plain += w; prevSig = 'a'; }
+      i = j; continue;
+    }
+    if (/[0-9]/.test(c)) {
+      let j = i + 1; while (j < n && /[\w.]/.test(code[j])) j++;
+      tok('tk-num', code.slice(i, j)); i = j; prevSig = '0'; continue;
+    }
+    plain += c;
+    if (!/\s/.test(c)) prevSig = c;
+    i++;
+  }
+  flush();
+  return frag;
+}
+
+// Code text size + expanded panel: per-viewer reading conveniences, not shareable state, so they
+// live in localStorage (wrapped — storage can be blocked) rather than state.js.
+const CODE_FS_MIN = 10, CODE_FS_MAX = 20;
+function readPref(key, fallback) { try { return localStorage.getItem(key) ?? fallback; } catch (_) { return fallback; } }
+function writePref(key, val) { try { localStorage.setItem(key, String(val)); } catch (_) { /* blocked — fine */ } }
+function applyCodeFontSize(px) {
+  const size = Math.min(CODE_FS_MAX, Math.max(CODE_FS_MIN, Number(px) || 12));
+  $('#code-view')?.style.setProperty('--code-fs', `${size}px`);
+  $('#code-smaller').disabled = size <= CODE_FS_MIN;
+  $('#code-bigger').disabled = size >= CODE_FS_MAX;
+  writePref('pg.codeFontSize', size);
+  return size;
+}
+function setBottomExpanded(on) {
+  $('#bottom').dataset.expanded = String(on);
+  const b = $('#bp-expand');
+  b.setAttribute('aria-pressed', String(on));
+  b.textContent = on ? '✕ Exit full screen' : '⛶ Full screen';
+  b.title = on ? 'Back to the normal panel (Esc)' : 'Full screen (Esc to exit)';
+  // Not persisted: reopening the app straight into a full-screen panel would hide the embed.
 }
 
 // Generated REST snippet for the headless AI Insights section (no Visual Embed SDK).
-// Spotter Chat (MCP) — no Visual Embed SDK. The server owns the MCP connection and the
-// bearer token; the browser only speaks to your own SSE endpoint. Two halves, both runnable.
+// Spotter Chat (MCP). The server owns the MCP connection and the bearer token; the browser
+// only speaks to your own SSE endpoint, and renders answers the way js/spotter-mcp.js does —
+// marker iframes swapped by the SDK's startAutoMCPFrameRenderer(). Two halves, both runnable.
 function spotterMcpCode(s) {
   const esc = str => String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
   const src = s.worksheetId
@@ -7488,13 +7609,13 @@ function spotterMcpCode(s) {
   const sendArgs = ctx
     ? `{ analytical_session_id, message: 'What drove revenue last quarter?',\n  additional_context: '${esc(ctx)}' /* System context — resent on EVERY turn */ }`
     : "{ analytical_session_id, message: 'What drove revenue last quarter?' }";
-  const bodyLines = ['question, sessionId, tsHost // sessionId keeps the conversation going'];
+  const bodyLines = ['question, sessionId, tsHost, // sessionId keeps the conversation going'];
   if (ctx) bodyLines.push(`systemContext: '${esc(ctx)}', // persona → send_session_message additional_context`);
   if (mcpPrefs.labels) bodyLines.push(`labels: ${JSON.stringify(mcpPrefs.labels)}, // vendor-term relabeling, merged over labels.json`);
   if (!mcpPrefs.streamChunks) bodyLines.push('streamChunks: false, // whole messages instead of token chunks');
   if (mcpPrefs.pollIntervalMs !== 600) bodyLines.push(`pollIntervalMs: ${mcpPrefs.pollIntervalMs},`);
   const body = bodyLines.length === 1
-    ? '{ question, sessionId, tsHost } // sessionId keeps the conversation going'
+    ? '{ question, sessionId, tsHost /* sessionId keeps the conversation going */ }'
     : `{\n    ${bodyLines.join('\n    ')}\n  }`;
   return [
     '// ── SERVER (Node, ESM) — the MCP session flow ───────────────────────────────',
@@ -7502,9 +7623,10 @@ function spotterMcpCode(s) {
     "import { Client } from '@modelcontextprotocol/sdk/client/index.js';",
     "import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';",
     '',
-    '// The analytical-session tools exist ONLY on api-version=beta. api-version=2025-01-01',
-    '// connects fine but serves the older toolset (ping, createLiveboard, getAnswer, …).',
-    "const MCP_URL = 'https://agent.thoughtspot.app/token/mcp?api-version=beta';",
+    '// `latest` always serves the newest toolset (Spotter 3 session tools + preview tools). To freeze it,',
+    '// pin a date instead — but dates before 2026-05-01 connect fine and SILENTLY serve the legacy',
+    '// toolset (ping, createLiveboard, getAnswer, …).',
+    "const MCP_URL = 'https://agent.thoughtspot.app/token/mcp?api-version=latest';",
     `const TS_HOST = '${esc((s.host || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, ''))}'; // bare hostname`,
     `const DATA_SOURCE = ${src};`,
     '',
@@ -7534,17 +7656,33 @@ function spotterMcpCode(s) {
     `await call('send_session_message', ${sendArgs});`,
     '',
     '// 3) …then poll for updates until is_done. Updates are text_chunk | text | answer.',
+    '// An is_done can land before the agent has produced anything — re-check before believing it.',
+    'let seen = 0, emptyDone = 0;',
     'for (;;) {',
     "  const { session_updates = [], is_done } = await call('get_session_updates', { analytical_session_id });",
+    '  seen += session_updates.length;',
     '  for (const u of session_updates) {',
-    "    if (u.type === 'answer') console.log(u.answer_title, u.iframe_url); // render in an <iframe>",
-    "    else console.log(u.text ?? u.content);                              // stream to the client",
+    "    if (u.type === 'answer') console.log(u.answer_id, u.iframe_url); // relay as-is; the browser renders it",
+    "    else console.log(u.text ?? u.content);                           // stream to the client",
     '  }',
-    '  if (is_done) break;',
+    '  if (is_done && (seen > 0 || emptyDone++ >= 3)) break;',
     `  await new Promise(r => setTimeout(r, ${mcpPrefs.pollIntervalMs}));`,
     '}',
     '',
     '// ── BROWSER — consume your SSE relay ────────────────────────────────────────',
+    "import { init, AuthType, startAutoMCPFrameRenderer } from '@thoughtspot/visual-embed-sdk';",
+    '',
+    `init({\n${sdkInitAuthLines(s, esc).join('\n')}\n});`,
+    '// An answer\'s iframe_url carries the MCP `tsmcp=true` marker — it is NOT a usable embed URL;',
+    '// as a raw src it renders blank/unauthenticated. The auto-renderer watches the DOM and swaps',
+    '// each NEW marker <iframe> for an authenticated embed (setting .src on an existing one won\'t).',
+    "startAutoMCPFrameRenderer({ frameParams: { width: '100%', height: '600px' } });",
+    '',
+    "const chat = document.getElementById('chat');",
+    "const bubble = chat.appendChild(document.createElement('p'));",
+    'const slots = new Map(); // answer_id -> container; each answer arrives twice (preview, then final)',
+    'let sessionId;           // send it back with the next question to keep the conversation',
+    '',
     '// Your own bearer goes with every turn: trusted auth gives you one, or read the token behind',
     '// a cookie session with GET /api/rest/2.0/auth/session/token (9.4.0.cl+). The relay never mints.',
     "const resp = await fetch('/api/spotter-mcp/chat', {",
@@ -7568,7 +7706,15 @@ function spotterMcpCode(s) {
     '      const evt = JSON.parse(line.slice(5).trim());',
     "      if (evt.type === 'session') sessionId = evt.sessionId;",
     "      if (evt.type === 'text')    bubble.textContent += evt.text; // never innerHTML",
-    "      if (evt.type === 'answer')  frameEl.src = evt.iframe_url;",
+    "      if (evt.type === 'answer' && /^https?:\\/\\//i.test(evt.iframe_url)) {",
+    '        let slot = slots.get(evt.answer_id);',
+    "        if (!slot) slots.set(evt.answer_id, slot = chat.appendChild(document.createElement('div')));",
+    '        if (slot.dataset.src === evt.iframe_url) continue; // same final URL — keep the live embed',
+    '        slot.dataset.src = evt.iframe_url;',
+    "        const iframe = document.createElement('iframe'); // always a FRESH marker frame",
+    '        iframe.src = evt.iframe_url;',
+    '        slot.replaceChildren(iframe); // the renderer already swapped the old frame — replace via the slot',
+    '      }',
     '    }',
     '  }',
     '}',
@@ -7656,6 +7802,9 @@ function flowSteps(section) {
   // the tool sequence the relay actually walks.
   if (section === 'spotter-chat') {
     return [
+      { key: 'init',    lane: 'host',   title: 'SDK init + frame renderer',
+        evt: 'init({…}) → startAutoMCPFrameRenderer()',
+        desc: 'Once, on connect: host + auth, then a DOM watcher that turns MCP answer iframes into authenticated embeds.' },
       { key: 'ask',     lane: 'host',   title: 'Ask a question', evt: 'POST /api/spotter-mcp/chat',
         desc: 'Your chat UI posts the question; the server holds the token, the browser never sees it.' },
       { key: 'session', lane: 'server', title: 'Open a session', evt: 'create_analysis_session',
@@ -7664,8 +7813,8 @@ function flowSteps(section) {
         desc: 'The question goes to Spotter 3 over MCP (Streamable HTTP).' },
       { key: 'poll',    lane: 'server', title: 'Stream updates', evt: 'get_session_updates → SSE',
         desc: 'Polled until is_done; text_chunk / text / answer updates relay out as SSE events.' },
-      { key: 'render',  lane: 'host',   title: 'Render chat + charts', evt: 'custom DOM',
-        desc: 'Prose is relabelled by the customization layer; each answer renders its iframe_url.' },
+      { key: 'render',  lane: 'iframe', title: 'Render chat + charts', evt: 'marker <iframe> → embed',
+        desc: 'Prose is relabelled by the customization layer. Each answer\'s iframe_url (tsmcp=true marker) goes in a FRESH <iframe>; startAutoMCPFrameRenderer swaps it for an authenticated embed — as a raw src it renders blank.' },
     ];
   }
   if (section === 'ai-insights') {
@@ -7773,7 +7922,10 @@ function flowMark(type) {
  */
 function mcpFlowRestart() {
   if (!flowCurrent.length) return;
-  flowReached = 0; flowActive = 1; flowFailed = -1;
+  // SDK init ran on connect and the POST just went out — everything through "ask" is done.
+  flowReached = Math.max(0, flowCurrent.findIndex(st => st.key === 'ask'));
+  flowActive = flowReached + 1 < flowCurrent.length ? flowReached + 1 : -1;
+  flowFailed = -1;
   renderFlow();
 }
 function mcpFlowMark(key) {
@@ -7887,6 +8039,10 @@ function apiCatalog(s) {
       { method: 'POST', path: '/api/spotter-mcp/dashboard', scope: 'playground', desc: 'Pin the session\'s answers into a new Liveboard via the create_dashboard tool (outside the analysis session).' },
       { method: 'GET', path: '/api/spotter-mcp/health', scope: 'playground', desc: 'MCP connectivity check — returns the live tool list and the active label map.' },
       { method: 'GET', path: '/api/rest/2.0/auth/session/token', scope: 'TS REST', desc: 'Read the bearer behind YOUR session so the relay can forward it (browser-session auth only; it never mints).' },
+    ] });
+    groups.push({ group: 'Visual Embed SDK (answer charts)', items: [
+      { method: 'SDK', path: `init({ thoughtSpotHost, authType: AuthType.${s.authType} })`, scope: 'visual-embed-sdk', desc: 'One-time SDK init — the answer embeds reuse this host + auth.' },
+      { method: 'SDK', path: 'startAutoMCPFrameRenderer({ frameParams })', scope: 'visual-embed-sdk', desc: 'Watches the DOM and swaps each MCP answer iframe (iframe_url, tsmcp=true marker) for an authenticated embed. Without it charts render blank.' },
     ] });
     return groups;
   }

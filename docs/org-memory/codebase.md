@@ -698,6 +698,38 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   now removed in a `finally` (`ask()` delegates to `askTurn()`), and the relay-supplied
   `iframe_url` is scheme-checked before it reaches `frame.src` — an iframe src is a navigation sink
   in THIS document's context, same class as the S13 `window.open` hole.
+- 2026-10-01 (S45): Spotter MCP `api-version` cutover, verified by `tools/list` against
+  `https://agent.thoughtspot.app/token/mcp?api-version=X` on ps-internal: **beta, 2026-05-01,
+  2026-06-01, 2026-09-01** → Spotter 3 set (check_connectivity, search_objects,
+  create_analysis_session, send_session_message, get_session_updates, create_dashboard);
+  **2026-04-01 and earlier** (2026-01-01, 2025-10-01, 2025-01-01) → legacy set ONLY (ping,
+  createLiveboard, getDataSourceSuggestions, getRelevantQuestions, getAnswer) — connects fine,
+  silently wrong toolset; **latest / 2026-10-01** → Spotter 3 set + preview model tools
+  (create_model_session, send_model_message, get_model_updates, finalize_model; latest also
+  get_data). ThoughtSpot docs recommend a DATED version for custom apps. By human decision
+  both the relay default (`lib/spotter-mcp/mcp-client.mjs` `DEFAULT_MCP_URL`) and the generated
+  snippet use `api-version=latest` (newest toolset; pin a date via `TS_MCP_URL` to freeze it). `.env.example` still claims "ONLY beta" (guard-protected, human follow-up).
+- 2026-10-01 (PR #37 review): **z-index scale — modals 200 > mobile inspector 190 > toasts 150 >
+  dropdowns 50/60**; only `.sel-panel`, `body::before` (1000) and `.demo-exit` (900) sit above.
+  `.modal` is 200, NOT 1000. Any new full-window overlay (the full-screen bottom panel is 120) must
+  stay below 150 or it hides the toasts and dialogs it can itself open. `highlightJs` was fuzzed
+  (200k inputs) to preserve text exactly, so `#code-view.textContent === generateCode()` holds.
+- 2026-10-01 (S45): the generated Spotter MCP snippet (`js/app.js` `spotterMcpCode`) set
+  `frameEl.src = evt.iframe_url` — the EXACT bug a customer (Guidewire) hit: iframe_url carries the
+  `tsmcp=true` marker and renders blank/unauthenticated as a raw src. It now emits `init()` (via the
+  shared `sdkInitAuthLines(s, esc)`, also used by `generateCode`) + `startAutoMCPFrameRenderer()` and
+  appends a FRESH marker iframe per answer. Sharp edge: the auto-renderer REPLACES your iframe
+  element, so a kept reference is detached afterwards — `prev.replaceWith(next)` is a silent no-op.
+  Replace through a per-answer container (`slot.replaceChildren(iframe)`), as `renderAnswer`
+  (`js/spotter-mcp.js:340`) does via `card.querySelector('iframe')`. The same function's default
+  output had never parsed (a `//` comment swallowed `JSON.stringify(...)`'s closing paren). **Rule:
+  snippet code must mirror the app's own runtime path, and must be `node --check`ed** (filed M21).
+- 2026-10-01 (S45): `scripts/boot-check.mjs` `importGapsIn` used `/import \{([\s\S]*?)\} from
+  '@thoughtspot…'/`, which on a snippet that imports ANOTHER package first matched from that
+  earlier `import {` to the SDK's and reported every SDK name as missing (false "missing import:
+  init" for spotter-chat). Now `[^}]*` (one statement). spotter-chat was removed from
+  `NON_SDK_SECTIONS`, so the gate now REQUIRES its SDK import. Mutation-checked: dropping `init` or
+  `AuthType` from the snippet's import is reported; dropping the import line is an unexpected skip.
 
 ## Review-round corrections to the S33/S35/S37 work (2026-09-27)
 
