@@ -103,3 +103,10 @@ This log is the raw material for org retrospectives (BACKLOG M2).
 - 2026-10-01 (R2): clean cycle. Friction: worktree-isolated agents have no `node`/`npm` on PATH
   (nvm) and no `node_modules`; every agent rediscovered it. `lsof -i :A -i :B` exits 1 if EITHER
   port is free, so judge port-freeness on empty output, not exit code. Both filed under M23.
+- 2026-10-01 (ponytail wave: R2/R3/R4/R6/S46): five worktree-parallel items shipped; every PR after
+  the first hit a records-only conflict (all append to the same BACKLOG/codebase.md tails), forcing a
+  serial merge→re-QA→merge chain. Process slip: the CEO's own conflict resolver was fed both paths as
+  one quoted argument, failed, and the following `git add`+commit ran anyway, pushing conflict
+  markers in records files to the R3 branch (fixed forward before any PR, QA-confirmed). Lesson: gate
+  every merge-commit on `git grep -nE '^(<<<<<<<|=======|>>>>>>>)'` being empty — never `;`-chain the
+  commit after the resolver. Also: PR #42 was merged by a concurrent actor seconds before the CEO.
