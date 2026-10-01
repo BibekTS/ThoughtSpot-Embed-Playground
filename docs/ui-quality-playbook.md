@@ -141,7 +141,7 @@ $G -niE '(^|[^-])color: *(var\(--(accent|accent-2|success|warn|danger)[,)]|#00c9
 #     listed (white on it is 4.75:1). Rule-level only: it cannot see the cascade (see below).
 awk 'BEGIN{RS="}"} { b=tolower($0) }
   b ~ /(^|[^-])color: *(#fff([^0-9a-f]|$)|#ffffff|white|rgba?\( *255[, ] *255[, ] *255|hsla?\( *0[, ]+0%[, ]+100%)/ &&
-  b ~ /background(-color|-image)?:[^;]*(var\(--(accent|accent-2|success|warn|accent-soft|violet-soft|surface|surface-2|surface-3|bg)[,)]|#[0-9a-f][0-9a-f][0-9a-f]|rgba?\(|hsla?\()/ {
+  b ~ /background(-color|-image)?:[^;]*(var\(--(accent|accent-2|success|warn|[a-z0-9-]*-soft|surface(-[0-9])?|bg)[,)]|#[0-9a-f][0-9a-f][0-9a-f]|rgba?\(|hsla?\()/ {
     s=$0; while ((i = index(s, "{")) > 0) { sel = substr(s, 1, i - 1); s = substr(s, i + 1) }
     sub(/.*\*\//, "", sel); gsub(/[ \t\n]+/, " ", sel); print "M2:" sel }' "$CSS"
 # M3  opacity on text that is not disabled (U3). Judge each hit: icons, drag ghosts and
