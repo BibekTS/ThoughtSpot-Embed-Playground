@@ -867,3 +867,23 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   It now uses two distinct fake origins and stubs `window.fetch` via `evaluateOnNewDocument` (request
   interception cannot reliably answer the CORS preflight a cross-origin JSON POST needs). Re-proven
   by mutation: `isStale = () => false` → pill reads "USER_A · ORG_A", gate FAILS.
+
+## Over-engineering audit (ponytail, 2026-10-01, at 5afc85e → S46/S47, R2–R9)
+
+- 2026-10-01: no function defined in `js/app.js` L1–4100 is dead; every one has a caller. The real
+  cuttable mass there is duplication. Truly dead (0 callers): `cfbDiscoverColumns` (app.js ~L4801),
+  `downloadLiveboardPdf` and `assignTag` (discovery.js). Ranged findings are filed as R2–R9.
+- 2026-10-01: three `el()` helpers with two meanings for arg 3: app.js:310 and auth.js:72 →
+  `innerHTML`; `js/spotter-mcp.js:36` → `textContent`. Merging them naively re-opens S9.
+- 2026-10-01: hand copies that must change together until deduped: the drill-through snippet
+  generator (app.js ~L7113-7209) mirrors `dtEpochSec`/`dtBucketEndSec`/`dtMDY`/`CFB_DATE_NAME_RE`
+  and has ALREADY drifted (S46); the PDF writer exists 3× (app.js `tinyPdfBrowser`,
+  invoice-pdf.js ~L378-392, scripts/simulate-webhook.mjs `tinyPdf`); the trusted-auth token
+  request body is built 3× (auth.js `buildTrustedAuthConfig` + `mintToken`, embed.js
+  `fetchTrustedAuthToken`) — a new claim must touch all three until R3 lands.
+- 2026-10-01: Node 20's `new Response(buf,{headers}).formData()` can parse the express.raw-buffered
+  webhook body (HMAC still over `req.body`) but REJECTS malformed bodies the hand parser tolerates.
+- 2026-10-01: smoke-test and boot-check get a clean env by passing explicit, sometimes EMPTY,
+  vars that dotenv won't override; any move off dotenv (R9) must preserve that for `''` values.
+- 2026-10-01: CSS/index.html/config.js audited clean — dynamically built class names
+  (`api-method--*`, `tier-*`, `badge-*`, `toast-*`, `wh-comp-*--*`) are why grep finds them unused.
