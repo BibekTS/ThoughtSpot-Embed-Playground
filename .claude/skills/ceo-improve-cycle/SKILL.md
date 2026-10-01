@@ -62,6 +62,12 @@ before agent discovery), fall back to the built-ins noted per step. Every agent 
 memory before working and reports **Memory-worthy** facts back; the CEO persists those at the
 Records step (step 6).
 
+**Standing briefs.** Two playbooks hold department know-how: `docs/ts-watch-playbook.md`
+(Research, SDK drift) and `docs/ui-quality-playbook.md` (the UI lens: contrast, reduced motion,
+focus, async states). The named agents already know when to read them. A **built-in fallback
+does not** (it never sees `.claude/agents/*`), so when one is dispatched on a UI-touching item,
+name `docs/ui-quality-playbook.md` in its prompt.
+
 ## 2. Research & Intelligence — brief the area
 - For anything non-trivial, spawn the **`researcher`** agent (fallback: built-in `Explore`) to map
   the exact functions, files, and call sites the item touches, and to surface existing utilities to
@@ -105,7 +111,8 @@ either read. With the SHA named, launch the Review Board and QA **together, in o
 are independent reads of the same commit:
 - **Review Board:** spawn **`reviewer`** agents, one per applicable lens (correctness always;
   security when the diff touches auth, serialization, the server, or DOM sinks; regression when it
-  touches existing behavior) — all in the same message, each prompted to REFUTE the diff **at that
+  touches existing behavior; **UI** when it touches `css/styles.css`, `index.html`, `THEME.md`, or
+  DOM-building JS, judged against `docs/ui-quality-playbook.md`) — all in the same message, each prompted to REFUTE the diff **at that
   SHA** (they read it with `git diff <base>...<SHA>` and `git show <SHA>:<path>`; they never check
   anything out). Also run `/code-review` (medium or higher), and for security-adjacent diffs
   `/security-review` — **naming the same artifact** (the SHA, or `<base>...<SHA>`) rather than
@@ -266,7 +273,8 @@ the `fix` argument the same run chains straight into fixing, so hunt-and-fix is 
    audit everywhere it applies. Check `docs/org-memory/codebase.md` first — grounds recorded as
    recently audited-clean are wasted hunts.
 2. **Fan out `bug-hunter` agents in parallel — one message, one hunter per lens** (correctness /
-   security / regression / data-integrity; fallback: built-in `Explore`), each assigned the
+   security / regression / data-integrity, plus **ui** whenever the ground includes `css/`,
+   `index.html` or a DOM-building module; fallback: built-in `Explore`), each assigned the
    ground and its single lens. Every finding needs a concrete failure scenario — a finding without
    one is an opinion and gets dropped.
 3. **Dedupe and verify**: discard findings that duplicate an existing BACKLOG row or each other,

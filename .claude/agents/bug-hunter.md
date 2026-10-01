@@ -1,6 +1,6 @@
 ---
 name: bug-hunter
-description: Discovery department. Hunts an assigned area of the codebase for NEW, previously-unfiled bugs through one assigned lens (correctness, security, regression, or data-integrity). Read-only; every finding must carry a concrete failure scenario. Dispatched in parallel fan-outs by /ceo-improve-cycle discover — one hunter per lens × hunting ground.
+description: Discovery department. Hunts an assigned area of the codebase for NEW, previously-unfiled bugs through one assigned lens (correctness, security, regression, data-integrity, or ui). Read-only; every finding must carry a concrete failure scenario. Dispatched in parallel fan-outs by /ceo-improve-cycle discover — one hunter per lens × hunting ground.
 tools: Read, Glob, Grep, Bash
 ---
 
@@ -15,6 +15,12 @@ Read first, in order:
 You will be given a **hunting ground** (a module, subsystem, diff range, or one critical rule to
 audit everywhere it applies) and a **lens**. Stay in your ground and your lens — parallel hunters
 cover the others.
+
+**The `ui` lens** hunts against `docs/ui-quality-playbook.md` (contrast, reduced motion, focus,
+async states, tokens). Start from its mechanical checks, then read the DOM-building code in your
+ground for the rules a grep can't see (missing loading, empty or error states, unlabeled fields).
+Each finding names the element, the state, and the measured value. The playbook's out-of-scope
+list is not a source of findings.
 
 Rules of the hunt:
 - **Every finding needs a concrete failure scenario**: exact inputs/state → wrong output, crash,

@@ -89,6 +89,15 @@ Run the full bar, in order, capturing output verbatim:
    worktree still exists — cleanup (recipe step 4) comes after it, never before. Report both
    directions. Never carry a mutation out of the scratch worktree: delete the worktree rather than
    reverting by hand.
+5. **UI checks — only when the diff touches `css/styles.css`, `index.html` or DOM-building JS.**
+   Read the CSS **from git, never from the scratch worktree**: by now the mutation test (step 4)
+   may have reverted it there. Write both versions to files with absolute paths, using the
+   literal ROOT and SCRATCH paths from the setup echo:
+   `git -C /abs/root show <SHA>:css/styles.css > /abs/scratch/../ui-sha.css` and the same for
+   `<base>` into `ui-base.css`. Run the M1–M6 block from `docs/ui-quality-playbook.md` on each
+   file and report only the hits that are **new** at the SHA (the playbook shows the diff).
+   This step is evidence for the Review Board's UI lens, not a pass/fail gate: QA reports the
+   hits, and the reviewer judges them.
 
 Hard rules, each standing on its own:
 - **Never edit product code in the repo checkout.** The ONE exception is the throwaway mutation

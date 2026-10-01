@@ -100,3 +100,10 @@ This log is the raw material for org retrospectives (BACKLOG M2).
   already switched it to a new branch. Nothing was swept (caught at `git diff --stat` before
   staging), but a CEO that branches in the shared checkout hands a concurrent actor the wrong
   branch to commit onto. Moved the cycle into a worktree. Filed as M22.
+- 2026-10-01 (M23, UI lens): PR #38 (a taste-skill audit run by hand, outside the cycle) found 84
+  AA contrast failures that every prior Review Board pass had cleared, because no lens looked at
+  what the user sees. `docs/ui-quality-playbook.md` is now that lens. Two lessons. (1) The first
+  draft's shell checks were prose that had never been run adversarially: the reviewer found a
+  `git git` typo, a QA step that read the tree the mutation test had just reverted, and M2 blind
+  to a live 3.91:1 failure. The fix was a fixture of known violations, the M9/M10 lesson applied to
+  checks. (2) This session also hit the shared-checkout collision already filed as M22.

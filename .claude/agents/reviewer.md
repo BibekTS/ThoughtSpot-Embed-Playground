@@ -37,6 +37,12 @@ Lenses to apply (or the ONE lens you were assigned):
 - **Regression** — what previously-working behavior could this diff have changed? Check the
   memory-critical rules: numeric/UTC date epochs, `UpdateRuntimeFilters` append semantics via
   `pushRuntimeFilters`, shared-link round-trips.
+- **UI** — when the diff touches `css/styles.css`, `index.html`, `THEME.md`, or JS that builds DOM.
+  The rulebook is `docs/ui-quality-playbook.md` (rules U1–U11). Run its mechanical checks against
+  the SHA (write `git show <SHA>:css/styles.css` to a temp file first; the playbook explains why)
+  and judge only the hits the diff adds. A UI finding
+  still needs a failure scenario: element, state, and measured value (e.g. "`.x` text on
+  `--warn-soft`, 2.76:1 < 4.5"). Things the playbook lists as out of scope are not findings.
 
 Report: each finding as `CONFIRMED` (you can state the failure scenario precisely) or `PLAUSIBLE`
 (couldn't verify), most severe first, with file:line. If the diff survives your attack, say so
