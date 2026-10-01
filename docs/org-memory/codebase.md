@@ -905,3 +905,6 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
 - 2026-10-01 (R4 review): CI esm-parse covers `scripts/*.mjs` (top level) + repo-root `lib/` only;
   `scripts/lib/cli.mjs` is under no gate until M24. undici refused-connection errors carry their
   code on `e.cause`, not `e.code` (S48).
+- 2026-10-01 (R6): `lib/spotter-mcp/router.mjs` contains a literal NUL byte (the `getMcp` cache-key
+  separator, ~L177 `${host}<NUL>${token}`), so git shows the file as **binary** (`Bin` in `--stat`,
+  no hunks) and plain `grep` prints nothing. Use `git diff --text` / `grep -a`.
