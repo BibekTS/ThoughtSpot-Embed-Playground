@@ -887,3 +887,22 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   vars that dotenv won't override; any move off dotenv (R9) must preserve that for `''` values.
 - 2026-10-01: CSS/index.html/config.js audited clean — dynamically built class names
   (`api-method--*`, `tier-*`, `badge-*`, `toast-*`, `wh-comp-*--*`) are why grep finds them unused.
+- 2026-10-01 (R3, supersedes the "built 3×" note above): the trusted-auth token body has ONE owner,
+  `tokenRequestBody(auth)` (`js/auth.js:45`). `buildTrustedAuthConfig` now returns only
+  `{tokenEndpoint, autoLogin, requestBody}` — `cfg.trustedAuth` no longer carries the individual
+  claims, so nothing may read e.g. `cfg.trustedAuth.username` (nothing did at R3). A new claim is ONE
+  edit there. Pre-R3 the two bodies differed for exactly one input: a `custom` token whose
+  `auth.objects` held only falsy entries — Mint sent `"objects":[]`, the SDK omitted the key.
+  Unreachable (`strArr` drops `''` on every load; `chipsEditor` only appends trimmed non-empty
+  strings), and both now send the SDK's form. Proven by an old-vs-new harness (40k random auth
+  states, byte-compare of the fetched JSON body).
+- 2026-10-01 (R3): `doRender` (`js/embed.js:222`) spreads a `common` object FIRST in every
+  constructor; `viz` without `answerId` FALLS THROUGH into the shared `LiveboardEmbed` case, which
+  pins `vizId` after `...flags` only via `...(section === 'viz' && {vizId})` — keep that guard, it is
+  the per-section pinning the code generator mirrors. Options are value-identical to pre-R3 for all
+  864 section×config×flags×options combos tested (incl. adversarial flags), but KEY INSERTION ORDER
+  changed (common keys now first) — irrelevant to the SDK, visible only to an `Object.keys` snapshot.
+- 2026-10-01 (R3): the four auth row editors are `rowsEditor(key, addLabel, blank, build)`
+  (`js/auth.js:248`); `build(row)` returns `{cells, read}`. `read()`'s KEY ORDER lands in the
+  shared-link hash — append new fields, don't reorder. `blank` is a factory so two "+ Add" clicks
+  never share one `values` array.
