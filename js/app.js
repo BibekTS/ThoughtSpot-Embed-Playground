@@ -863,6 +863,9 @@ function render() {
     flowReset(s.section);
     refreshCode();
     mountSpotterMcp(s);
+    // init() ran on Connect and the panel just started the frame renderer — unless it reported
+    // the renderer unavailable, the SDK step is done and the flow waits for a question.
+    if (flowFailed < 0) { flowReached = 0; flowActive = -1; renderFlow(); }
     return;
   }
 
@@ -3659,7 +3662,8 @@ function mountSpotterMcp(s) {
       logEvent(kind, msg);
       if (kind !== 'MCP') return;
       const m = String(msg);
-      if (m.startsWith('POST /api/spotter-mcp/chat')) mcpFlowRestart();
+      if (m.startsWith('auto frame renderer unavailable')) flowFailAt('init');
+      else if (m.startsWith('POST /api/spotter-mcp/chat')) mcpFlowRestart();
       else if (m.startsWith('new analysis session')) mcpFlowMark('send');
       else if (m.startsWith('streaming session updates')) mcpFlowMark('poll');
       else if (m.startsWith('answer:') || m === 'turn complete') mcpFlowMark('render');
@@ -7509,10 +7513,10 @@ function spotterMcpCode(s) {
     "import { Client } from '@modelcontextprotocol/sdk/client/index.js';",
     "import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';",
     '',
-    "// Pin a dated api-version (ThoughtSpot's recommendation). Dates >= 2026-05-01 serve the Spotter 3",
-    '// session tools; earlier dates connect fine but SILENTLY serve the legacy toolset (ping,',
-    '// createLiveboard, getAnswer, …). `latest` adds preview tools on top.',
-    "const MCP_URL = 'https://agent.thoughtspot.app/token/mcp?api-version=2026-09-01';",
+    '// `latest` always serves the newest toolset (Spotter 3 session tools + preview tools). To freeze it,',
+    '// pin a date instead — but dates before 2026-05-01 connect fine and SILENTLY serve the legacy',
+    '// toolset (ping, createLiveboard, getAnswer, …).',
+    "const MCP_URL = 'https://agent.thoughtspot.app/token/mcp?api-version=latest';",
     `const TS_HOST = '${esc((s.host || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, ''))}'; // bare hostname`,
     `const DATA_SOURCE = ${src};`,
     '',
@@ -7688,6 +7692,9 @@ function flowSteps(section) {
   // the tool sequence the relay actually walks.
   if (section === 'spotter-chat') {
     return [
+      { key: 'init',    lane: 'host',   title: 'SDK init + frame renderer',
+        evt: 'init({…}) → startAutoMCPFrameRenderer()',
+        desc: 'Once, on connect: host + auth, then a DOM watcher that turns MCP answer iframes into authenticated embeds.' },
       { key: 'ask',     lane: 'host',   title: 'Ask a question', evt: 'POST /api/spotter-mcp/chat',
         desc: 'Your chat UI posts the question; the server holds the token, the browser never sees it.' },
       { key: 'session', lane: 'server', title: 'Open a session', evt: 'create_analysis_session',
@@ -7696,8 +7703,8 @@ function flowSteps(section) {
         desc: 'The question goes to Spotter 3 over MCP (Streamable HTTP).' },
       { key: 'poll',    lane: 'server', title: 'Stream updates', evt: 'get_session_updates → SSE',
         desc: 'Polled until is_done; text_chunk / text / answer updates relay out as SSE events.' },
-      { key: 'render',  lane: 'host',   title: 'Render chat + charts', evt: 'custom DOM',
-        desc: 'Prose is relabelled by the customization layer; each answer renders its iframe_url.' },
+      { key: 'render',  lane: 'iframe', title: 'Render chat + charts', evt: 'marker <iframe> → embed',
+        desc: 'Prose is relabelled by the customization layer. Each answer\'s iframe_url (tsmcp=true marker) goes in a FRESH <iframe>; startAutoMCPFrameRenderer swaps it for an authenticated embed — as a raw src it renders blank.' },
     ];
   }
   if (section === 'ai-insights') {
@@ -7805,7 +7812,10 @@ function flowMark(type) {
  */
 function mcpFlowRestart() {
   if (!flowCurrent.length) return;
-  flowReached = 0; flowActive = 1; flowFailed = -1;
+  // SDK init ran on connect and the POST just went out — everything through "ask" is done.
+  flowReached = Math.max(0, flowCurrent.findIndex(st => st.key === 'ask'));
+  flowActive = flowReached + 1 < flowCurrent.length ? flowReached + 1 : -1;
+  flowFailed = -1;
   renderFlow();
 }
 function mcpFlowMark(key) {
@@ -7919,6 +7929,10 @@ function apiCatalog(s) {
       { method: 'POST', path: '/api/spotter-mcp/dashboard', scope: 'playground', desc: 'Pin the session\'s answers into a new Liveboard via the create_dashboard tool (outside the analysis session).' },
       { method: 'GET', path: '/api/spotter-mcp/health', scope: 'playground', desc: 'MCP connectivity check — returns the live tool list and the active label map.' },
       { method: 'GET', path: '/api/rest/2.0/auth/session/token', scope: 'TS REST', desc: 'Read the bearer behind YOUR session so the relay can forward it (browser-session auth only; it never mints).' },
+    ] });
+    groups.push({ group: 'Visual Embed SDK (answer charts)', items: [
+      { method: 'SDK', path: `init({ thoughtSpotHost, authType: AuthType.${s.authType} })`, scope: 'visual-embed-sdk', desc: 'One-time SDK init — the answer embeds reuse this host + auth.' },
+      { method: 'SDK', path: 'startAutoMCPFrameRenderer({ frameParams })', scope: 'visual-embed-sdk', desc: 'Watches the DOM and swaps each MCP answer iframe (iframe_url, tsmcp=true marker) for an authenticated embed. Without it charts render blank.' },
     ] });
     return groups;
   }

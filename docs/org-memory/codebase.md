@@ -706,9 +706,9 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   createLiveboard, getDataSourceSuggestions, getRelevantQuestions, getAnswer) — connects fine,
   silently wrong toolset; **latest / 2026-10-01** → Spotter 3 set + preview model tools
   (create_model_session, send_model_message, get_model_updates, finalize_model; latest also
-  get_data). ThoughtSpot docs recommend a DATED version for custom apps. The relay default
-  (`lib/spotter-mcp/mcp-client.mjs` `DEFAULT_MCP_URL`) is still `beta`; the generated snippet pins
-  `2026-09-01`. `.env.example` still claims "ONLY beta" (guard-protected, human follow-up).
+  get_data). ThoughtSpot docs recommend a DATED version for custom apps. By human decision
+  both the relay default (`lib/spotter-mcp/mcp-client.mjs` `DEFAULT_MCP_URL`) and the generated
+  snippet use `api-version=latest` (newest toolset; pin a date via `TS_MCP_URL` to freeze it). `.env.example` still claims "ONLY beta" (guard-protected, human follow-up).
 - 2026-10-01 (S45): the generated Spotter MCP snippet (`js/app.js` `spotterMcpCode`) set
   `frameEl.src = evt.iframe_url` — the EXACT bug a customer (Guidewire) hit: iframe_url carries the
   `tsmcp=true` marker and renders blank/unauthenticated as a raw src. It now emits `init()` (via the
