@@ -103,3 +103,7 @@ This log is the raw material for org retrospectives (BACKLOG M2).
 - 2026-10-01 (R2): clean cycle. Friction: worktree-isolated agents have no `node`/`npm` on PATH
   (nvm) and no `node_modules`; every agent rediscovered it. `lsof -i :A -i :B` exits 1 if EITHER
   port is free, so judge port-freeness on empty output, not exit code. Both filed under M23.
+- 2026-10-01 (M26): the Review Board caught the one real design flaw — ponytail-audit's
+  "single-importer module = bloat" hunt directly opposes R1's extraction program, which would have
+  made `discover simplify` oscillate the backlog. QA "FAIL" was a CEO-authored bar error (required
+  `tools:` on every agent; implementer intentionally has none) — gate specs need the same care as code.

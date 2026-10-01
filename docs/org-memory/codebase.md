@@ -927,3 +927,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   (`js/auth.js:248`); `build(row)` returns `{cells, read}`. `read()`'s KEY ORDER lands in the
   shared-link hash — append new fields, don't reorder. `blank` is a factory so two "+ Add" clicks
   never share one `values` array.
+- 2026-10-01 (M26): `reviewer` and `architect` declare a `tools:` allowlist with NO Skill tool, so
+  "load skill X" in those agents is a no-op — their rules must be inline. `implementer` has no
+  `tools:` line (inherits all, incl. Skill). Automated over-engineering audits must never propose
+  inlining an R1-extracted module or contradict an open R/S row (rule lives in `reviewer.md`).
