@@ -887,3 +887,11 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   vars that dotenv won't override; any move off dotenv (R9) must preserve that for `''` values.
 - 2026-10-01: CSS/index.html/config.js audited clean — dynamically built class names
   (`api-method--*`, `tier-*`, `badge-*`, `toast-*`, `wh-comp-*--*`) are why grep finds them unused.
+- 2026-10-01 (R4): the ops scripts' shared helpers live in `scripts/lib/cli.mjs` (`ok/bad/warn`,
+  `cliArgs`, `fetchT`, `isTimeout`, `resolveToken`). `cliArgs()` is `util.parseArgs` with NO
+  declared options + `strict:false`, which reproduces the old regex parser exactly for `--k=v` /
+  bare `--k` / last-repeat-wins; `--k v` is still `k:true` (value NOT consumed) — declaring
+  `type:'string'` options would silently change that. `fetchT` uses `AbortSignal.timeout`, so a
+  timeout rejects as `TimeoutError` (not `AbortError`) and now also bounds the `resp.text()` body
+  read; check with `isTimeout(e)`, never `e.name`. Keep `import 'dotenv/config'` the FIRST import
+  in each script — cli.mjs reads no env at import time, so ordering is the only contract.
