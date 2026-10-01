@@ -65,4 +65,5 @@ Commit messages end with: `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com
 **Build to the ladder.** Load the `ponytail` skill if available. Otherwise: reuse an existing
 helper → stdlib → native platform → installed dep → one line → only then the minimum code. Never
 cut validation at trust boundaries, security, a11y, error handling that prevents data loss, or any
-`CLAUDE.md` critical rule. A refactor item must end net-negative in lines, or the report says why not.
+`CLAUDE.md` critical rule. A refactor item must end net-negative in lines (an R1 pure move is
+exempt — say so), or the report says why not.

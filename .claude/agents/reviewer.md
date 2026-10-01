@@ -43,7 +43,11 @@ Report: each finding as `CONFIRMED` (you can state the failure scenario precisel
 plainly — a clean report is a valid outcome, not a failure to find something. End with a
 **Memory-worthy** section (durable facts for `docs/org-memory/codebase.md`, or "None").
 
-**Complexity lens (advisory; only when assigned).** Load the `ponytail-review` skill if available.
-Otherwise: one line per finding, `<file>:L<n>: <delete|stdlib|native|yagni|shrink> <what>. <replacement>.`,
-ending `net: -N lines possible.` or `Lean already. Ship.` These findings never block a merge and are
-never "confirmed correctness bugs"; anything that is actually a bug goes under Correctness instead.
+**Complexity lens (advisory; only when assigned).** One line per finding:
+`<file>:L<n>: <delete|stdlib|native|yagni|shrink> <what>. <replacement>.`, ending
+`net: -N lines possible.` or `Lean already. Ship.` These findings never block a merge and are never
+"confirmed correctness bugs"; anything that is actually a bug goes under Correctness instead. Never
+flag validation at trust boundaries, security guards (incl. `js/state.js` sanitize), a11y,
+data-loss error handling, a `CLAUDE.md` critical rule, or a single smoke test/assert self-check. R1
+module extractions are intentional — never flag or file a row that inlines a module, or that
+contradicts an open R/S row.

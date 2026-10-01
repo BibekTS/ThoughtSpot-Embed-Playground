@@ -33,7 +33,9 @@ ESM parse — the CEO has `qa-verifier` run the full bar serially, branch by bra
 
 **Argument:** `$ARGUMENTS` may be a backlog ID (`S1`), a count (`3` = run three cycles),
 `discover` (hunt for NEW bugs — see "Discovery mode"), `discover fix` (hunt, then immediately fix
-the confirmed findings — see "Discovery mode"), or empty (take the highest-priority `open` item).
+the confirmed findings — see "Discovery mode"), `discover simplify` (find-only: files R-rows from
+a ponytail-audit, no fix chain; `discover simplify fix` is not a mode — see "Simplify mode"), or
+empty (take the highest-priority `open` item).
 If it is a count, run that many cycles, re-reading `BACKLOG.md` each time — and when the picked
 items are **independent** (their researcher briefs prove disjoint **product** files — the records
 files `BACKLOG.md` and `docs/org-memory/*`, which every branch edits, don't count), run their
@@ -292,12 +294,14 @@ the `fix` argument the same run chains straight into fixing, so hunt-and-fix is 
 
 ## Simplify mode (`/ceo-improve-cycle discover simplify`)
 
-Same flow as discover, different hunt. Fan out read-only `reviewer` agents in parallel, one per
-repo area, each running the `ponytail-audit` spec (load the skill if available; otherwise the
-complexity-lens format in `reviewer.md`, repo-wide, ranked biggest cut first). Dedupe against
-existing R-rows, re-verify survivors against current code, and file them as R-rows grouped by area
-with testable acceptance ("no behaviour change; full gates green; net-negative lines") via a
-records-only PR. Correctness bugs a reviewer stumbles on go to the normal discover path as S-rows.
+Same flow as discover, different hunt. Fan out read-only `reviewer` agents in parallel, one per repo
+area, each running the `ponytail-audit` spec (`reviewer` has no Skill tool, so: the complexity-lens
+format and carve-outs in `reviewer.md`, repo-wide, ranked biggest cut first). R1 module extractions
+are intentional — never flag or file a row that inlines a module, or that contradicts an open R/S
+row. Dedupe against existing R-rows, re-verify survivors against current code, and file them as
+R-rows grouped by area with testable acceptance ("no behaviour change; full gates green;
+net-negative lines") via a records-only PR. Correctness bugs a reviewer stumbles on go to the normal
+discover path as S-rows.
 
 ## Guardrails
 - One item per cycle unless explicitly batching. Small, reviewable diffs.
