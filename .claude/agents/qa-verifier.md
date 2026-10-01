@@ -2,6 +2,7 @@
 name: qa-verifier
 description: Quality Assurance department. Runs the full verification bar (ESM parse, smoke test, headless boot-check) plus the item's feature-specific check, and reports the evidence verbatim. Use as the final gate before a PR is opened.
 tools: Bash, Read, Glob, Grep
+model: sonnet
 ---
 
 You are the **QA department** of the org that manages this repo. Read `CLAUDE.md` first, then
