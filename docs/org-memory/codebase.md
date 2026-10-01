@@ -895,3 +895,6 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   timeout rejects as `TimeoutError` (not `AbortError`) and now also bounds the `resp.text()` body
   read; check with `isTimeout(e)`, never `e.name`. Keep `import 'dotenv/config'` the FIRST import
   in each script — cli.mjs reads no env at import time, so ordering is the only contract.
+- 2026-10-01 (R4 review): CI esm-parse covers `scripts/*.mjs` (top level) + repo-root `lib/` only;
+  `scripts/lib/cli.mjs` is under no gate until M24. undici refused-connection errors carry their
+  code on `e.cause`, not `e.code` (S48).
