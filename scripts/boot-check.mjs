@@ -361,8 +361,10 @@ async function runAnswerPreconfirmProbe(browser) {
 const SDK_ID_RE = /\b(init|AuthType|EmbedEvent|HostEvent|RuntimeFilterOp|CustomActionsPosition|CustomActionTarget|Action|Page|LiveboardEmbed|SearchEmbed|AppEmbed|SpotterEmbed|SageEmbed)\b/g;
 
 function importGapsIn(code) {
-  const m = /import \{([\s\S]*?)\} from '@thoughtspot\/visual-embed-sdk';/.exec(code);
-  if (!m) return null;                       // ai-insights / spotter-chat emit no SDK import
+  // [^}] keeps the match inside ONE import statement: with [\s\S] a snippet that imports another
+  // package first (spotter-chat's MCP client) matched from that earlier `import {` to the SDK's.
+  const m = /import \{([^}]*)\} from '@thoughtspot\/visual-embed-sdk';/.exec(code);
+  if (!m) return null;                       // ai-insights emits no SDK import
   const imported = new Set(m[1].split(',').map((x) => x.trim()).filter(Boolean));
   const body = code.slice(m.index + m[0].length)
     .replace(/^\s*\/\/.*$/gm, '')            // whole-line comments
@@ -372,11 +374,13 @@ function importGapsIn(code) {
 }
 
 /**
- * The only two rail sections that legitimately emit no Visual Embed SDK import: both are host-side
- * REST/MCP flows, not embeds. Every OTHER section must emit one, so the coverage count cannot drift
+ * The only rail section that legitimately emits no Visual Embed SDK import: it is a host-side
+ * REST flow, not an embed. Every OTHER section must emit one, so the coverage count cannot drift
  * downwards unnoticed.
  */
-const NON_SDK_SECTIONS = new Set(['ai-insights', 'spotter-chat']);
+// spotter-chat left this set in S45: its browser half now MUST import init + startAutoMCPFrameRenderer
+// (a raw iframe_url renders blank), so a regression back to "no SDK import" fails here.
+const NON_SDK_SECTIONS = new Set(['ai-insights']);
 
 async function runCodeGenImportProbe(browser) {
   // Drill-through demo defaults: enabled + summaryModelId + measureColumn, no other actions or

@@ -6945,6 +6945,18 @@ async function refreshPersonalCopies() {
 }
 
 // ═══ SDK CODE VIEW — full, runnable snippet ═══════════════════════════════════
+// The host + auth half of every generated init() block. Shared by generateCode() and
+// spotterMcpCode() so a copied snippet always targets the user's live host and auth mode.
+function sdkInitAuthLines(s, esc) {
+  const lines = [`  thoughtSpotHost: '${esc(s.host) || 'https://your-instance.thoughtspot.cloud'}',`, `  authType: AuthType.${s.authType},`];
+  if (s.authType !== 'None') {
+    lines.push('  autoLogin: true,');
+    lines.push('  // PROD: do NOT let the browser choose the user. Your token endpoint must derive the');
+    lines.push('  // identity from a verified server session (SSO/cookie), never from the request body.');
+    lines.push('  getAuthToken: () => fetch(\'/api/auth/token\', { method: \'POST\' }).then(r => r.json()).then(d => d.token),');
+  }
+  return lines;
+}
 function generateCode() {
   const s = getState();
   if (s.section === 'ai-insights') return aiInsightsCode(s);
@@ -6984,13 +6996,7 @@ function generateCode() {
   L.push(`import {\n  ${[...new Set(importNames)].join(', ')}\n} from '@thoughtspot/visual-embed-sdk';`);
   L.push('');
   // init()
-  const initLines = [`  thoughtSpotHost: '${esc(s.host) || 'https://your-instance.thoughtspot.cloud'}',`, `  authType: AuthType.${s.authType},`];
-  if (s.authType !== 'None') {
-    initLines.push('  autoLogin: true,');
-    initLines.push('  // PROD: do NOT let the browser choose the user. Your token endpoint must derive the');
-    initLines.push('  // identity from a verified server session (SSO/cookie), never from the request body.');
-    initLines.push('  getAuthToken: () => fetch(\'/api/auth/token\', { method: \'POST\' }).then(r => r.json()).then(d => d.token),');
-  }
+  const initLines = sdkInitAuthLines(s, esc);
   if (hasStyles(s) || hasContent(s)) {
     initLines.push('  customizations: {');
     if (hasStyles(s)) {
@@ -7476,8 +7482,9 @@ function refreshCode() {
 }
 
 // Generated REST snippet for the headless AI Insights section (no Visual Embed SDK).
-// Spotter Chat (MCP) — no Visual Embed SDK. The server owns the MCP connection and the
-// bearer token; the browser only speaks to your own SSE endpoint. Two halves, both runnable.
+// Spotter Chat (MCP). The server owns the MCP connection and the bearer token; the browser
+// only speaks to your own SSE endpoint, and renders answers the way js/spotter-mcp.js does —
+// marker iframes swapped by the SDK's startAutoMCPFrameRenderer(). Two halves, both runnable.
 function spotterMcpCode(s) {
   const esc = str => String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
   const src = s.worksheetId
@@ -7488,13 +7495,13 @@ function spotterMcpCode(s) {
   const sendArgs = ctx
     ? `{ analytical_session_id, message: 'What drove revenue last quarter?',\n  additional_context: '${esc(ctx)}' /* System context — resent on EVERY turn */ }`
     : "{ analytical_session_id, message: 'What drove revenue last quarter?' }";
-  const bodyLines = ['question, sessionId, tsHost // sessionId keeps the conversation going'];
+  const bodyLines = ['question, sessionId, tsHost, // sessionId keeps the conversation going'];
   if (ctx) bodyLines.push(`systemContext: '${esc(ctx)}', // persona → send_session_message additional_context`);
   if (mcpPrefs.labels) bodyLines.push(`labels: ${JSON.stringify(mcpPrefs.labels)}, // vendor-term relabeling, merged over labels.json`);
   if (!mcpPrefs.streamChunks) bodyLines.push('streamChunks: false, // whole messages instead of token chunks');
   if (mcpPrefs.pollIntervalMs !== 600) bodyLines.push(`pollIntervalMs: ${mcpPrefs.pollIntervalMs},`);
   const body = bodyLines.length === 1
-    ? '{ question, sessionId, tsHost } // sessionId keeps the conversation going'
+    ? '{ question, sessionId, tsHost /* sessionId keeps the conversation going */ }'
     : `{\n    ${bodyLines.join('\n    ')}\n  }`;
   return [
     '// ── SERVER (Node, ESM) — the MCP session flow ───────────────────────────────',
@@ -7502,9 +7509,10 @@ function spotterMcpCode(s) {
     "import { Client } from '@modelcontextprotocol/sdk/client/index.js';",
     "import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';",
     '',
-    '// The analytical-session tools exist ONLY on api-version=beta. api-version=2025-01-01',
-    '// connects fine but serves the older toolset (ping, createLiveboard, getAnswer, …).',
-    "const MCP_URL = 'https://agent.thoughtspot.app/token/mcp?api-version=beta';",
+    "// Pin a dated api-version (ThoughtSpot's recommendation). Dates >= 2026-05-01 serve the Spotter 3",
+    '// session tools; earlier dates connect fine but SILENTLY serve the legacy toolset (ping,',
+    '// createLiveboard, getAnswer, …). `latest` adds preview tools on top.',
+    "const MCP_URL = 'https://agent.thoughtspot.app/token/mcp?api-version=2026-09-01';",
     `const TS_HOST = '${esc((s.host || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, ''))}'; // bare hostname`,
     `const DATA_SOURCE = ${src};`,
     '',
@@ -7534,17 +7542,33 @@ function spotterMcpCode(s) {
     `await call('send_session_message', ${sendArgs});`,
     '',
     '// 3) …then poll for updates until is_done. Updates are text_chunk | text | answer.',
+    '// An is_done can land before the agent has produced anything — re-check before believing it.',
+    'let seen = 0, emptyDone = 0;',
     'for (;;) {',
     "  const { session_updates = [], is_done } = await call('get_session_updates', { analytical_session_id });",
+    '  seen += session_updates.length;',
     '  for (const u of session_updates) {',
-    "    if (u.type === 'answer') console.log(u.answer_title, u.iframe_url); // render in an <iframe>",
-    "    else console.log(u.text ?? u.content);                              // stream to the client",
+    "    if (u.type === 'answer') console.log(u.answer_id, u.iframe_url); // relay as-is; the browser renders it",
+    "    else console.log(u.text ?? u.content);                           // stream to the client",
     '  }',
-    '  if (is_done) break;',
+    '  if (is_done && (seen > 0 || emptyDone++ >= 3)) break;',
     `  await new Promise(r => setTimeout(r, ${mcpPrefs.pollIntervalMs}));`,
     '}',
     '',
     '// ── BROWSER — consume your SSE relay ────────────────────────────────────────',
+    "import { init, AuthType, startAutoMCPFrameRenderer } from '@thoughtspot/visual-embed-sdk';",
+    '',
+    `init({\n${sdkInitAuthLines(s, esc).join('\n')}\n});`,
+    '// An answer\'s iframe_url carries the MCP `tsmcp=true` marker — it is NOT a usable embed URL;',
+    '// as a raw src it renders blank/unauthenticated. The auto-renderer watches the DOM and swaps',
+    '// each NEW marker <iframe> for an authenticated embed (setting .src on an existing one won\'t).',
+    "startAutoMCPFrameRenderer({ frameParams: { width: '100%', height: '600px' } });",
+    '',
+    "const chat = document.getElementById('chat');",
+    "const bubble = chat.appendChild(document.createElement('p'));",
+    'const slots = new Map(); // answer_id -> container; each answer arrives twice (preview, then final)',
+    'let sessionId;           // send it back with the next question to keep the conversation',
+    '',
     '// Your own bearer goes with every turn: trusted auth gives you one, or read the token behind',
     '// a cookie session with GET /api/rest/2.0/auth/session/token (9.4.0.cl+). The relay never mints.',
     "const resp = await fetch('/api/spotter-mcp/chat', {",
@@ -7568,7 +7592,15 @@ function spotterMcpCode(s) {
     '      const evt = JSON.parse(line.slice(5).trim());',
     "      if (evt.type === 'session') sessionId = evt.sessionId;",
     "      if (evt.type === 'text')    bubble.textContent += evt.text; // never innerHTML",
-    "      if (evt.type === 'answer')  frameEl.src = evt.iframe_url;",
+    "      if (evt.type === 'answer' && /^https?:\\/\\//i.test(evt.iframe_url)) {",
+    '        let slot = slots.get(evt.answer_id);',
+    "        if (!slot) slots.set(evt.answer_id, slot = chat.appendChild(document.createElement('div')));",
+    '        if (slot.dataset.src === evt.iframe_url) continue; // same final URL — keep the live embed',
+    '        slot.dataset.src = evt.iframe_url;',
+    "        const iframe = document.createElement('iframe'); // always a FRESH marker frame",
+    '        iframe.src = evt.iframe_url;',
+    '        slot.replaceChildren(iframe); // the renderer already swapped the old frame — replace via the slot',
+    '      }',
     '    }',
     '  }',
     '}',
