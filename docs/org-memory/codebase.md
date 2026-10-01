@@ -942,3 +942,17 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   "load skill X" in those agents is a no-op — their rules must be inline. `implementer` has no
   `tools:` line (inherits all, incl. Skill). Automated over-engineering audits must never propose
   inlining an R1-extracted module or contradict an open R/S row (rule lives in `reviewer.md`).
+- 2026-10-01 (guide v3.0.0, M30): `docs/tse-best-practices.html` is a single self-contained page whose
+  inline JS renders the nav, footer "Last updated", per-section verified chips, the feature status
+  index (built from every `.badge[data-feature]`), wizards, steppers, checklists and the runtime-filter
+  simulator. **Never hand-edit the footer or the changelog list**: they render from `#guide-meta`.
+  `npm run guide-check` opens it via `file://` (no port) and stubs Google Fonts. Facts from the rewrite:
+  the latest docs were SDK **1.52.0** / ThoughtSpot **26.9.0.cl** (the playground pins 1.49.0). HostEvent v1
+  framework is deprecated at 26.10.0.cl; move to `useHostEventsV2`. ABAC: `filter_rules` on `auth/token/custom` is closed to
+  NEW configurations from 26.3.0.cl (existing use keeps working), `parameter_values` is "supported, will be
+  deprecated", and `user_parameters` on full/object is deprecated from 10.4.0.cl; the path forward is
+  `variable_values` (10.14.0.cl+). Docs/field
+  contradictions recorded in the guide: `available_data_row_count` equals the page size on full pages
+  (docs call it a total), runtime-filter date examples use string epochs (`UpdateFilters` requires numbers),
+  and the `GetFilters` envelope (filed as S50). Section writers WITHOUT the MCP guessed REST doc URLs,
+  so a per-section MCP fact-check pass is mandatory before publishing new guide content.
