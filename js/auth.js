@@ -29,23 +29,37 @@ export function seedAuthHooks({ logEvent, onTokenApplied }) {
 
 /** state.auth → cfg.trustedAuth (consumed by embed.js / initSDK). */
 export function buildTrustedAuthConfig(auth) {
-  const custom = auth.tokenType === 'custom';
   return {
     tokenEndpoint: '/api/auth/token',
-    tokenType: auth.tokenType || 'full',
-    username: auth.username,
-    validitySeconds: auth.validitySeconds,
-    orgId: auth.orgId || null,
     autoLogin: true,
-    autoCreate: auth.autoCreate,
-    displayName: auth.displayName,
-    email: auth.email,
-    groups: auth.groups,
-    // full path (deprecated 10.4.0.cl+) vs custom path — only send the one that applies.
+    requestBody: tokenRequestBody(auth),
+  };
+}
+
+/**
+ * state.auth → the POST /api/auth/token body. The ONLY place the body shape is defined: the SDK's
+ * getAuthToken (embed.js, via cfg.trustedAuth.requestBody) and the inspector's Mint both send this,
+ * so they cannot drift apart. Pass-through of the full (non-secret) claim surface — the server
+ * injects the secret_key. Empty claims are `undefined`, so JSON.stringify drops them.
+ */
+export function tokenRequestBody(auth) {
+  const custom = auth.tokenType === 'custom';
+  const variableValues = custom ? (auth.variableValues || []).filter(v => v.name) : [];
+  const objects = custom ? (auth.objects || []).filter(Boolean) : [];
+  return {
+    tokenType: auth.tokenType || 'full',
+    username: auth.username || undefined,
+    validitySeconds: auth.validitySeconds,
+    orgId: auth.orgId || undefined,
+    autoCreate: auth.autoCreate || undefined,
+    displayName: auth.displayName || undefined,
+    email: auth.email || undefined,
+    groups: auth.groups?.length ? auth.groups : undefined,
+    // full path (deprecated 10.4.0.cl+) vs custom path (ABAC via RLS variables) — send only the one that applies.
     userParameters: custom ? undefined : buildUserParameters(auth),
     persistOption: custom ? (auth.persistOption || 'REPLACE') : undefined,
-    variableValues: custom ? (auth.variableValues || []).filter(v => v.name) : undefined,
-    objects: custom ? (auth.objects || []).filter(Boolean) : undefined,
+    variableValues: variableValues.length ? variableValues : undefined,
+    objects: objects.length ? objects : undefined,
   };
 }
 
@@ -228,20 +242,32 @@ function selectField(label, value, opts, onChange) {
   sel.addEventListener('change', () => onChange(sel.value));
   f.appendChild(sel); return f;
 }
-function variableEditor(key) {
+// One editable row per entry of state.auth[key], plus a "+ Add" button. `build(row)` returns the
+// row's input cells and a `read()` that turns them back into the row object to store; `blank()` is
+// a fresh empty row. Every value lands in an input's .value — never markup.
+function rowsEditor(key, addLabel, blank, build) {
   const a = getState().auth; const rows = el('div', 'rows');
-  (a[key] || []).forEach((v, i) => {
+  (a[key] || []).forEach((row, i) => {
     const r = el('div', 'frow');
+    const { cells, read } = build(row);
+    const x = el('button', 'frow-x', '✕');
+    cells.forEach(c => { c.onchange = () => updateAuthRow(key, i, read()); });
+    x.onclick = () => removeAuthRow(key, i);
+    r.append(...cells, x); rows.appendChild(r);
+  });
+  const add = el('button', 'sec-add', addLabel);
+  add.onclick = () => addAuthRow(key, blank());
+  const w = el('div'); w.append(rows, add); return w;
+}
+const csv = (s) => s.split(',').map(v => v.trim()).filter(Boolean);
+// Options are our own constants; the (link-derived) current value is only compared, never injected.
+function mkSel(opts, cur) { const s = el('select', 'inp inp-sm'); s.innerHTML = opts.map(o => `<option${o === cur ? ' selected' : ''}>${o}</option>`).join(''); return s; }
+function variableEditor(key) {
+  return rowsEditor(key, '+ Add variable', () => ({ name: '', values: [] }), v => {
     const name = mkInp('formula variable name', v.name);
     const val = mkInp('values, comma-sep', (v.values || []).join(', '));
-    const x = el('button', 'frow-x', '✕');
-    name.onchange = val.onchange = () => updateAuthRow(key, i, { name: name.value.trim(), values: val.value.split(',').map(s => s.trim()).filter(Boolean) });
-    x.onclick = () => removeAuthRow(key, i);
-    r.append(name, val, x); rows.appendChild(r);
+    return { cells: [name, val], read: () => ({ name: name.value.trim(), values: csv(val.value) }) };
   });
-  const add = el('button', 'sec-add', '+ Add variable');
-  add.onclick = () => addAuthRow(key, { name: '', values: [] });
-  const w = el('div'); w.append(rows, add); return w;
 }
 function chipsEditor(list, onChange, ph) {
   const wrap = el('div', 'chips-editor');
@@ -258,51 +284,26 @@ function chipsEditor(list, onChange, ph) {
   wrap.append(chips, inp); return wrap;
 }
 function filterEditor(key) {
-  const a = getState().auth; const rows = el('div', 'rows');
-  (a[key] || []).forEach((f, i) => {
-    const r = el('div', 'frow');
+  return rowsEditor(key, '+ Add filter', () => ({ column: '', opKey: 'EQ', values: [], persist: false }), f => {
     const col = mkInp('column', f.column);
-    const op = el('select', 'inp inp-sm'); op.innerHTML = OPERATORS.map(o => `<option${o === f.opKey ? ' selected' : ''}>${o}</option>`).join('');
+    const op = mkSel(OPERATORS, f.opKey);
     const val = mkInp('values, comma-sep', (f.values || []).join(', '));
-    const x = el('button', 'frow-x', '✕');
-    const commit = () => updateAuthRow(key, i, { column: col.value.trim(), opKey: op.value, values: val.value.split(',').map(v => v.trim()).filter(Boolean), persist: f.persist });
-    col.onchange = op.onchange = val.onchange = commit;
-    x.onclick = () => removeAuthRow(key, i);
-    r.append(col, op, val, x); rows.appendChild(r);
+    return { cells: [col, op, val], read: () => ({ column: col.value.trim(), opKey: op.value, values: csv(val.value), persist: f.persist }) };
   });
-  const add = el('button', 'sec-add', '+ Add filter');
-  add.onclick = () => addAuthRow(key, { column: '', opKey: 'EQ', values: [], persist: false });
-  const w = el('div'); w.append(rows, add); return w;
 }
 function sortEditor(key) {
-  const a = getState().auth; const rows = el('div', 'rows');
-  (a[key] || []).forEach((f, i) => {
-    const r = el('div', 'frow');
+  return rowsEditor(key, '+ Add sort', () => ({ column: '', order: 'ASC', persist: false }), f => {
     const col = mkInp('column', f.column);
-    const ord = el('select', 'inp inp-sm'); ord.innerHTML = ['ASC', 'DESC'].map(o => `<option${o === f.order ? ' selected' : ''}>${o}</option>`).join('');
-    const x = el('button', 'frow-x', '✕');
-    col.onchange = ord.onchange = () => updateAuthRow(key, i, { column: col.value.trim(), order: ord.value, persist: f.persist });
-    x.onclick = () => removeAuthRow(key, i);
-    r.append(col, ord, x); rows.appendChild(r);
+    const ord = mkSel(['ASC', 'DESC'], f.order);
+    return { cells: [col, ord], read: () => ({ column: col.value.trim(), order: ord.value, persist: f.persist }) };
   });
-  const add = el('button', 'sec-add', '+ Add sort');
-  add.onclick = () => addAuthRow(key, { column: '', order: 'ASC', persist: false });
-  const w = el('div'); w.append(rows, add); return w;
 }
 function paramEditor(key) {
-  const a = getState().auth; const rows = el('div', 'rows');
-  (a[key] || []).forEach((p, i) => {
-    const r = el('div', 'frow');
+  return rowsEditor(key, '+ Add parameter', () => ({ name: '', values: [], persist: false }), p => {
     const name = mkInp('name', p.name);
     const val = mkInp('values, comma-sep', (p.values || []).join(', '));
-    const x = el('button', 'frow-x', '✕');
-    name.onchange = val.onchange = () => updateAuthRow(key, i, { name: name.value.trim(), values: val.value.split(',').map(v => v.trim()).filter(Boolean), persist: p.persist });
-    x.onclick = () => removeAuthRow(key, i);
-    r.append(name, val, x); rows.appendChild(r);
+    return { cells: [name, val], read: () => ({ name: name.value.trim(), values: csv(val.value), persist: p.persist }) };
   });
-  const add = el('button', 'sec-add', '+ Add parameter');
-  add.onclick = () => addAuthRow(key, { name: '', values: [], persist: false });
-  const w = el('div'); w.append(rows, add); return w;
 }
 function mkInp(ph, val) { const i = el('input', 'inp inp-sm'); i.placeholder = ph; i.value = val || ''; return i; }
 function addAuthRow(key, row) { const a = getState().auth; setAuth({ [key]: [...(a[key] || []), row] }); renderBody(); }
@@ -486,22 +487,7 @@ function paintGuardNotes(cfg) {
 
 async function mintToken(apply) {
   const a = getState().auth;
-  const custom = a.tokenType === 'custom';
-  const body = {
-    tokenType: a.tokenType || 'full',
-    username: a.username || undefined,
-    validitySeconds: a.validitySeconds,
-    orgId: a.orgId || undefined,
-    autoCreate: a.autoCreate || undefined,
-    displayName: a.displayName || undefined,
-    email: a.email || undefined,
-    groups: a.groups?.length ? a.groups : undefined,
-    // full path (deprecated) vs custom path (ABAC via RLS variables) — send only the relevant one.
-    userParameters: custom ? undefined : buildUserParameters(a),
-    persistOption: custom ? (a.persistOption || 'REPLACE') : undefined,
-    variableValues: custom && a.variableValues?.some(v => v.name) ? a.variableValues.filter(v => v.name) : undefined,
-    objects: custom && a.objects?.length ? a.objects.filter(Boolean) : undefined,
-  };
+  const body = tokenRequestBody(a); // the same body the SDK's getAuthToken sends
   _log('Auth', `Minting token (user: ${body.username || '(default)'}, groups: [${(a.groups || []).join(', ')}])`);
   try {
     const res = await fetch(`${API_BASE}/api/auth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

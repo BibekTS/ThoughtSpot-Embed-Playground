@@ -887,6 +887,46 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   vars that dotenv won't override; any move off dotenv (R9) must preserve that for `''` values.
 - 2026-10-01: CSS/index.html/config.js audited clean — dynamically built class names
   (`api-method--*`, `tier-*`, `badge-*`, `toast-*`, `wh-comp-*--*`) are why grep finds them unused.
+- 2026-10-01 (R2): `restError()` (`discovery.js:73`) is now the ONLY TS-REST error-body parser in
+  discovery.js; `aiError()` (`:461`) is `restError()` + the 401/403 Spotter hints. Verified
+  restError is never less informative than the old aiError (it also surfaces top-level `.message`,
+  `.debug`, and raw non-JSON bodies, and never yields `[object Object]`). metadata/search parsing is
+  shared via `ofType(arr, kind)` (`:153`) + `tagNames(m)` (`:156`); the three mappers stay separate
+  because their shapes differ (`listPersonalCopies` uses `title`/'Copy', `discoverAnswers` has no
+  `tags`). `downloadLiveboardPdf`/`assignTag` are gone; `assignTags` now REQUIRES an array.
+- 2026-10-01 (R4): the ops scripts' shared helpers live in `scripts/lib/cli.mjs` (`ok/bad/warn`,
+  `cliArgs`, `fetchT`, `isTimeout`, `resolveToken`). `cliArgs()` is `util.parseArgs` with NO
+  declared options + `strict:false`, which reproduces the old regex parser exactly for `--k=v` /
+  bare `--k` / last-repeat-wins; `--k v` is still `k:true` (value NOT consumed) — declaring
+  `type:'string'` options would silently change that. `fetchT` uses `AbortSignal.timeout`, so a
+  timeout rejects as `TimeoutError` (not `AbortError`) and now also bounds the `resp.text()` body
+  read; check with `isTimeout(e)`, never `e.name`. Keep `import 'dotenv/config'` the FIRST import
+  in each script — cli.mjs reads no env at import time, so ordering is the only contract.
+- 2026-10-01 (R4 review): CI esm-parse covers `scripts/*.mjs` (top level) + repo-root `lib/` only;
+  `scripts/lib/cli.mjs` is under no gate until M24. undici refused-connection errors carry their
+  code on `e.cause`, not `e.code` (S48).
+- 2026-10-01 (R6): `lib/spotter-mcp/router.mjs` contains a literal NUL byte (the `getMcp` cache-key
+  separator, ~L177 `${host}<NUL>${token}`), so git shows the file as **binary** (`Bin` in `--stat`,
+  no hunks) and plain `grep` prints nothing. Use `git diff --text` / `grep -a`.
+- 2026-10-01 (R3, supersedes the "built 3×" note above): the trusted-auth token body has ONE owner,
+  `tokenRequestBody(auth)` (`js/auth.js:45`). `buildTrustedAuthConfig` now returns only
+  `{tokenEndpoint, autoLogin, requestBody}` — `cfg.trustedAuth` no longer carries the individual
+  claims, so nothing may read e.g. `cfg.trustedAuth.username` (nothing did at R3). A new claim is ONE
+  edit there. Pre-R3 the two bodies differed for exactly one input: a `custom` token whose
+  `auth.objects` held only falsy entries — Mint sent `"objects":[]`, the SDK omitted the key.
+  Unreachable (`strArr` drops `''` on every load; `chipsEditor` only appends trimmed non-empty
+  strings), and both now send the SDK's form. Proven by an old-vs-new harness (40k random auth
+  states, byte-compare of the fetched JSON body).
+- 2026-10-01 (R3): `doRender` (`js/embed.js:222`) spreads a `common` object FIRST in every
+  constructor; `viz` without `answerId` FALLS THROUGH into the shared `LiveboardEmbed` case, which
+  pins `vizId` after `...flags` only via `...(section === 'viz' && {vizId})` — keep that guard, it is
+  the per-section pinning the code generator mirrors. Options are value-identical to pre-R3 for all
+  864 section×config×flags×options combos tested (incl. adversarial flags), but KEY INSERTION ORDER
+  changed (common keys now first) — irrelevant to the SDK, visible only to an `Object.keys` snapshot.
+- 2026-10-01 (R3): the four auth row editors are `rowsEditor(key, addLabel, blank, build)`
+  (`js/auth.js:248`); `build(row)` returns `{cells, read}`. `read()`'s KEY ORDER lands in the
+  shared-link hash — append new fields, don't reorder. `blank` is a factory so two "+ Add" clicks
+  never share one `values` array.
 - 2026-10-01 (S46, resolved): the drill-through snippet's date helpers are now emitted from the live
   source, e.g. `` L.push(`const tsEpochSec = ${dtEpochSec};`) `` (app.js ~L7120-7134). So
   `dtEpochSec`/`dtBucketEndSec`/`dtMDY` must stay SELF-CONTAINED (globals only: Number/Math/Date/
