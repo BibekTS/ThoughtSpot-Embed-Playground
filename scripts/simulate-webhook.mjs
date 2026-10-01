@@ -22,19 +22,13 @@
 
 import 'dotenv/config';
 import crypto from 'node:crypto';
+import { ok, bad, cliArgs, fetchT, isTimeout } from './lib/cli.mjs';
 
 const WEBHOOK_SECRET = process.env.TS_WEBHOOK_SECRET || '';
 const SIG_HEADER = process.env.TS_WEBHOOK_SIG_HEADER || 'X-TS-Signature';
 
-const ok = (m) => console.log(`  ✓ ${m}`);
-const bad = (m) => console.log(`  ✗ ${m}`);
-const warn = (m) => console.log(`  ! ${m}`);
-
 // ── args ────────────────────────────────────────────────────────────────────────────────────────
-const args = Object.fromEntries(process.argv.slice(2).map((a) => {
-  const m = /^--([^=]+)(?:=(.*))?$/.exec(a);
-  return m ? [m[1], m[2] === undefined ? true : m[2]] : [a, true];
-}));
+const args = cliArgs();
 const BASE = String(args.base || 'http://127.0.0.1:3000').replace(/\/+$/, '');
 const TARGET = args.url ? String(args.url) : `${BASE}/api/webhook`;
 const DRY = !!args['dry-run'];
@@ -150,12 +144,6 @@ if (DRY) {
   process.exit(0);
 }
 
-const fetchT = (url, opts = {}, ms = 15000) => {
-  const c = new AbortController();
-  const t = setTimeout(() => c.abort(), ms);
-  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
-};
-
 async function post(scenario) {
   // Sign over the EXACT bytes we send — the server verifies against the raw body, so re-serializing
   // differently would break verification.
@@ -203,7 +191,7 @@ try {
   if (e.code === 'ECONNREFUSED' || /ECONNREFUSED/.test(String(e.message))) {
     bad(`Could not reach ${TARGET} — is the server running? Try \`TS_ALLOW_WEBHOOK_SINK=true npm start\`.`);
   } else {
-    bad(`Errored — ${e.name === 'AbortError' ? 'timed out' : e.message}`);
+    bad(`Errored — ${isTimeout(e) ? 'timed out' : e.message}`);
   }
   process.exit(1);
 }

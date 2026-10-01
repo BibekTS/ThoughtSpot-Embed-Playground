@@ -28,3 +28,8 @@ plan:
 
 Your final message IS the plan. Concrete over comprehensive — an implementer should be able to
 execute it without re-deriving anything.
+
+**Plan to the ladder.** For each new piece of code, name the rung that justified it — reuse an
+existing helper (name it) → stdlib → native platform → installed dep → one line → only then the
+minimum code. "This needs no new code" is a valid plan. Never plan away validation at trust
+boundaries, security, a11y, or a critical rule.

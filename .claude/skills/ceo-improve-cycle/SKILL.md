@@ -1,6 +1,6 @@
 ---
 name: ceo-improve-cycle
-description: Run one continuous-improvement cycle on the ThoughtSpot Embed Playground — the CEO orchestrates the departments (Research → Engineering → Review Board ∥ QA → Records → Operations), dispatching independent agents in parallel, and ships a verified PR. Invoke as `/ceo-improve-cycle` (top open backlog item), `/ceo-improve-cycle <ID>` (a specific item like S1), `/ceo-improve-cycle N` (N cycles, parallel worktrees when items are independent), `/ceo-improve-cycle discover` (hunt for new bugs and file them), or `/ceo-improve-cycle discover fix` (hunt, file, then fix the confirmed findings). Use when the user wants to work the backlog, ship the next improvement, hunt bugs, or run the org's loop.
+description: Run one continuous-improvement cycle on the ThoughtSpot Embed Playground — the CEO orchestrates the departments (Research → Engineering → Review Board ∥ QA → Records → Operations), dispatching independent agents in parallel, and ships a verified PR. Invoke as `/ceo-improve-cycle` (top open backlog item), `/ceo-improve-cycle <ID>` (a specific item like S1), `/ceo-improve-cycle N` (N cycles, parallel worktrees when items are independent), `/ceo-improve-cycle discover` (hunt for new bugs and file them), `/ceo-improve-cycle discover fix` (hunt, file, then fix the confirmed findings), or `/ceo-improve-cycle discover simplify` (audit for over-engineering, file R-rows). Use when the user wants to work the backlog, ship the next improvement, hunt bugs, or run the org's loop.
 ---
 
 # ceo-improve-cycle — one turn of the continuous-improvement loop
@@ -33,7 +33,9 @@ ESM parse — the CEO has `qa-verifier` run the full bar serially, branch by bra
 
 **Argument:** `$ARGUMENTS` may be a backlog ID (`S1`), a count (`3` = run three cycles),
 `discover` (hunt for NEW bugs — see "Discovery mode"), `discover fix` (hunt, then immediately fix
-the confirmed findings — see "Discovery mode"), or empty (take the highest-priority `open` item).
+the confirmed findings — see "Discovery mode"), `discover simplify` (find-only: files R-rows from
+a ponytail-audit, no fix chain; `discover simplify fix` is not a mode — see "Simplify mode"), or
+empty (take the highest-priority `open` item).
 If it is a count, run that many cycles, re-reading `BACKLOG.md` each time — and when the picked
 items are **independent** (their researcher briefs prove disjoint **product** files — the records
 files `BACKLOG.md` and `docs/org-memory/*`, which every branch edits, don't count), run their
@@ -135,6 +137,10 @@ category:** if a path is not in that two-item list, it invalidates — `package.
 `vendor/`, and the org's own `.claude/*` machinery included. Do not reason from "it isn't product
 code"; reason from "is this commit's file list a subset of those two entries?". Step 7 states the
 same partition ("may differ **only** by records-only commits") — they are one rule.
+
+**Complexity lens (advisory).** When the diff adds more than ~50 lines, add one more `reviewer`
+on the **complexity** lens (`ponytail-review`) to the same message. Its findings become R-rows or
+follow-up notes, never blockers, and never count toward the auto-merge conditions.
 
 ## 5. QA — the bar the qa-verifier runs
 QA works in a **disposable worktree at the SHA under test**, not the shared checkout — the
@@ -293,6 +299,17 @@ the `fix` argument the same run chains straight into fixing, so hunt-and-fix is 
    conflicted is re-QA'd); overlapping ones go sequentially. Plain `discover` stops after filing.
 6. **Report** what was hunted, what was found, what was filed (and, with `fix`, what shipped) —
    and the micro-retro.
+
+## Simplify mode (`/ceo-improve-cycle discover simplify`)
+
+Same flow as discover, different hunt. Fan out read-only `reviewer` agents in parallel, one per repo
+area, each running the `ponytail-audit` spec (`reviewer` has no Skill tool, so: the complexity-lens
+format and carve-outs in `reviewer.md`, repo-wide, ranked biggest cut first). R1 module extractions
+are intentional — never flag or file a row that inlines a module, or that contradicts an open R/S
+row. Dedupe against existing R-rows, re-verify survivors against current code, and file them as
+R-rows grouped by area with testable acceptance ("no behaviour change; full gates green;
+net-negative lines") via a records-only PR. Correctness bugs a reviewer stumbles on go to the normal
+discover path as S-rows.
 
 ## Guardrails
 - One item per cycle unless explicitly batching. Small, reviewable diffs.

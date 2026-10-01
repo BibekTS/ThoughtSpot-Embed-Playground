@@ -104,14 +104,14 @@ light-only by design, so a dark set would be its own backlog item, not a finding
 
 **Open question, the human's call:** the upstream skill bans em-dashes in visible copy. This
 app's copy uses them throughout (about 215 JS string literals). Until the human decides
-(BACKLOG M24), an em-dash is **not** a finding.
+(BACKLOG M27), an em-dash is **not** a finding.
 
 ## Mechanical checks
 
 These checks are **evidence for the UI lens, not a gate**. M1, M2, M5 and M6 have a fixed expected
 output: anything beyond it is a finding unless the reviewer judges it safe and says why. M3 and M4
 list every candidate, so each new hit gets a one-line justification (an icon, a spinner) or is a
-finding. BACKLOG M25 tracks promoting M1 and M2 to a real gate.
+finding. BACKLOG M28 tracks promoting M1 and M2 to a real gate.
 
 How to run them:
 - **Point `CSS` at a real file.** To check a commit, write it out first:
@@ -136,7 +136,7 @@ G=/usr/bin/grep
 # M1  fill colours used as TEXT (U1). Expected: only .rail-tip-cls (navy tooltip).
 $G -niE '(^|[^-])color: *(var\(--(accent|accent-2|success|warn|danger)[,)]|#00c9de|#6366f1|#2d8b65|#c08930|#b85450)' "$CSS"
 # M2  white text on a light or bright fill (U2). Expected: .tb-mark, plus
-#     .flow-step.failed .fs-dot (#c0392b, 5.44:1). .plb-tab-close.armed is open in BACKLOG S48.
+#     .flow-step.failed .fs-dot (#c0392b, 5.44:1). .plb-tab-close.armed is open in BACKLOG S49.
 #     Hex/rgb/hsl fills are listed for judgment: compute the ratio. --danger is deliberately not
 #     listed (white on it is 4.75:1). Rule-level only: it cannot see the cascade (see below).
 awk 'BEGIN{RS="}"} { b=tolower($0) }
@@ -145,7 +145,7 @@ awk 'BEGIN{RS="}"} { b=tolower($0) }
     s=$0; while ((i = index(s, "{")) > 0) { sel = substr(s, 1, i - 1); s = substr(s, i + 1) }
     sub(/.*\*\//, "", sel); gsub(/[ \t\n]+/, " ", sel); print "M2:" sel }' "$CSS"
 # M3  opacity on text that is not disabled (U3). Judge each hit: icons, drag ghosts and
-#     already-added rows are fine. Known open hits: BACKLOG S48.
+#     already-added rows are fine. Known open hits: BACKLOG S49.
 $G -nE 'opacity: *0?\.[0-6]' "$CSS" | $G -vE 'disabled|unavailable|not-allowed|scrim|reduced-motion|::before|::after|@keyframes|[0-9]+% *\{'
 # M4  animations (U4). Each must be in a reduced-motion block or be a spinner.
 $G -nE 'animation(-name)?: *[^;]' "$CSS" | $G -vE 'animation(-name)?: *none'

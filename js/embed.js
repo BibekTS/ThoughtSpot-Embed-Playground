@@ -48,25 +48,10 @@ export { startAutoMCPFrameRenderer };
  */
 async function fetchTrustedAuthToken(config) {
   const ta = config.trustedAuth || {};
-  // Pass through the full (non-secret) claim surface so the token-claims playground
-  // can mint tokens with groups, JIT provisioning, and ABAC/RLS user_parameters.
-  // The server injects the secret_key; nothing sensitive is sent from the browser.
-  const requestBody = {
-    tokenType: ta.tokenType || undefined,
-    username: ta.username || undefined,
-    validitySeconds: ta.validitySeconds,
-    orgId: ta.orgId ?? undefined,
-    autoCreate: ta.autoCreate || undefined,
-    displayName: ta.displayName || undefined,
-    email: ta.email || undefined,
-    groups: ta.groups && ta.groups.length ? ta.groups : undefined,
-    // full path (deprecated 10.4.0.cl+)
-    userParameters: ta.userParameters || undefined,
-    // custom path — ABAC via RLS formula variables
-    persistOption: ta.persistOption || undefined,
-    variableValues: ta.variableValues && ta.variableValues.length ? ta.variableValues : undefined,
-    objects: ta.objects && ta.objects.length ? ta.objects : undefined,
-  };
+  // The body is built by auth.js tokenRequestBody() — the one owner of its shape, shared with the
+  // inspector's Mint button. It carries the full (non-secret) claim surface; the server injects the
+  // secret_key, so nothing sensitive is sent from the browser. A fresh copy per call.
+  const requestBody = { ...ta.requestBody };
   try {
     const resp = await fetch(`${API_BASE}${ta.tokenEndpoint || '/api/auth/token'}`, {
       method: 'POST',
@@ -232,56 +217,39 @@ export function doRender(section, config, callbacks, options = {}) {
     ? { lazyLoadFullHeight: true, minimumHeight: flags.minimumHeight || 600 }
     : {};
 
+  // Options every constructor shares. Spread FIRST, so the section's own options and then `flags`
+  // can still override them exactly as when each constructor listed them inline.
+  const common = {
+    frameParams: {},
+    hiddenActions,
+    disabledActions,
+    ...(rtParams && { runtimeParameters: rtParams }),
+  };
+
   let embed;
   let aiHighlightsFired = false; // 'ai-highlights' nav option fires HostEvent.AIHighlights once per render
 
   switch (section) {
     case 'search':
       embed = new SearchEmbed('#ts-embed-container', {
-        frameParams: {},
+        ...common,
         collapseDataSources: true,
         dataSources: [config.worksheetId],
-        hiddenActions,
-        disabledActions,
         ...(config.searchTokenString && {
           searchOptions: {
             searchTokenString: config.searchTokenString,
             executeSearch: config.executeSearch,
           },
         }),
-        ...(rtParams && { runtimeParameters: rtParams }),
         ...flags,
       });
       break;
 
     case 'spotter':
       embed = new SpotterEmbed('#ts-embed-container', {
-        frameParams: {},
+        ...common,
         worksheetId: config.worksheetId,
-        hiddenActions,
-        disabledActions,
-        ...(rtParams && { runtimeParameters: rtParams }),
         ...flags,
-      });
-      break;
-
-    case 'liveboard':
-    case 'liveboard-custom':
-    case 'ai-highlights':
-    case 'drillthrough':
-      embed = new LiveboardEmbed('#ts-embed-container', {
-        frameParams: {},
-        liveboardV2: true,
-        isLiveboardMasterpiecesEnabled: true,
-        hiddenActions,
-        disabledActions,
-        customActions,
-        ...(rtParams && { runtimeParameters: rtParams }),
-        ...fhExtra,
-        ...flags,
-        // The ids go LAST: `flags` comes from the shared link, and a stray `liveboardId`/`vizId`
-        // key in it must not be able to redirect the embed away from the picked object.
-        liveboardId: config.liveboardId,
       });
       break;
 
@@ -292,30 +260,34 @@ export function doRender(section, config, callbacks, options = {}) {
         // loads in a SearchEmbed via the answerId prop; hideSearchBar keeps it presentation-
         // only so it reads like a single viz rather than a live search session.
         embed = new SearchEmbed('#ts-embed-container', {
-          frameParams: {},
-          hiddenActions,
-          disabledActions,
+          ...common,
           customActions,
-          ...(rtParams && { runtimeParameters: rtParams }),
           ...flags,
           answerId: config.answerId,     // after ...flags — a shared link must not re-point it
           hideSearchBar: true,
         });
-      } else {
-        embed = new LiveboardEmbed('#ts-embed-container', {
-          frameParams: {},
-          liveboardV2: true,
-          isLiveboardMasterpiecesEnabled: true,
-          hiddenActions,
-          disabledActions,
-          customActions,
-          ...(rtParams && { runtimeParameters: rtParams }),
-          ...fhExtra,
-          ...flags,
-          liveboardId: config.liveboardId,   // after ...flags — see the 'liveboard' case above
-          vizId: config.vizId,
-        });
+        break;
       }
+      // A viz on a Liveboard: the same LiveboardEmbed as below, plus vizId.
+      // falls through
+    case 'liveboard':
+    case 'liveboard-custom':
+    case 'ai-highlights':
+    case 'drillthrough':
+      embed = new LiveboardEmbed('#ts-embed-container', {
+        ...common,
+        liveboardV2: true,
+        isLiveboardMasterpiecesEnabled: true,
+        customActions,
+        ...fhExtra,
+        ...flags,
+        // The ids go LAST: `flags` comes from the shared link, and a stray `liveboardId`/`vizId`
+        // key in it must not be able to redirect the embed away from the picked object. vizId is
+        // pinned for 'viz' only — the plain Liveboard sections leave a flags vizId alone, and the
+        // code generator in app.js mirrors exactly that per-section pinning.
+        liveboardId: config.liveboardId,
+        ...(section === 'viz' && { vizId: config.vizId }),
+      });
       break;
 
     case 'fullapp': {
@@ -324,15 +296,12 @@ export function doRender(section, config, callbacks, options = {}) {
         appFlags.pageId = Page[appFlags.pageId] ?? Page.Home;
       }
       embed = new AppEmbed('#ts-embed-container', {
-        frameParams: {},
+        ...common,
         showPrimaryNavbar: false,
         pageId: Page.Home,
         modularHomeExperience: true,
-        hiddenActions,
-        disabledActions,
         customActions,
-        ...(rtParams && { runtimeParameters: rtParams }),
-        ...(appFlags.fullHeight ? { lazyLoadFullHeight: true, minimumHeight: appFlags.minimumHeight || 600 } : {}),
+        ...fhExtra,
         ...appFlags,
       });
       break;
