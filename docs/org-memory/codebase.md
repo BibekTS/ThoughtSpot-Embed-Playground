@@ -887,3 +887,8 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   vars that dotenv won't override; any move off dotenv (R9) must preserve that for `''` values.
 - 2026-10-01: CSS/index.html/config.js audited clean — dynamically built class names
   (`api-method--*`, `tier-*`, `badge-*`, `toast-*`, `wh-comp-*--*`) are why grep finds them unused.
+- 2026-10-01 (R6): `lib/spotter-mcp/router.mjs` contains a literal NUL byte (the `getMcp` cache-key
+  separator, ~L177 `${host}<NUL>${token}`), so git shows the file as **binary** (`Bin` in `--stat`,
+  no hunks) and plain `grep` prints nothing. Use `git diff --text` / `grep -a`. The route preamble
+  is now one `requireCaller(req,res)` (host from `?tsHost=` for any non-POST, since Express routes
+  HEAD through GET handlers) + `resetOnAuthError(err)`; the 401/400 bodies are unchanged.
