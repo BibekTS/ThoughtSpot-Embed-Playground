@@ -894,3 +894,14 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   shared via `ofType(arr, kind)` (`:153`) + `tagNames(m)` (`:156`); the three mappers stay separate
   because their shapes differ (`listPersonalCopies` uses `title`/'Copy', `discoverAnswers` has no
   `tags`). `downloadLiveboardPdf`/`assignTag` are gone; `assignTags` now REQUIRES an array.
+- 2026-10-01 (R4): the ops scripts' shared helpers live in `scripts/lib/cli.mjs` (`ok/bad/warn`,
+  `cliArgs`, `fetchT`, `isTimeout`, `resolveToken`). `cliArgs()` is `util.parseArgs` with NO
+  declared options + `strict:false`, which reproduces the old regex parser exactly for `--k=v` /
+  bare `--k` / last-repeat-wins; `--k v` is still `k:true` (value NOT consumed) — declaring
+  `type:'string'` options would silently change that. `fetchT` uses `AbortSignal.timeout`, so a
+  timeout rejects as `TimeoutError` (not `AbortError`) and now also bounds the `resp.text()` body
+  read; check with `isTimeout(e)`, never `e.name`. Keep `import 'dotenv/config'` the FIRST import
+  in each script — cli.mjs reads no env at import time, so ordering is the only contract.
+- 2026-10-01 (R4 review): CI esm-parse covers `scripts/*.mjs` (top level) + repo-root `lib/` only;
+  `scripts/lib/cli.mjs` is under no gate until M24. undici refused-connection errors carry their
+  code on `e.cause`, not `e.code` (S48).

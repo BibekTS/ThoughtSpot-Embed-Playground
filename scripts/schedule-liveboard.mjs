@@ -23,18 +23,12 @@
  */
 
 import 'dotenv/config';
+import { ok, bad, warn, cliArgs, fetchT, isTimeout, resolveToken } from './lib/cli.mjs';
 
 const HOST = (process.env.THOUGHTSPOT_HOST || '').replace(/\/+$/, '');
 const SECRET_KEY = process.env.TS_SECRET_KEY || '';
 
-const ok = (m) => console.log(`  ✓ ${m}`);
-const bad = (m) => console.log(`  ✗ ${m}`);
-const warn = (m) => console.log(`  ! ${m}`);
-
-const args = Object.fromEntries(process.argv.slice(2).map((a) => {
-  const m = /^--([^=]+)(?:=(.*))?$/.exec(a);
-  return m ? [m[1], m[2] === undefined ? true : m[2]] : [a, true];
-}));
+const args = cliArgs();
 const list = (v) => String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
 
 const LIVEBOARD = args.liveboard || '';
@@ -100,40 +94,18 @@ if (DRY) {
   process.exit(0);
 }
 
-const fetchT = (url, opts = {}, ms = 20000) => {
-  const c = new AbortController();
-  const t = setTimeout(() => c.abort(), ms);
-  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
-};
-
-async function resolveToken() {
-  const explicit = args.token || process.env.TS_ADMIN_TOKEN || '';
-  if (explicit) { ok('Using provided bearer token'); return explicit; }
-  if (!SECRET_KEY) { bad('No --token / TS_ADMIN_TOKEN, and TS_SECRET_KEY is unset — cannot obtain a token.'); process.exit(1); }
-  if (!USER) { bad('Minting a token needs a user — pass --user=<name> or set TS_DEFAULT_USERNAME.'); process.exit(1); }
-  const resp = await fetchT(`${HOST}/api/rest/2.0/auth/token/full`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ username: USER, secret_key: SECRET_KEY, validity_time_in_sec: 300 }),
-  });
-  const text = await resp.text();
-  let json; try { json = JSON.parse(text); } catch { json = null; }
-  if (!resp.ok || !json?.token) {
-    bad(`Could not mint a token for "${USER}" (HTTP ${resp.status}). Pass an admin --token instead.`);
-    console.log(`     upstream: ${(text || '').slice(0, 300)}`);
-    process.exit(1);
-  }
-  ok(`Minted a short-lived token for "${USER}"`);
-  return json.token;
-}
+const SCHEDULE_MS = 20000;
 
 try {
-  const token = await resolveToken();
+  const token = await resolveToken({
+    host: HOST, secretKey: SECRET_KEY, user: USER, userHint: 'name', ms: SCHEDULE_MS,
+    explicit: args.token || process.env.TS_ADMIN_TOKEN || '',
+  });
   const resp = await fetchT(`${HOST}/api/rest/2.0/schedules/create`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
-  });
+  }, SCHEDULE_MS);
   const text = await resp.text();
   let json; try { json = JSON.parse(text); } catch { json = null; }
 
@@ -153,6 +125,6 @@ try {
   console.log('  3. Open the app → 🔔 Webhooks tab. One webhook per rendered report will arrive; open each recipient\'s file to see exactly what they got.\n');
   process.exit(0);
 } catch (e) {
-  bad(`Errored — ${e.name === 'AbortError' ? 'timed out' : e.message}`);
+  bad(`Errored — ${isTimeout(e) ? 'timed out' : e.message}`);
   process.exit(1);
 }

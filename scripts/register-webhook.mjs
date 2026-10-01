@@ -22,21 +22,15 @@
  */
 
 import 'dotenv/config';
+import { ok, bad, warn, cliArgs, fetchT, isTimeout, resolveToken } from './lib/cli.mjs';
 
 const HOST = (process.env.THOUGHTSPOT_HOST || '').replace(/\/+$/, '');
 const SECRET_KEY = process.env.TS_SECRET_KEY || '';
 const WEBHOOK_SECRET = process.env.TS_WEBHOOK_SECRET || '';
 const SIG_HEADER = process.env.TS_WEBHOOK_SIG_HEADER || 'X-TS-Signature';
 
-const ok = (m) => console.log(`  ✓ ${m}`);
-const bad = (m) => console.log(`  ✗ ${m}`);
-const warn = (m) => console.log(`  ! ${m}`);
-
 // ── args ──────────────────────────────────────────────────────────────────────────────────────
-const args = Object.fromEntries(process.argv.slice(2).map((a) => {
-  const m = /^--([^=]+)(?:=(.*))?$/.exec(a);
-  return m ? [m[1], m[2] === undefined ? true : m[2]] : [a, true];
-}));
+const args = cliArgs();
 const URL_TARGET = args.url || '';
 const EVENT = args.event || 'LIVEBOARD_SCHEDULE';
 const NAME = args.name || 'Embed Playground demo';
@@ -75,36 +69,11 @@ if (DRY) {
   process.exit(0);
 }
 
-const fetchT = (url, opts = {}, ms = 15000) => {
-  const c = new AbortController();
-  const t = setTimeout(() => c.abort(), ms);
-  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
-};
-
-// ── resolve a bearer token ──────────────────────────────────────────────────────────────────────
-async function resolveToken() {
-  const explicit = args.token || process.env.TS_ADMIN_TOKEN || '';
-  if (explicit) { ok('Using provided bearer token'); return explicit; }
-  if (!SECRET_KEY) { bad('No --token / TS_ADMIN_TOKEN, and TS_SECRET_KEY is unset — cannot obtain a token.'); process.exit(1); }
-  if (!USER) { bad('Minting a token needs a user — pass --user=<admin> or set TS_DEFAULT_USERNAME.'); process.exit(1); }
-  const resp = await fetchT(`${HOST}/api/rest/2.0/auth/token/full`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ username: USER, secret_key: SECRET_KEY, validity_time_in_sec: 300 }),
-  });
-  const text = await resp.text();
-  let json; try { json = JSON.parse(text); } catch { json = null; }
-  if (!resp.ok || !json?.token) {
-    bad(`Could not mint a token for "${USER}" (HTTP ${resp.status}). Pass an admin --token instead.`);
-    console.log(`     upstream: ${(text || '').slice(0, 300)}`);
-    process.exit(1);
-  }
-  ok(`Minted a short-lived token for "${USER}"`);
-  return json.token;
-}
-
 try {
-  const token = await resolveToken();
+  const token = await resolveToken({
+    host: HOST, secretKey: SECRET_KEY, user: USER, userHint: 'admin',
+    explicit: args.token || process.env.TS_ADMIN_TOKEN || '',
+  });
 
   const resp = await fetchT(`${HOST}/api/rest/2.0/webhooks/create`, {
     method: 'POST',
@@ -131,6 +100,6 @@ try {
   console.log('     A delivery will appear in the inbox within a few seconds.\n');
   process.exit(0);
 } catch (e) {
-  bad(`Errored — ${e.name === 'AbortError' ? 'timed out' : e.message}`);
+  bad(`Errored — ${isTimeout(e) ? 'timed out' : e.message}`);
   process.exit(1);
 }
