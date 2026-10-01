@@ -100,3 +100,6 @@ This log is the raw material for org retrospectives (BACKLOG M2).
   already switched it to a new branch. Nothing was swept (caught at `git diff --stat` before
   staging), but a CEO that branches in the shared checkout hands a concurrent actor the wrong
   branch to commit onto. Moved the cycle into a worktree. Filed as M22.
+- 2026-10-01 (R2): clean cycle. Friction: worktree-isolated agents have no `node`/`npm` on PATH
+  (nvm) and no `node_modules`; every agent rediscovered it. `lsof -i :A -i :B` exits 1 if EITHER
+  port is free, so judge port-freeness on empty output, not exit code. Both filed under M23.

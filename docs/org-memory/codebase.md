@@ -887,3 +887,10 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   vars that dotenv won't override; any move off dotenv (R9) must preserve that for `''` values.
 - 2026-10-01: CSS/index.html/config.js audited clean — dynamically built class names
   (`api-method--*`, `tier-*`, `badge-*`, `toast-*`, `wh-comp-*--*`) are why grep finds them unused.
+- 2026-10-01 (R2): `restError()` (`discovery.js:73`) is now the ONLY TS-REST error-body parser in
+  discovery.js; `aiError()` (`:461`) is `restError()` + the 401/403 Spotter hints. Verified
+  restError is never less informative than the old aiError (it also surfaces top-level `.message`,
+  `.debug`, and raw non-JSON bodies, and never yields `[object Object]`). metadata/search parsing is
+  shared via `ofType(arr, kind)` (`:153`) + `tagNames(m)` (`:156`); the three mappers stay separate
+  because their shapes differ (`listPersonalCopies` uses `title`/'Copy', `discoverAnswers` has no
+  `tags`). `downloadLiveboardPdf`/`assignTag` are gone; `assignTags` now REQUIRES an array.

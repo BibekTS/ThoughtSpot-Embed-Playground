@@ -69,7 +69,7 @@ async function apiRest(host, path, { method = 'POST', body } = {}) {
   }
 }
 
-/** Pull a concise message out of a TS REST error response (mirrors downloadLiveboardReport's parser). */
+/** Pull a concise message out of a TS REST error response (the one parser every caller here shares). */
 async function restError(resp) {
   let detail = `HTTP ${resp.status}`;
   const raw = await resp.text().catch(() => '');
@@ -149,6 +149,12 @@ async function probeReachable(host) {
   }
 }
 
+/** The top-level metadata/search results of one type (a non-array body yields []). */
+const ofType = (arr, kind) => (Array.isArray(arr) ? arr : []).filter(m => m.metadata_type === kind);
+
+/** A header's tag names (needs include_headers:true); TS returns tag objects or bare names. */
+const tagNames = (m) => (m.metadata_header?.tags || []).map(t => t?.name || t).filter(Boolean);
+
 /**
  * List worksheets/models and liveboards in parallel.
  *
@@ -174,14 +180,8 @@ export async function discoverObjects(host, tagFilter = '') {
     const [wsResp, lbResp] = await Promise.all([search('LOGICAL_TABLE'), search('LIVEBOARD', true)]);
     const pick = async (resp, kind) => {
       if (!resp.ok) return [];
-      const arr = await resp.json();
-      return (Array.isArray(arr) ? arr : [])
-        .filter(m => m.metadata_type === kind)
-        .map(m => ({
-          id: m.metadata_id,
-          name: m.metadata_name || 'Untitled',
-          tags: (m.metadata_header?.tags || []).map(t => t?.name || t).filter(Boolean),
-        }));
+      return ofType(await resp.json(), kind)
+        .map(m => ({ id: m.metadata_id, name: m.metadata_name || 'Untitled', tags: tagNames(m) }));
     };
     return {
       ok: true,
@@ -240,9 +240,7 @@ export async function discoverAnswers(host) {
       }),
     });
     if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
-    const arr = await resp.json();
-    const answers = (Array.isArray(arr) ? arr : [])
-      .filter(m => m.metadata_type === 'ANSWER')
+    const answers = ofType(await resp.json(), 'ANSWER')
       .map(m => ({ id: m.metadata_id, name: m.metadata_name || 'Untitled' }));
     return { ok: true, answers };
   } catch (err) {
@@ -301,7 +299,7 @@ export async function copyLiveboard(host, sourceId, title, description = '') {
 }
 
 /** Create the tag if it doesn't exist (idempotent enough for demo use). Returns true on success/exists. */
-export async function ensureTag(host, tagName) {
+async function ensureTag(host, tagName) {
   try {
     const resp = await apiRest(host, '/api/rest/2.0/tags/create', { method: 'POST', body: { name: tagName } });
     return resp.ok || resp.status === 409 || resp.status === 400; // 400/409 typically = already exists
@@ -318,7 +316,7 @@ export const sourceTag = (sourceId) => `src:${sourceId}`;
 /** Ensure each tag exists, then assign them all to a liveboard in one call. Requires edit access (the owner). */
 export async function assignTags(host, metadataId, tags) {
   try {
-    const list = (Array.isArray(tags) ? tags : [tags]).filter(Boolean);
+    const list = tags.filter(Boolean);
     if (!list.length) return { ok: true, status: 200, error: '' };
     for (const t of list) await ensureTag(host, t);
     const resp = await apiRest(host, '/api/rest/2.0/tags/assign', {
@@ -327,11 +325,6 @@ export async function assignTags(host, metadataId, tags) {
     });
     return { ok: resp.ok, status: resp.status, error: resp.ok ? '' : await restError(resp) };
   } catch (err) { return { ok: false, error: err.message }; }
-}
-
-/** Ensure a tag exists, then assign it to a liveboard. Requires edit access (the caller owns the copy). */
-export async function assignTag(host, metadataId, tag) {
-  return assignTags(host, metadataId, [tag]);
 }
 
 /**
@@ -356,15 +349,13 @@ export async function listPersonalCopies(host, _sourceId, { userName, tag } = {}
       },
     });
     if (!resp.ok) return { ok: false, error: await restError(resp), status: resp.status };
-    const data = await resp.json();
-    const copies = (Array.isArray(data) ? data : [])
-      .filter(m => m.metadata_type === 'LIVEBOARD')
+    const copies = ofType(await resp.json(), 'LIVEBOARD')
       .map(m => ({
         id: m.metadata_id,
         title: m.metadata_name || 'Copy',
         // Each copy's tags (from metadata_header) let us attribute it to a source board via its src:<guid>
         // tag, instead of guessing from the title. include_headers:true (set above) makes tags available.
-        tags: (m.metadata_header?.tags || []).map(t => t?.name || t).filter(Boolean),
+        tags: tagNames(m),
       }));
     return { ok: true, copies };
   } catch (err) { return { ok: false, error: err.message }; }
@@ -387,7 +378,7 @@ export async function deleteLiveboard(host, id) {
  * but a single-viz board comes back as a plain CSV. We can't know which ahead of time, so
  * we trust the response Content-Type when present and fall back to the table below.
  */
-export const REPORT_FORMATS = {
+const REPORT_FORMATS = {
   PDF:  { mime: 'application/pdf', ext: 'pdf' },
   XLSX: { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ext: 'xlsx' },
   CSV:  { mime: 'text/csv', ext: 'csv' },
@@ -448,22 +439,7 @@ export async function downloadLiveboardReport(host, liveboardId, format = 'PDF',
       headers: { Accept: 'application/octet-stream' },
       body: JSON.stringify(body),
     });
-    if (!resp.ok) {
-      // Read the body once as text, then try to parse — the 400 error object is generic, so dig
-      // through .message/.debug and fall back to the raw text so the real reason surfaces. Only take a
-      // non-empty STRING from message/debug — TS can nest a non-string there (→ "[object Object]").
-      let detail = `HTTP ${resp.status}`;
-      const raw = await resp.text().catch(() => '');
-      if (raw) {
-        try {
-          const e = JSON.parse(raw);
-          const err = e?.error ?? e;
-          const pick = [err?.message, err?.debug].find((v) => typeof v === 'string' && v.trim());
-          detail = pick || (typeof err === 'string' ? err : JSON.stringify(err)) || detail;
-        } catch (_) { detail = raw.slice(0, 300); }
-      }
-      return { ok: false, error: String(detail).slice(0, 500), status: resp.status };
-    }
+    if (!resp.ok) return { ok: false, error: await restError(resp), status: resp.status };
     const raw = await resp.blob();
     // A multi-viz CSV comes back as a ZIP — honour the server's Content-Type if it tells us.
     const ct = resp.headers.get('content-type') || '';
@@ -476,23 +452,14 @@ export async function downloadLiveboardReport(host, liveboardId, format = 'PDF',
   }
 }
 
-/** Back-compat shim: the original PDF-only helper, now a thin wrapper over the format-aware one. */
-export function downloadLiveboardPdf(host, liveboardId, overrideFilters = []) {
-  return downloadLiveboardReport(host, liveboardId, 'PDF', overrideFilters);
-}
-
 // ── Spotter AI (REST) — headless insights ─────────────────────────────────────
 // Both endpoints require Spotter enabled on the cluster + the CAN_USE_SPOTTER privilege, and at
 // least view access to the data source. They are Beta (relevant-questions: 10.13.0.cl+, answer:
 // 10.4.0.cl+). They use the same auth as discovery (session cookie or in-memory bearer token).
 
-/** Pull a concise, actionable message out of a TS REST AI error response. */
+/** restError() plus an actionable hint for the two auth failures the AI endpoints commonly return. */
 async function aiError(resp) {
-  let detail = `HTTP ${resp.status}`;
-  try {
-    const e = await resp.json();
-    detail = e?.error?.message || (typeof e?.error === 'string' ? e.error : JSON.stringify(e?.error)) || detail;
-  } catch (_) {}
+  let detail = await restError(resp);
   if (resp.status === 403) detail += ' — needs the CAN_USE_SPOTTER privilege and Spotter enabled on the cluster.';
   if (resp.status === 401) detail += ' — not authenticated (session expired or token rejected).';
   return detail;
