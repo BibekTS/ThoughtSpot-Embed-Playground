@@ -110,3 +110,7 @@ This log is the raw material for org retrospectives (BACKLOG M2).
   markers in records files to the R3 branch (fixed forward before any PR, QA-confirmed). Lesson: gate
   every merge-commit on `git grep -nE '^(<<<<<<<|=======|>>>>>>>)'` being empty — never `;`-chain the
   commit after the resolver. Also: PR #42 was merged by a concurrent actor seconds before the CEO.
+- 2026-10-01 (M26): the Review Board caught the one real design flaw — ponytail-audit's
+  "single-importer module = bloat" hunt directly opposes R1's extraction program, which would have
+  made `discover simplify` oscillate the backlog. QA "FAIL" was a CEO-authored bar error (required
+  `tools:` on every agent; implementer intentionally has none) — gate specs need the same care as code.
