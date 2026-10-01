@@ -114,3 +114,10 @@ This log is the raw material for org retrospectives (BACKLOG M2).
   "single-importer module = bloat" hunt directly opposes R1's extraction program, which would have
   made `discover simplify` oscillate the backlog. QA "FAIL" was a CEO-authored bar error (required
   `tools:` on every agent; implementer intentionally has none) — gate specs need the same care as code.
+- 2026-10-01 (M27, UI lens): PR #38 (a taste-skill audit run by hand, outside the cycle) found 84
+  AA contrast failures that every prior Review Board pass had cleared, because no lens looked at
+  what the user sees. `docs/ui-quality-playbook.md` is now that lens. Two lessons. (1) The first
+  draft's shell checks were prose that had never been run adversarially: the reviewer found a
+  `git git` typo, a QA step that read the tree the mutation test had just reverted, and M2 blind
+  to a live 3.91:1 failure. The fix was a fixture of known violations, the M9/M10 lesson applied to
+  checks. (2) This session also hit the shared-checkout collision already filed as M22.

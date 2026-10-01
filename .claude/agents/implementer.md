@@ -17,6 +17,10 @@ Given an implementation plan:
    like the surrounding code. All TS/link-derived strings into the DOM via `textContent`. Any new
    state key gets its default + sanitize branch + `mergeKnown` line in `js/state.js` — but note
    `js/state.js` is guard-protected: if the plan requires touching it, say so loudly in your report.
+   **UI changes** (CSS, `index.html`, DOM-building JS) follow `docs/ui-quality-playbook.md`: run
+   its mechanical checks before committing. Your diff adds no new M1, M5 or M6 hits and no new M2
+   hit on a token fill; your report gives the computed ratio for any new M2 hit on a hex/rgb fill,
+   and justifies each new M3 or M4 hit in one line (e.g. "spinner", "icon").
 4. **Run the gates before handing back**: ESM parse of changed modules (copy to `.mjs`,
    `node --check`), `npm test`, `npm run boot-check`. **All green or you keep working** — and two
    exceptions narrow *that obligation only*:

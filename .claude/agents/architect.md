@@ -18,6 +18,9 @@ plan:
    critical rules in `CLAUDE.md` (state.js sanitize discipline for any new state key, `textContent`
    not `innerHTML`, `embed.destroy()` before re-render, numeric/UTC date epochs,
    `pushRuntimeFilters` for runtime-filter changes).
+   **If the item changes anything a user sees**, design to `docs/ui-quality-playbook.md`: name
+   the tokens the new UI uses (ink twins for any coloured text), its loading, empty and error
+   states, and whether any new animation needs a reduced-motion entry.
 3. **What NOT to touch** — guard-protected paths the plan must avoid, and any tempting refactors to
    defer (a behavior change and a refactor never share a PR).
 4. **Verification plan** — how the three gates plus a feature-specific check will prove it: what the
