@@ -1213,11 +1213,17 @@ function bindBottomPanel() {
   let codeFs = applyCodeFontSize(readPref('pg.codeFontSize', 12));
   $('#code-smaller').addEventListener('click', () => { codeFs = applyCodeFontSize(codeFs - 1); });
   $('#code-bigger').addEventListener('click', () => { codeFs = applyCodeFontSize(codeFs + 1); });
-  setBottomExpanded(readPref('pg.bottomExpanded', '0') === '1');
+  setBottomExpanded(false);
   $('#bp-expand').addEventListener('click', () => {
     const on = $('#bottom').dataset.expanded !== 'true';
     setBottomExpanded(on);
-    if (on && $('#bottom').dataset.open === 'false') toggleBottom(true); // expanding a closed panel opens it
+    if (on && $('#bottom').dataset.open === 'false') toggleBottom(true); // full screen opens a closed panel
+  });
+  document.addEventListener('keydown', (e) => {
+    // Leave Esc to an open modal first; only exit full screen when nothing else claims it.
+    if (e.key !== 'Escape' || $('#bottom').dataset.expanded !== 'true') return;
+    if (document.querySelector('.modal:not([hidden]), [role="dialog"]:not([hidden])')) return;
+    setBottomExpanded(false);
   });
 }
 function toggleBottom(force) {
@@ -7584,9 +7590,9 @@ function setBottomExpanded(on) {
   $('#bottom').dataset.expanded = String(on);
   const b = $('#bp-expand');
   b.setAttribute('aria-pressed', String(on));
-  b.textContent = on ? '⤡ Shrink' : '⤢ Expand';
-  b.title = on ? 'Back to the normal panel height' : 'Make the panel taller';
-  writePref('pg.bottomExpanded', on ? '1' : '0');
+  b.textContent = on ? '✕ Exit full screen' : '⛶ Full screen';
+  b.title = on ? 'Back to the normal panel (Esc)' : 'Full screen (Esc to exit)';
+  // Not persisted: reopening the app straight into a full-screen panel would hide the embed.
 }
 
 // Generated REST snippet for the headless AI Insights section (no Visual Embed SDK).

@@ -401,8 +401,14 @@ a.tb-icon-btn { display: inline-flex; align-items: center; text-decoration: none
 .bp-chevron.open { transform: rotate(180deg); }
 .bp-body { height: 0; overflow: hidden; transition: height .2s ease; }
 #bottom[data-open="true"] .bp-body { height: var(--bp-open); border-top: 1px solid var(--border); }
-/* Expand: a reading-size panel (code, lifecycle) without leaving the page. */
-#bottom[data-open="true"][data-expanded="true"] .bp-body { height: 72vh; }
+/* Full screen: the panel (code, lifecycle, APIs…) covers the whole window. Esc exits.
+   Below modals (z 1000) so the payload/email dialogs still open over it. */
+#bottom[data-expanded="true"] {
+  /* !important: beats the phone layout's fixed bottom-sheet offsets (top: 34vh). */
+  position: fixed; inset: 0 !important; z-index: 950; border-top: none;
+}
+#bottom[data-expanded="true"] .bp-body { height: calc(100vh - var(--bp-collapsed)) !important; flex: 1 1 auto; }
+#bottom[data-expanded="true"] #bp-toggle { display: none; }
 .bp-pane { display: none; height: 100%; overflow: auto; }
 .bp-pane.active { display: block; }
 
