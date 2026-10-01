@@ -484,8 +484,21 @@ async function runDrillthroughProbe(browser) {
     } finally {
       rmSync(snipDir, { recursive: true, force: true });
     }
+    // Parsing is not enough: a live helper that reaches for another app-level identifier still
+    // parses, then throws ReferenceError at click time in the user's page. So RUN the emitted
+    // helper block in a scope that has only globals. Expected values verified by hand (UTC):
+    // 1769644800 = 2026-01-29T00:00Z, and that month ends 2026-01-31T23:59:59Z = 1769903999.
+    let helpersRun = false;
+    const block = /const tsDateName = [\s\S]*?\nconst tsMDY = function dtMDY\([\s\S]*?\n\};/.exec(code)?.[0];
+    try {
+      const got = block && new Function(`${block}\nreturn [tsEpochSec(1769644800000), tsBucketEnd('month', 1769644800), tsMDY(1769644800), tsDateName('Order Qtr')];`)();
+      helpersRun = JSON.stringify(got) === JSON.stringify([1769644800, 1769903999, '01/29/2026', true]);
+    } catch { helpersRun = false; }
     const snippetOk = !!liveRe && code.includes(`const tsDateName = (c) => ${liveRe}.test(c);`)
-      && /const tsEpochSec = function dtEpochSec\(/.test(code) && snippetParses;
+      && /const tsEpochSec = function dtEpochSec\(/.test(code)
+      && /const tsBucketEnd = function dtBucketEndSec\(/.test(code)
+      && /const tsMDY = function dtMDY\(/.test(code)
+      && snippetParses && helpersRun;
 
     // Drive the REAL dispatcher; only the network is faked.
     const run = await probe.evaluate(async () => {
@@ -1318,7 +1331,7 @@ try {
   console.log('');
   console.log(`Drill-through probe (S22) — rail item + inspector panel render: ${dtp.railOk && dtp.panelOk}`);
   console.log(`Drill-through probe (S22) — code-gen emits '<modelGuid>::<column>' scoping + both handlers: ${dtp.codeOk}`);
-  console.log(`Drill-through probe (S46) — snippet date helpers carry the live CFB_DATE_NAME_RE and the snippet parses: ${dtp.snippetOk}`);
+  console.log(`Drill-through probe (S46) — snippet date helpers come from the live source (regex + 3 fns), parse, and RUN standalone: ${dtp.snippetOk}`);
   console.log(`Drill-through probe (S22) — clicked point scopes the searchdata query: ${dtp.scopedQuery}`);
   console.log(`Drill-through probe (S22) — a FULL page keeps Load more alive; offset advances and appends: ${dtp.pagingOk}`);
   console.log(`Drill-through probe (S22) — badge stays neutral ("N+") until the count is known, then reconciles: ${dtp.badgeOk}`);
