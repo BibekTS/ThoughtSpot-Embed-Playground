@@ -94,3 +94,9 @@ This log is the raw material for org retrospectives (BACKLOG M2).
   at the code. Lesson, and it is the M9/M10 lesson again one level up: **a gate whose environment
   disables the code path it asserts is untested code**, exactly as prose describing a shell workflow
   is untested code. Both must be executed adversarially — mutation-tested — not merely read.
+
+- 2026-10-01 (ponytail audit → records): a concurrent session edited `.claude/agents/*`, the cycle
+  skill and `docs/ui-quality-playbook.md` in the SHARED checkout mid-cycle, after this session had
+  already switched it to a new branch. Nothing was swept (caught at `git diff --stat` before
+  staging), but a CEO that branches in the shared checkout hands a concurrent actor the wrong
+  branch to commit onto. Moved the cycle into a worktree. Filed as M22.
