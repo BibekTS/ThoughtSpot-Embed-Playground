@@ -18,6 +18,8 @@
  *   ✓ Drill-through probe (BACKLOG S22): the column-scoped action reaches the generated code as
  *     '<modelGuid>::<column>', a clicked point scopes the searchdata query, Load more advances
  *     record_offset, the KPI/row-count badge reconciles, and a javascript: link template is refused
+ *   ✓ Drill-through snippet probe (BACKLOG S46): the generated snippet's date helpers carry the
+ *     LIVE CFB_DATE_NAME_RE (read from js/app.js) and the whole snippet parses as an ES module
  *   ✓ Custom-styles paste probe (BACKLOG S37): a pasted rules object is PARSED, never evaluated —
  *     an embedded expression must not run, while a plain rules object still adds its rule
  *   ✓ Connect-race probe (BACKLOG S33): a slow connect to host A that resolves after a connect to
@@ -29,8 +31,9 @@
  * (GitHub's ubuntu runners ship google-chrome). Requires devDependency puppeteer-core.
  */
 
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -468,6 +471,22 @@ async function runDrillthroughProbe(browser) {
       && code.includes('EmbedEvent.VizPointClick') && code.includes('HostEvent.GetFilters')
       && code.includes('record_offset: offset');
 
+    // S46: the snippet's date helpers are emitted from the live functions, so the regex the snippet
+    // tests column names with must be byte-identical to the app's — read straight from the source,
+    // never re-typed here (a re-typed copy is exactly the drift this guards). And the pasted snippet
+    // must still parse as an ES module (`node --check` parses only; the SDK import is not resolved).
+    const liveRe = /^const CFB_DATE_NAME_RE = (\/.+\/[a-z]*);$/m.exec(readFileSync(path.join(ROOT, 'js', 'app.js'), 'utf8'))?.[1];
+    const snipDir = mkdtempSync(path.join(os.tmpdir(), 'dt-snippet-'));
+    let snippetParses = false;
+    try {
+      writeFileSync(path.join(snipDir, 'snippet.mjs'), code);
+      snippetParses = spawnSync(process.execPath, ['--check', path.join(snipDir, 'snippet.mjs')]).status === 0;
+    } finally {
+      rmSync(snipDir, { recursive: true, force: true });
+    }
+    const snippetOk = !!liveRe && code.includes(`const tsDateName = (c) => ${liveRe}.test(c);`)
+      && /const tsEpochSec = function dtEpochSec\(/.test(code) && snippetParses;
+
     // Drive the REAL dispatcher; only the network is faked.
     const run = await probe.evaluate(async () => {
       const cols = ['Meeting Id', 'User Name', 'Booked at'];
@@ -787,7 +806,7 @@ async function runDrillthroughProbe(browser) {
       && !!dateCarried && dateCarried.values.length === 1
       && dateCarried.values[0] === 1769644800 && dateCarried.types[0] === 'number'
       && /Order Date: 2026-01-29/.test(run.carried.bar);
-    return { railOk, panelOk, codeOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk,
+    return { railOk, panelOk, codeOk, snippetOk, scopedQuery, pagingOk, badgeOk, linkOk, modalOk, tableClickOk,
       presetOk, pinOk, drillScopeOk, monthRangeOk, raceOk, carriedOk, monthQuery: run.monthQuery, carried: run.carried, probeErrors };
   } finally {
     await probe.close();
@@ -1299,6 +1318,7 @@ try {
   console.log('');
   console.log(`Drill-through probe (S22) — rail item + inspector panel render: ${dtp.railOk && dtp.panelOk}`);
   console.log(`Drill-through probe (S22) — code-gen emits '<modelGuid>::<column>' scoping + both handlers: ${dtp.codeOk}`);
+  console.log(`Drill-through probe (S46) — snippet date helpers carry the live CFB_DATE_NAME_RE and the snippet parses: ${dtp.snippetOk}`);
   console.log(`Drill-through probe (S22) — clicked point scopes the searchdata query: ${dtp.scopedQuery}`);
   console.log(`Drill-through probe (S22) — a FULL page keeps Load more alive; offset advances and appends: ${dtp.pagingOk}`);
   console.log(`Drill-through probe (S22) — badge stays neutral ("N+") until the count is known, then reconciles: ${dtp.badgeOk}`);
@@ -1314,7 +1334,7 @@ try {
   console.log(`Drill-through probe (S30) — the drill carries NUMERIC epochs on the unwrapped column: ${dtp.carriedOk}`);
   console.log(`  carried: ${JSON.stringify(dtp.carried?.filters ?? [])}`);
   dtp.probeErrors.forEach((e) => console.log('  - probe page:', e));
-  const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.scopedQuery && dtp.pagingOk
+  const dtOk = dtp.railOk && dtp.panelOk && dtp.codeOk && dtp.snippetOk && dtp.scopedQuery && dtp.pagingOk
     && dtp.badgeOk && dtp.linkOk && dtp.modalOk && dtp.tableClickOk && dtp.drillScopeOk
     && dtp.monthRangeOk && dtp.raceOk && dtp.carriedOk && dtp.presetOk && dtp.pinOk
     && dtp.probeErrors.length === 0;

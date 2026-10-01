@@ -887,3 +887,10 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   vars that dotenv won't override; any move off dotenv (R9) must preserve that for `''` values.
 - 2026-10-01: CSS/index.html/config.js audited clean — dynamically built class names
   (`api-method--*`, `tier-*`, `badge-*`, `toast-*`, `wh-comp-*--*`) are why grep finds them unused.
+- 2026-10-01 (S46, resolved): the drill-through snippet's date helpers are now emitted from the live
+  source, e.g. `` L.push(`const tsEpochSec = ${dtEpochSec};`) `` (app.js ~L7120-7134). So
+  `dtEpochSec`/`dtBucketEndSec`/`dtMDY` must stay SELF-CONTAINED (globals only: Number/Math/Date/
+  String/isNaN); a reference to another module identifier would paste as a ReferenceError. Their
+  inner `//` comments ship in the snippet too. This relies on there being no build step
+  (`Function.prototype.toString` returns the authored text); a minifier would break it. Guarded by
+  boot-check's S46 line, which reads `CFB_DATE_NAME_RE` from app.js on disk and `node --check`s the snippet.
