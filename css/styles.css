@@ -401,6 +401,8 @@ a.tb-icon-btn { display: inline-flex; align-items: center; text-decoration: none
 .bp-chevron.open { transform: rotate(180deg); }
 .bp-body { height: 0; overflow: hidden; transition: height .2s ease; }
 #bottom[data-open="true"] .bp-body { height: var(--bp-open); border-top: 1px solid var(--border); }
+/* Expand: a reading-size panel (code, lifecycle) without leaving the page. */
+#bottom[data-open="true"][data-expanded="true"] .bp-body { height: 72vh; }
 .bp-pane { display: none; height: 100%; overflow: auto; }
 .bp-pane.active { display: block; }
 
@@ -601,12 +603,21 @@ a.wh-lbc-lb:hover { text-decoration: underline; }
 
 /* SDK code view — keep dark like compendium code blocks */
 .code-view {
-  padding: 16px 18px; font-family: var(--mono); font-size: 12px;
+  padding: 16px 18px; font-family: var(--mono); font-size: var(--code-fs, 12px);
   line-height: 1.7; color: #e8eaf2; white-space: pre;
   background: var(--code-bg); min-height: 100%;
   /* grow to the widest line so the dark bg covers the full horizontal scroll */
   box-sizing: border-box; width: max-content; min-width: 100%;
 }
+
+/* Syntax colours (the code view is dark in both themes). Comments get their own colour so the
+   explanations read apart from the code; section-header comments (// ── …) are bolder. */
+.code-view .tk-com { color: #7fb77e; font-style: italic; }
+.code-view .tk-hdr { color: #9fd49e; font-style: normal; font-weight: 700; }
+.code-view .tk-str { color: #e9a97a; }
+.code-view .tk-kw  { color: #c99cf0; }
+.code-view .tk-num { color: #b5d8a8; }
+.code-view .tk-re  { color: #e8c86b; }
 
 /* ── SDK Lifecycle flow diagram ──────────────────────────────────────────── */
 .flow { padding: 16px 18px; }

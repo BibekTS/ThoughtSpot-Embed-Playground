@@ -1184,6 +1184,7 @@ function bindBottomPanel() {
     $('#pane-apis').classList.toggle('active', bottomTab === 'apis');
     $('#pane-webhook').classList.toggle('active', bottomTab === 'webhook');
     $('#copy-code').hidden = bottomTab !== 'code';
+    $('#code-smaller').hidden = $('#code-bigger').hidden = bottomTab !== 'code';
     if ($('#bottom').dataset.open === 'false') toggleBottom(true);
     if (bottomTab === 'code') refreshCode();
     if (bottomTab === 'flow') renderFlow();
@@ -1208,6 +1209,15 @@ function bindBottomPanel() {
   if (em) em.querySelectorAll('[data-close="email"]').forEach(b => b.addEventListener('click', () => { em.hidden = true; }));
   $('#copy-code').addEventListener('click', () => {
     navigator.clipboard.writeText(generateCode()).then(() => toast('SDK code copied', 'success'));
+  });
+  let codeFs = applyCodeFontSize(readPref('pg.codeFontSize', 12));
+  $('#code-smaller').addEventListener('click', () => { codeFs = applyCodeFontSize(codeFs - 1); });
+  $('#code-bigger').addEventListener('click', () => { codeFs = applyCodeFontSize(codeFs + 1); });
+  setBottomExpanded(readPref('pg.bottomExpanded', '0') === '1');
+  $('#bp-expand').addEventListener('click', () => {
+    const on = $('#bottom').dataset.expanded !== 'true';
+    setBottomExpanded(on);
+    if (on && $('#bottom').dataset.open === 'false') toggleBottom(true); // expanding a closed panel opens it
   });
 }
 function toggleBottom(force) {
@@ -7482,7 +7492,101 @@ function generateCode() {
 }
 function refreshCode() {
   const pre = $('#code-view');
-  if (pre) pre.textContent = generateCode();
+  if (pre) pre.replaceChildren(highlightJs(generateCode()));
+}
+
+/**
+ * Colour generated JS for the code view. A small sequential scanner, not a parser: comments,
+ * strings (incl. template literals), regex literals, keywords and numbers become spans. It
+ * builds nodes with textContent only — the code embeds TS/shared-link values, so never
+ * innerHTML — and the pre's textContent stays byte-identical to the generated code.
+ */
+const JS_KEYWORDS = new Set(('const let var function async await return if else for of in new import from '
+  + 'export default true false null undefined try catch finally throw while do break continue typeof '
+  + 'instanceof class extends this switch case').split(' '));
+function highlightJs(code) {
+  const frag = document.createDocumentFragment();
+  let plain = '';
+  const flush = () => { if (plain) { frag.appendChild(document.createTextNode(plain)); plain = ''; } };
+  const tok = (cls, text) => {
+    flush();
+    const sp = document.createElement('span'); sp.className = cls; sp.textContent = text;
+    frag.appendChild(sp);
+  };
+  // A '/' starts a regex (not division) when the previous significant char can't end an operand.
+  let prevSig = '';
+  let i = 0;
+  const n = code.length;
+  while (i < n) {
+    const c = code[i], d = code[i + 1];
+    if (c === '/' && d === '/') {
+      let j = code.indexOf('\n', i); if (j < 0) j = n;
+      const text = code.slice(i, j);
+      tok(/^\/\/ ──/.test(text) ? 'tk-com tk-hdr' : 'tk-com', text); i = j; continue;
+    }
+    if (c === '/' && d === '*') {
+      let j = code.indexOf('*/', i + 2); j = j < 0 ? n : j + 2;
+      tok('tk-com', code.slice(i, j)); i = j; continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1;
+      while (j < n && code[j] !== c) { if (code[j] === '\\') j++; else if (c !== '`' && code[j] === '\n') break; j++; }
+      j = Math.min(j + 1, n);
+      tok('tk-str', code.slice(i, j)); i = j; prevSig = c; continue;
+    }
+    if (c === '/' && (prevSig === '' || '(,=:[!&|?{};+-*%<>~^'.includes(prevSig))) {
+      let j = i + 1, inClass = false;
+      while (j < n && code[j] !== '\n') {
+        if (code[j] === '\\') { j += 2; continue; }
+        if (code[j] === '[') inClass = true; else if (code[j] === ']') inClass = false;
+        else if (code[j] === '/' && !inClass) break;
+        j++;
+      }
+      if (code[j] === '/') {
+        j++; while (j < n && /[a-z]/i.test(code[j])) j++;
+        tok('tk-re', code.slice(i, j)); i = j; prevSig = '/'; continue;
+      }
+    }
+    if (/[A-Za-z_$]/.test(c)) {
+      let j = i + 1; while (j < n && /[\w$]/.test(code[j])) j++;
+      const w = code.slice(i, j);
+      // `return /re/` and `typeof x` — a keyword leaves the next '/' in regex position.
+      if (JS_KEYWORDS.has(w) && code[i - 1] !== '.') { tok('tk-kw', w); prevSig = w === 'return' || w === 'typeof' ? '(' : 'k'; }
+      else { plain += w; prevSig = 'a'; }
+      i = j; continue;
+    }
+    if (/[0-9]/.test(c)) {
+      let j = i + 1; while (j < n && /[\w.]/.test(code[j])) j++;
+      tok('tk-num', code.slice(i, j)); i = j; prevSig = '0'; continue;
+    }
+    plain += c;
+    if (!/\s/.test(c)) prevSig = c;
+    i++;
+  }
+  flush();
+  return frag;
+}
+
+// Code text size + expanded panel: per-viewer reading conveniences, not shareable state, so they
+// live in localStorage (wrapped — storage can be blocked) rather than state.js.
+const CODE_FS_MIN = 10, CODE_FS_MAX = 20;
+function readPref(key, fallback) { try { return localStorage.getItem(key) ?? fallback; } catch (_) { return fallback; } }
+function writePref(key, val) { try { localStorage.setItem(key, String(val)); } catch (_) { /* blocked — fine */ } }
+function applyCodeFontSize(px) {
+  const size = Math.min(CODE_FS_MAX, Math.max(CODE_FS_MIN, Number(px) || 12));
+  $('#code-view')?.style.setProperty('--code-fs', `${size}px`);
+  $('#code-smaller').disabled = size <= CODE_FS_MIN;
+  $('#code-bigger').disabled = size >= CODE_FS_MAX;
+  writePref('pg.codeFontSize', size);
+  return size;
+}
+function setBottomExpanded(on) {
+  $('#bottom').dataset.expanded = String(on);
+  const b = $('#bp-expand');
+  b.setAttribute('aria-pressed', String(on));
+  b.textContent = on ? '⤡ Shrink' : '⤢ Expand';
+  b.title = on ? 'Back to the normal panel height' : 'Make the panel taller';
+  writePref('pg.bottomExpanded', on ? '1' : '0');
 }
 
 // Generated REST snippet for the headless AI Insights section (no Visual Embed SDK).
