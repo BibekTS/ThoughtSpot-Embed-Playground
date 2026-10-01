@@ -104,14 +104,14 @@ light-only by design, so a dark set would be its own backlog item, not a finding
 
 **Open question, the human's call:** the upstream skill bans em-dashes in visible copy. This
 app's copy uses them throughout (about 215 JS string literals). Until the human decides
-(BACKLOG M23), an em-dash is **not** a finding.
+(BACKLOG M24), an em-dash is **not** a finding.
 
 ## Mechanical checks
 
 These checks are **evidence for the UI lens, not a gate**. M1, M2, M5 and M6 have a fixed expected
 output: anything beyond it is a finding unless the reviewer judges it safe and says why. M3 and M4
 list every candidate, so each new hit gets a one-line justification (an icon, a spinner) or is a
-finding. BACKLOG M24 tracks promoting M1 and M2 to a real gate.
+finding. BACKLOG M25 tracks promoting M1 and M2 to a real gate.
 
 How to run them:
 - **Point `CSS` at a real file.** To check a commit, write it out first:
