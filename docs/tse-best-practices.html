@@ -20,7 +20,7 @@
      section numbers (2.1, 2.2 …) are generated from this list. -->
 <script type="application/json" id="chapters">
 [
-  { "id": "ch-big-picture", "title": "The big picture", "icon": "◎", "blurb": "How an embed actually works, and the few decisions everything else hangs off." },
+  { "id": "ch-big-picture", "title": "The big picture", "icon": "◎", "blurb": "How an embed works, and the few decisions the rest depends on." },
   { "id": "ch-sign-in", "title": "Signing users in", "icon": "⚿", "blurb": "Your app already has a login. Here is how it connects to ThoughtSpot, and who each person becomes inside it." },
   { "id": "ch-data", "title": "Protecting data", "icon": "⛨", "blurb": "Make sure each person sees only their rows, and lock the embed down." },
   { "id": "ch-build", "title": "Building the experience", "icon": "▣", "blurb": "Events, filters, drill-through, your own actions, and your brand." },
@@ -623,7 +623,7 @@
     <div class="pillar d"><span class="ico">▦</span><b>Which data?</b><span>Row and column security</span></div>
     <div class="pillar e"><span class="ico">☁</span><b>Which platform?</b><span>Your data platform may add its own controls</span></div>
   </div>
-  <p class="takeaway">Answer the pillars <b>in order</b>: each one builds on the identity the one before it produced.</p>
+  <p class="takeaway">Answer the pillars <b>in order</b>. Each one builds on the answer before it.</p>
 
   <div class="vs">
     <div class="side a"><span class="k">Choice A</span><h4>How does the user prove who they are?</h4><p><a href="#auth-choice">Compare the sign-in options</a></p></div>
@@ -632,7 +632,7 @@
   </div>
 
   <h3>What are you building?</h3>
-  <p>Pick the closest match. The sidebar marks what matters most, and matching advice appears inline. Click again to clear.</p>
+  <p>Pick the closest match. The sidebar marks what matters most for it, and matching advice appears inline. Click again to clear.</p>
 
   <div class="scenarios" role="group" aria-label="Scenario">
     <button class="scenario-btn" data-scenario="saas" aria-pressed="false">
@@ -706,7 +706,7 @@
   <p>If you read nothing else, read these. Each one links to the section that explains why it holds.</p>
   <div class="cards">
     <div class="card a"><h4>1 · One person, one ThoughtSpot user</h4><p>A shared service account defeats row-level security, the audit log and personalization in one move. <a href="#identity">Why</a></p></div>
-    <div class="card a"><h4>2 · Mint tokens on your server</h4><p>The secret key is as powerful as an admin login. It never reaches a browser, a mobile bundle or a log. <a href="#auth">How</a></p></div>
+    <div class="card a"><h4>2 · Mint tokens on your server</h4><p>The secret key is as sensitive as an admin login. It never reaches a browser, a mobile bundle or a log. <a href="#auth">How</a></p></div>
     <div class="card a"><h4>3 · Default to cookieless trusted auth</h4><p>It survives third-party-cookie blocking, Safari and webviews. Cookie-based auth is the exception. <a href="#auth">Why</a></p></div>
     <div class="card b"><h4>4 · Security lives in the data layer</h4><p>Use RLS, column security and token variables. Runtime filters and hidden buttons are presentation only. <a href="#data-security">The layers</a></p></div>
     <div class="card b"><h4>5 · Allowlist, then block the rest</h4><p>Set CSP and CORS hosts, block non-embed access, and trim the action surface. <a href="#hardening">Checklist</a></p></div>
@@ -822,7 +822,7 @@
     "q1":{"q":"What should the user see?","options":[
       {"label":"A dashboard or a single chart","sub":"curated content","next":"q2"},
       {"label":"Explore data or open a saved Answer","sub":"search-driven","next":"q3"},
-      {"label":"Just the search bar, with results in my own UI","next":"r-bar"},
+      {"label":"Only the search bar, with results in my own UI","next":"r-bar"},
       {"label":"Ask questions in natural language (AI)","next":"q4"},
       {"label":"The whole ThoughtSpot product","sub":"home, navigation, create","next":"r-app"}]},
     "q2":{"q":"Whole Liveboard or one visualization?","options":[
@@ -915,7 +915,7 @@
          data-verified="2026-10-01" data-scenarios="saas internal regulated">
   <header class="sec-head">
     <span class="num">0</span>
-    <h2>Your app already has a login. How does ThoughtSpot join it?</h2>
+    <h2>How ThoughtSpot connects to your login</h2>
     <p class="sec-lede">Your users already sign in with your own IdP (Okta, Auth0, Cognito, Entra) or a custom login. There are two ways to connect that login to ThoughtSpot.</p>
   </header>
 
@@ -971,7 +971,7 @@
     <figcaption>Same IdP, same users. The difference is who talks to the IdP: ThoughtSpot (A) or only your app (B).</figcaption>
   </figure>
 
-  <p class="takeaway">Way A lets ThoughtSpot reuse your IdP. Way B <b>keeps ThoughtSpot out of your login entirely</b>.</p>
+  <p class="takeaway">Way A lets ThoughtSpot reuse your IdP. Way B <b>keeps ThoughtSpot out of your login</b>.</p>
 
   <h3 id="auth-choice-preconditions">Way A only works if all three hold</h3>
   <div class="pillars">
@@ -1514,7 +1514,7 @@ authEE.on(AuthStatus.LOGOUT, () =&gt; goToAppSignIn());</code></pre>
     "q4":{"q":"Is Orgs available in your license?","hint":"Analytics Enterprise or ThoughtSpot Embedded.","options":[
       {"label":"Yes","next":"r_orgs"},
       {"label":"No or unsure","next":"r_license"}]},
-    "r_groups_simple":{"result":"Per-user accounts, a few groups, no RLS","html":"<p>One ThoughtSpot user per person, provisioned by JIT or <code>users/import</code>. Use groups for content access and privileges. If the data is truly identical and public, one locked-down public user is acceptable. <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_user_accounts'>docs</a></p>"},
+    "r_groups_simple":{"result":"Per-user accounts, a few groups, no RLS","html":"<p>One ThoughtSpot user per person, provisioned by JIT or <code>users/import</code>. Use groups for content access and privileges. If the data is identical and public, one locked-down public user is acceptable. <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_user_accounts'>docs</a></p>"},
     "r_groups_rls":{"result":"Per-user accounts, groups, and RLS or ABAC","html":"<p>Per-user accounts plus RLS on the tables. Pass per-user values through <code>auth/token/custom</code> with <code>variable_values</code> and a required <code>persist_option</code>, or use group-based rules. Do not use runtime filters as the boundary. <a class='src' href='https://developers.thoughtspot.com/docs/api-authv2#_data_security_considerations'>docs</a></p>"},
     "r_single_org":{"result":"One Org, a tenant column, and RLS or ABAC","html":"<p>Add <code>tenant_id</code> to the data and enforce it with RLS or ABAC, using a per-tenant user (or group) mapping. Lightest to operate. Every isolation guarantee comes from your rules, so test them with two tenants. <a class='src' href='https://developers.thoughtspot.com/docs/multitenancy-within-an-org#_multitenancy_at_the_data_level'>docs</a></p>"},
     "r_orgs":{"result":"One Org per tenant","html":"<p>Create an Org per tenant (<code>orgs/create</code>), mint tokens with <code>org_id</code> (or <code>org_identifier</code> on custom), and consider per-Org secret keys through Support. Add RLS inside an Org only if a tenant has sub-tenant users. Remember Orgs cannot be turned off. <a class='src' href='https://developers.thoughtspot.com/docs/orgs'>docs</a></p>"},
@@ -1595,11 +1595,11 @@ authEE.on(AuthStatus.LOGOUT, () =&gt; goToAppSignIn());</code></pre>
          data-verified="2026-10-01" data-scenarios="saas regulated ai">
   <header class="sec-head">
     <span class="num">0</span>
-    <h2>Data security: what really stops a user seeing a row</h2>
+    <h2>Data security: what stops a user seeing a row</h2>
     <p class="sec-lede">Which controls are a real boundary, and how your backend feeds per-user entitlements into them.</p>
   </header>
 
-  <h3 id="data-security-layers">Boundary or just presentation?</h3>
+  <h3 id="data-security-layers">Boundary or presentation only?</h3>
   <div class="layers">
     <button class="layer sec-yes"><b>Row-level security (RLS)</b><span>Rules on Tables, applied to every Model, Answer and Liveboard built on them.</span><span class="badge ga">Security boundary</span><span class="layer-more">Defined on Table objects and inherited downstream. "RLS rules secure data and cannot be altered by the logged-in user." Enforced at the indexing layer too, so search suggestions and sample values respect it. ThoughtSpot administrators bypass RLS by default, so always test as a non-admin. <a class="src" href="https://developers.thoughtspot.com/docs/filters-overview#_overview">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_indexing">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_verify_the_entitlements">docs</a></span></button>
     <button class="layer sec-yes"><b>Column-level security (CLS)</b><span>The owner shares only specific columns of a Table with a user or group.</span><span class="badge ga">Security boundary</span><span class="layer-more">Users see only the columns shared with them. Keep CLS groups separate from RLS groups so each group has one purpose. <a class="src" href="https://developers.thoughtspot.com/docs/data-security#_column_level_security_cls">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/multitenancy-within-an-org#_column_level_security_cls_groups">docs</a></span></button>
@@ -1774,7 +1774,7 @@ authEE.on(AuthStatus.LOGOUT, () =&gt; goToAppSignIn());</code></pre>
   <header class="sec-head">
     <span class="num">0</span>
     <h2>Hardening the embed</h2>
-    <p class="sec-lede">The four locks that keep the embed on your domains, the secret off the browser, and data from leaving by side doors.</p>
+    <p class="sec-lede">Four controls: keep the embed on your domains, keep the secret off the browser, and stop data leaving through other routes.</p>
   </header>
 
   <div class="strip">
@@ -1783,7 +1783,7 @@ authEE.on(AuthStatus.LOGOUT, () =&gt; goToAppSignIn());</code></pre>
     <div class="strip-step c"><span class="n">3</span><b>Action surface</b><span>Hidden buttons are UX; enforce with privileges</span></div><div class="strip-arrow">→</div>
     <div class="strip-step d"><span class="n">4</span><b>Token hygiene</b><span>secret_key stays on your server</span></div>
   </div>
-  <p class="takeaway">Close the <b>origins</b>, close the <b>side door</b>, back every hidden button with a <b>privilege</b>, and keep the <b>secret key</b> on the server.</p>
+  <p class="takeaway">Restrict <b>origins</b>, block <b>non-embed access</b>, back every hidden button with a <b>privilege</b>, and keep the <b>secret key</b> on the server.</p>
 
   <h3 id="hardening-checklist">Hardening checklist</h3>
   <div class="checklist-box" data-checklist="hardening" data-title="Hardening checklist">
@@ -2120,8 +2120,8 @@ await embed.trigger(HostEvent.Pin, payload, ContextType.Answer);</code></pre>
          data-verified="2026-10-01" data-scenarios="saas internal">
   <header class="sec-head">
     <span class="num">0</span>
-    <h2>Filters &amp; parameters: four mechanisms, none of them security</h2>
-    <p class="sec-lede">Embedded ThoughtSpot has several ways to narrow data. Which one do you pick, and how do you drive it without surprises?</p>
+    <h2>Filters &amp; parameters: four mechanisms, no security</h2>
+    <p class="sec-lede">Embedded ThoughtSpot has several ways to narrow data. This section covers which to pick and how to drive it predictably.</p>
   </header>
 
   <div class="pillars">
@@ -2276,8 +2276,8 @@ const current = await liveboardEmbed.trigger(HostEvent.GetFilters);</code></pre>
          data-verified="2026-10-01" data-scenarios="saas internal">
   <header class="sec-head">
     <span class="num">0</span>
-    <h2>Drill down and drill-through: from a number to the records behind it</h2>
-    <p class="sec-lede">An embedded Liveboard can "go deeper" in three different ways. Which one do you want?</p>
+    <h2>Drill down and drill-through</h2>
+    <p class="sec-lede">An embedded Liveboard can go deeper in three ways, from a number to the records behind it. Decide which one you want.</p>
   </header>
 
   <div class="pillars">
@@ -2658,7 +2658,7 @@ permission</code></pre>
   </div></details>
   </div></details>
 
-  <details class="deeper"><summary>Go deeper: native drill down, doors, and the CSS trick <small>about 3 min</small></summary><div class="deeper-body">
+  <details class="deeper"><summary>Go deeper: native drill down, other routes, and the CSS trick <small>about 3 min</small></summary><div class="deeper-body">
     <div class="table-wrap"><table>
     <thead><tr><th>Pattern</th><th>User gesture</th><th>SDK pieces</th><th>Leaves the iframe?</th><th>Who renders the detail</th><th>Row-level security</th></tr></thead>
     <tbody>
@@ -2770,7 +2770,7 @@ permission</code></pre>
   <header class="sec-head">
     <span class="num">0</span>
     <h2>Custom actions: add your own buttons and menu items</h2>
-    <p class="sec-lede">A custom action puts an item in the ThoughtSpot UI that either calls a URL or hands control to your app. Which type do you need?</p>
+    <p class="sec-lede">A custom action puts an item in the ThoughtSpot UI that either calls a URL or hands control to your app. Pick the type you need.</p>
   </header>
 
   <div class="vs">
@@ -2908,7 +2908,7 @@ embed.render();</code></pre>
   <header class="sec-head">
     <span class="num">0</span>
     <h2>Look and feel: styling, text, icons, and hiding UI</h2>
-    <p class="sec-lede">How do you make the embed look like your product without it breaking on the next ThoughtSpot upgrade?</p>
+    <p class="sec-lede">Make the embed look like your product without it breaking on the next ThoughtSpot upgrade.</p>
   </header>
 
   <div class="strip">
@@ -3028,7 +3028,7 @@ embed.render();</code></pre>
   </div></details>
 
   <details class="deeper"><summary>Go deeper: silent failure when the host is not allowlisted <small>about 1 min</small></summary><div class="deeper-body">
-  <div class="callout warn"><div><strong>Silent failure when the host is not allowlisted</strong><p>If your CSS, font, or JSON host is missing from CSP <code>style-src</code> / <code>font-src</code> (and CORS for JSON), nothing errors loudly. The embed just renders unstyled. Check the browser Network and Console tabs inside the iframe first <a class="src" href="https://developers.thoughtspot.com/docs/custom-css">docs</a>.</p></div></div>
+  <div class="callout warn"><div><strong>Silent failure when the host is not allowlisted</strong><p>If your CSS, font, or JSON host is missing from CSP <code>style-src</code> / <code>font-src</code> (and CORS for JSON), nothing errors loudly. The embed renders unstyled. Check the browser Network and Console tabs inside the iframe first <a class="src" href="https://developers.thoughtspot.com/docs/custom-css">docs</a>.</p></div></div>
   </div></details>
 
   <div class="scn" data-scenario="saas"><p><strong>White-label SaaS:</strong> use variables plus <code>iconSpriteUrl</code> plus <code>stringIDs</code>, and a hosted CSS file per brand if you have several. Hide Spotter pills and Add to Coaching via actions for end users. Version your CSS file URL so you can roll back.</p></div>
@@ -3041,7 +3041,7 @@ embed.render();</code></pre>
   <header class="sec-head">
     <span class="num">11</span>
     <h2>Spotter and AI: choosing how to add it</h2>
-    <p class="sec-lede">Which way of putting ThoughtSpot's AI in your app fits you, and what happens when a user asks a question?</p>
+    <p class="sec-lede">Pick how to put ThoughtSpot's AI in your app, and see what happens when a user asks a question.</p>
   </header>
 
   <div class="wizard"><div class="wz-title">How should I add AI to my app?</div>
@@ -3186,7 +3186,7 @@ spotter.trigger(HostEvent.ResetSpotterConversation);</code></pre>
   <header class="sec-head">
     <span class="num">12</span>
     <h2>Exports, scheduling, and delivery</h2>
-    <p class="sec-lede">How do you get PDFs, images, and data files out of ThoughtSpot, from the browser or from your server?</p>
+    <p class="sec-lede">Get PDFs, images, and data files out of ThoughtSpot, from the browser or from your server.</p>
   </header>
 
   <div class="vs">
@@ -3289,8 +3289,8 @@ spotter.trigger(HostEvent.ResetSpotterConversation);</code></pre>
          data-verified="2026-10-01" data-scenarios="saas mobile">
   <header class="sec-head">
     <span class="num">13</span>
-    <h2>Performance: making embeds feel instant</h2>
-    <p class="sec-lede">Where does the time go when an embed loads, and how do you move it off the user's critical path?</p>
+    <h2>Performance: faster embed loads</h2>
+    <p class="sec-lede">See where the time goes when an embed loads, and move it off the user's critical path.</p>
   </header>
 
   <div class="pillars">
@@ -3423,7 +3423,7 @@ await view.render();               // methods also available: showPreRender(), h
       <li>Use <code>showPreviewLoader</code> (SDK 1.32.0 | TS 10.0.0.cl, viz embeds with <code>vizId</code> only) to show a preview image while a viz loads. <a class="src" href="https://developers.thoughtspot.com/docs/Interface_LiveboardViewConfig">docs</a></li>
     </ul>
     <h4>Fetch discipline in your own code</h4>
-    <p>Your page often makes its own REST calls: listing Liveboards, loading filter values, discovering columns. The usual traps are not ThoughtSpot-specific, and this is engineering practice rather than a documented rule:</p>
+    <p>Your page often makes its own REST calls: listing Liveboards, loading filter values, discovering columns. The usual traps are not specific to ThoughtSpot. This is general engineering practice, not a documented rule:</p>
     <ul>
       <li>Do one fetch and derive from it. For example, load a filter's values once and compute dependent lists locally rather than calling per control.</li>
       <li>Cache by object id, and share an in-flight request between callers so two components asking for the same thing produce one call.</li>
@@ -3446,8 +3446,8 @@ await embed.render();</code></pre>
          data-verified="2026-10-01" data-scenarios="saas regulated">
   <header class="sec-head">
     <span class="num">14</span>
-    <h2>Environments and releases: moving changes safely</h2>
-    <p class="sec-lede">How do you promote Liveboards, Models and settings from dev to test to prod, and keep your SDK in step with Cloud releases?</p>
+    <h2>Environments and releases</h2>
+    <p class="sec-lede">Promote Liveboards, Models and settings from dev to test to prod, and keep your SDK in step with Cloud releases.</p>
   </header>
 
   <figure class="fig stepper">
@@ -3580,7 +3580,7 @@ await embed.render();</code></pre>
   <header class="sec-head">
     <span class="num">15</span>
     <h2>Go-live checklist</h2>
-    <p class="sec-lede">What do you check before launch, and what happens on the day? Your progress is saved in this browser.</p>
+    <p class="sec-lede">What to check before launch, and what to do on the day. Your progress is saved in this browser.</p>
   </header>
 
   <div class="strip">
@@ -3678,7 +3678,7 @@ await embed.render();</code></pre>
   <header class="sec-head">
     <span class="num">16</span>
     <h2>What's new and feature status</h2>
-    <p class="sec-lede">What are the newest releases, what is being removed, and which features are still Beta or Early Access?</p>
+    <p class="sec-lede">The newest releases, what is being removed, and which features are still Beta or Early Access.</p>
   </header>
 
   <p>As of 1 October 2026: SDK <strong>1.52.0</strong> and ThoughtSpot Cloud <strong>26.9.0.cl</strong> are the latest released versions the docs describe. Reference pages already tag a few symbols SDK 1.53.0 · 26.10.0.cl (for example <code>spotterAnalystConfig</code>), so 26.10.0.cl is the next release, not yet in What's new or the SDK changelog.</p>
