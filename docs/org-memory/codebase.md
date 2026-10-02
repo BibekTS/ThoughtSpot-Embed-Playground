@@ -942,6 +942,44 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   "load skill X" in those agents is a no-op — their rules must be inline. `implementer` has no
   `tools:` line (inherits all, incl. Skill). Automated over-engineering audits must never propose
   inlining an R1-extracted module or contradict an open R/S row (rule lives in `reviewer.md`).
+- 2026-10-01 (guide v3.0.0, M30): `docs/tse-best-practices.html` is a single self-contained page whose
+  inline JS renders the nav, footer "Last updated", per-section verified chips, the feature status
+  index (built from every `.badge[data-feature]`), wizards, steppers, checklists and the runtime-filter
+  simulator. **Never hand-edit the footer or the changelog list**: they render from `#guide-meta`.
+  `npm run guide-check` opens it via `file://` (no port) and stubs Google Fonts. Facts from the rewrite:
+  the latest docs were SDK **1.52.0** / ThoughtSpot **26.9.0.cl** (the playground pins 1.49.0). HostEvent v1
+  framework is deprecated at 26.10.0.cl; move to `useHostEventsV2`. ABAC: `filter_rules` on `auth/token/custom` is closed to
+  NEW configurations from 26.3.0.cl (existing use keeps working), `parameter_values` is "supported, will be
+  deprecated", and `user_parameters` on full/object is deprecated from 10.4.0.cl; the path forward is
+  `variable_values` (10.14.0.cl+). Docs/field
+  contradictions recorded in the guide: `available_data_row_count` equals the page size on full pages
+  (docs call it a total), runtime-filter date examples use string epochs (`UpdateFilters` requires numbers),
+  and the `GetFilters` envelope (filed as S50). The docs themselves disagree here (array vs
+  `{liveboardFilters}`), so handle both. Section writers WITHOUT the MCP guessed REST doc URLs, so a
+  per-section MCP fact-check pass is mandatory before publishing new guide content. **The MCP index can
+  lag the live site.** It said 49 runtime filters, while the live page says URL 50 and SDK `runtimeFilters`
+  default/max 1,000 (configurable). For limits, versions and statuses, confirm on the published page.
+  Published heading ids keep underscores (`_non_embedded`) where MCP text collapses them; 68 anchors broke
+  this way, and `guide-check --links` catches it. The `reviewer` agent cannot load the MCP (its tools are
+  Read/Glob/Grep/Bash), so accuracy review uses `docs-curator` in review-only mode.
+- 2026-10-01 (guide v3.3, enterprise review): **Voice rule.** Where the docs leave a choice open, the guide
+  gives options and trade-offs, not one path. This is codified in `.claude/agents/docs-curator.md`. Docs facts
+  the review established:
+  - REST rate limit: 100 requests per second per client IP from 26.2.0.cl, burst of 10, then 429.
+    Cluster-level only.
+  - `logs/fetch`: needs `ADMINISTRATION`, with no log-only privilege, and a 24-hour window. The
+    `get_all_logs` default conflicts: the schema says true, the guide page says opt-in.
+  - Spotter conversation list and read APIs are per calling user, so they give no org-wide audit.
+  - Warehouse OAuth is a documented fourth row-level mechanism.
+  - The live `handling-embed-errors` page has no `INIT_ERROR`, `LOGIN_FAILED` or `FatalError`. It says
+    "do not destroy the embed on errors", but also says SEV1 errors may need a teardown.
+  - `EmbedErrorSeverity`: the reference says SDK 1.52.0, the error page announces it for 1.53.0 (filed M34).
+  - CSP allowlists: the docs support `*.domain` wildcards and localhost, and only recommend removing
+    localhost in production.
+  - Spotter 3: What's new says Early Access, while the FAQ says "Recommended".
+  - The `users/import` `dry_run` default is true.
+  - Working doc slugs: `set-locale` and `embed-ai-search-analytics`. The MCP's `locale-setting` and
+    `embed-ai-analytics` return "Not found".
 - 2026-10-01 (S14): **`cfbRuntimeFilter(col, vals)` (js/app.js ~5575) is the single path from custom-filter-bar
   selections to runtime filters**, shared by `buildParentRuntimeFilters().fromCfb` and the SDK-code
   generator. Plain columns go through `dtCarryFilter(col, vals)` (operator defaults to IN): date-named

@@ -36,8 +36,13 @@ Keep the playground current — SDK version, drift in the tracked docs, and new 
   page, saved by every ts-watch PR alongside the updated hash. A hash says *that* a page changed;
   the snapshot lets the next run diff live text against it to see *what* changed, which is what
   makes surgical, per-claim-sourced doc edits possible instead of guesswork.
-- **Drift-prone docs:** `docs/tse-best-practices.html` (the compendium), `docs/callback-action.md`,
-  `docs/customize-export.md`, and the README trusted-auth section.
+- **Drift-prone docs:** `docs/tse-best-practices.html` (the best-practices guide), `docs/callback-action.md`,
+  `docs/customize-export.md`, and the README trusted-auth section. The guide has its own owner and
+  conventions (`.claude/agents/docs-curator.md`): its `#guide-meta` block carries the version,
+  `lastUpdated`, and the SDK/Cloud release it was verified against, and each section carries a
+  `data-verified` date. Any ts-watch edit to the guide follows the curator's rules: badge status
+  changes (Beta → GA, new deprecations), bump `version`/`lastUpdated`, prepend a changelog entry, and
+  pass `npm run guide-check`.
 - **Detector:** `scripts/check-ts-updates.mjs` (`npm run check-ts-updates`). Detects only, never
   edits. Exit codes: `0` no changes (stop silently), `10` changes (act), `1` INTEGRITY error only
   (pin drift / unreadable baseline — report, stop). Transient network failures are printed as

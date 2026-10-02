@@ -78,7 +78,7 @@ conflicted** — a clean merge needs no re-verification.
   running a count).
 
 The department agents live in `.claude/agents/` — `researcher`, `architect`, `implementer`,
-`reviewer`, `qa-verifier`, `bug-hunter`. If a named agent is unavailable (e.g. a fresh clone
+`reviewer`, `qa-verifier`, `bug-hunter`, `docs-curator`. If a named agent is unavailable (e.g. a fresh clone
 before agent discovery), fall back to the built-ins noted per step. Every agent reads the org
 memory before working and reports **Memory-worthy** facts back; the CEO persists those at the
 Records step (step 6).
@@ -88,6 +88,27 @@ Records step (step 6).
 focus, async states). The named agents already know when to read them. A **built-in fallback
 does not** (it never sees `.claude/agents/*`), so when one is dispatched on a UI-touching item,
 name `docs/ui-quality-playbook.md` in its prompt.
+
+**Guide-refresh lane (every cycle, including `discover` runs).** `docs/tse-best-practices.html` is the
+org's customer-facing best-practices guide, and it must stay current with the ThoughtSpot docs. At
+step 2, dispatch **`docs-curator`** **in the same message** as the researcher(s). It runs in its own
+**worktree** (`isolation: "worktree"`) on branch `docs/guide-refresh-YYYY-MM-DD`. The curator:
+checks the docs through the Spottercode MCP for SDK and Cloud releases newer than the guide's
+`#guide-meta.verifiedAgainst`; re-verifies the two stalest sections plus any section this cycle's
+item touches; labels Beta, Early access and Deprecated status; stamps `version`, `lastUpdated` and a
+changelog entry; and runs `npm run guide-check -- --links` (port-free, so it never collides with
+the serialized gates). Brief it with this cycle's item and any field facts the item produces, so new
+field-observed behaviour reaches the guide. It ships as **its own PR**, never inside the item's PR.
+The two diffs are disjoint, so neither invalidates the other's review or QA. The curator edits only the
+guide. It reports Memory-worthy facts, and the CEO records them in the item PR at step 6, so the two
+PRs never both edit the records files. If a guide PR is already open, the curator updates it instead of
+opening another. **Accuracy review:** dispatch a second `docs-curator` in **review-only mode**
+("refute every changed claim; edit nothing"). The `reviewer` agent's tool list has no MCP access.
+CI does not run `guide-check` yet (M31), so the curator's evidence is the gate. The PR auto-merges
+under the normal conditions. If the curator finds nothing to change and no section
+is stale, it reports that and opens no PR. **Report the guide's new version and last-updated
+date in step 8.** If the MCP is unavailable, skip the lane, say so in the report, and never edit
+claims without a source.
 
 ## 2. Research & Intelligence — brief the area
 - For anything non-trivial, spawn the **`researcher`** agent (fallback: built-in `Explore`) to map
@@ -279,6 +300,9 @@ If any gate fails, fix and re-run. Do not proceed to a PR on red.
 ## 8. Report
 - A concise summary: what shipped, the evidence, any M-items filed, and the next open item the CEO
   would pick.
+- **Guide status:** the guide-refresh lane's outcome: the new `version`, `lastUpdated`,
+  `verifiedAgainst`, the sections it re-verified, and the Beta → GA or new-deprecation changes. If it
+  opened no PR, say "guide current".
 - **Micro-retro (mandatory):** one line answering "did any skill, agent definition, or playbook
   instruction mislead, block, or slow this cycle?" If yes: fix it in this same PR **only if the PR
   has not yet been QA'd**. Once QA has run, a `.claude/*` or `docs/*-playbook.md` edit is **not**
