@@ -68,10 +68,10 @@ const ACTIONS = {
   search:   [...VIZ_DOWNLOAD_ACTIONS, 'Edit', 'Share', 'Pin', 'DrillDown', 'ShowUnderlyingData', 'SpotIQAnalyze'],
   spotter:  ['Share', 'Pin', 'SpotIQAnalyze'],
   liveboard: [...LB_DOWNLOAD_ACTIONS, ...VIZ_DOWNLOAD_ACTIONS,
-    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi'],
+    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi', 'PersonalizedViewsDropdown', 'AddToFavorites'],
   viz:      [...VIZ_DOWNLOAD_ACTIONS, 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'SpotIQAnalyze'],
   fullapp:  [...LB_DOWNLOAD_ACTIONS, ...VIZ_DOWNLOAD_ACTIONS,
-    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi'],
+    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi', 'PersonalizedViewsDropdown', 'AddToFavorites'],
 };
 ACTIONS['liveboard-custom'] = ACTIONS.liveboard;
 ACTIONS['ai-highlights'] = ACTIONS.liveboard;
@@ -79,6 +79,8 @@ ACTIONS['drillthrough'] = ACTIONS.liveboard;
 
 // Per-action scope tooltips for the "Modify actions" rows (which surface to hover title).
 const ACTION_HINTS = {
+  PersonalizedViewsDropdown: 'Liveboard-level: the "Select view" (Personalized Views) dropdown at the left of the filter chips.',
+  AddToFavorites: 'The Favorite star. Hide/disable only — the SDK has no HostEvent to toggle a favorite.',
   DownloadLiveboard: 'Liveboard-level: the whole-board Download button. Leave visible to keep Liveboard exports working.',
   DownloadLiveboardAsContinuousPDF: 'Liveboard-level: the Continuous-PDF option in the Download modal (needs “Enable continuous PDF” on).',
   DownloadLiveboardAsA4Pdf: 'Liveboard-level: the paginated A4-PDF option in the Download modal.',
@@ -5437,7 +5439,7 @@ function sectionCfbSetup() {
     [{ value: 'default', label: 'ThoughtSpot header (default)' }, { value: 'host-header', label: 'Host header — title & tabs above filters' },
      { value: 'host-header-actions', label: 'Host header + actions — title, tabs & action buttons above filters' }],
     v => { setState({ cfbLayout: v }); hostHeaderSync(); render(); }));
-  c.appendChild(el('div', 'sec-note', 'Host header keeps ThoughtSpot’s native filter chips, renders the title and tabs in this page, and hides the native tab bar (and, with actions, the native action row) with UNSTABLE internal CSS selectors (re-verify after TS upgrades). The Favorite star has no HostEvent, so it is dropped.'));
+  c.appendChild(el('div', 'sec-note', 'Host header keeps ThoughtSpot’s native filter chips, renders the title and tabs in this page, and hides the native tab bar (and, with actions, the native action row) with UNSTABLE internal CSS selectors (re-verify after TS upgrades). The Favorite star has no HostEvent, so it is dropped. Tip: hide "Select view" via Modify actions → PersonalizedViewsDropdown.'));
   c.appendChild(el('div', 'sec-note', 'Click "+ Add filter" in the bar above to add a column. Available columns are discovered from the liveboard data.'));
 
   if (cfbAllColumns.length) {
