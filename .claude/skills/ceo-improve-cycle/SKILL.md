@@ -24,6 +24,25 @@ before starting the next. In this playbook that means: Review Board lenses (alwa
 hunters (always), research fan-out across areas for a large item, and Review Board ∥ QA after a
 build. Dependent stages (research → plan → build) stay sequential.
 
+**Model tiering (cost).** The CEO runs on the top model; departments run on the cheapest model
+that does the job well. Each agent's `model:` frontmatter sets its default; the CEO overrides
+per dispatch with the Agent tool's `model` parameter. Escalate on **risk**, not on size alone.
+
+| Work | Default | Escalate to `opus` when |
+|---|---|---|
+| `researcher`, `bug-hunter`, `reviewer` | `sonnet` | the lens/item is **security**, or it touches a protected path (`server.js`, `js/state.js`, auth, sanitize) |
+| `implementer` | `sonnet` | protected path, a security fix, or a cross-module refactor of `js/app.js` |
+| `qa-verifier` | `sonnet` | never — its recipe is mechanical, but the worktree isolation fails *open*, so don't drop to `haiku` |
+| `architect` | inherits (top model) | — the plan steers every later stage; a cheap plan costs more downstream |
+| Ad-hoc `Explore` lookups, "does item X still apply?" spot-checks, dedupe of hunter findings, CI/PR status polling | `haiku` | the answer needs judgement rather than location |
+| `/code-review`, `/security-review` | as configured | — |
+
+A built-in **fallback** standing in for a named agent (e.g. `Explore` for `researcher`) has no
+frontmatter, so pass the named agent's tier explicitly — never let a fallback drop to `haiku`.
+If a cheaper agent returns a thin, contradictory, or wrong result, re-dispatch **once** on the next
+tier up rather than patching its output in the CEO's own context — and note it in the micro-retro
+so the defaults can be tuned (file an M-row if a default is consistently wrong).
+
 **Serialize the gates.** `npm test` (port 34917) and `npm run boot-check` (port 34921) bind
 hardcoded localhost ports — two concurrent runs collide with `EADDRINUSE` and produce phantom
 reds (see org-memory "Gates"; M8 tracks making them parallel-safe). Only ONE agent runs the
