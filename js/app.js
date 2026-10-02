@@ -5566,14 +5566,15 @@ function extractRow(payload) {
 }
 
 // ── Drill-down carry-over (Q4) ────────────────────────────────────────────────
-// A custom-filter-bar selection as a runtime filter. cfbSelected stays STRINGS (state.js keeps it so
-// across links/reloads); coerce here, at trigger time. dtCarryFilter turns a date-named column's epoch
-// values into NUMBERS (UTC seconds; ms → s), unwraps Day(...)/Month(...), and makes a non-Day bucket
-// a BW_INC span; anything else stays IN over its strings. Shared by the live push and the SDK-code
-// generator so the two cannot diverge. Known, accepted trade-offs: a {Null} mixed into a date
-// selection makes that column fall back to strings, and several selected months become ONE span.
+// A custom-filter-bar selection as a runtime filter. A plain date-named column (CFB_DATE_NAME_RE, every
+// value an epoch; ms → s) becomes NUMBER UTC epoch seconds — coerced here, at trigger time, because
+// cfbSelected stays STRINGS (state.js keeps it so across links/reloads). Bucket-wrapped display names
+// (Month(...), Day(...)) are deliberately passed through untouched until their wire format is verified
+// live (see BACKLOG S51). A {Null} mixed into a date selection still falls back to strings. Shared by
+// the live push and the SDK-code generator so the two cannot diverge.
 function cfbRuntimeFilter(col, vals) {
-  return dtCarryFilter(col, vals, RuntimeFilterOp.IN);
+  if (dtBucket(col).bucket) return { columnName: col, operator: RuntimeFilterOp.IN, values: vals };
+  return dtCarryFilter(col, vals);
 }
 // Parent filters = the website-native filter bar (cfbSelected) + any applied runtime filters.
 function buildParentRuntimeFilters() {
@@ -7481,13 +7482,11 @@ function generateCode() {
     L.push('embed.trigger(HostEvent.UpdateRuntimeFilters, [');
     cfbActiveFilters.forEach(([col, vals]) => {
       const f = cfbRuntimeFilter(col, cfbSortValues(col, vals));
-      // dtCarryFilter returns all-numbers (a date column) or all-strings — never a mix.
-      const isDate = f.values.length && typeof f.values[0] === 'number';
-      const opKey = f.operator === RuntimeFilterOp.BW_INC ? 'BW_INC' : 'IN';
-      // Date epochs must be NUMBERS (unquoted); text/number values stay quoted strings.
+      // Date epochs must be NUMBERS (unquoted); text/number values stay quoted strings. The helper
+      // returns all-numbers (a plain date column) or all-strings — never a mix.
       const lit = f.values.map(v => typeof v === 'number' ? String(v) : `'${esc(v)}'`).join(', ');
-      const note = isDate ? `  // ${f.values.map(epochSecToISO).join(opKey === 'BW_INC' ? ' … ' : ', ')} (UTC, epoch seconds)` : '';
-      L.push(`  { columnName: '${esc(f.columnName)}', operator: RuntimeFilterOp.${opKey}, values: [${lit}] },${note}`);
+      const note = typeof f.values[0] === 'number' ? `  // ${f.values.map(epochSecToISO).join(', ')} (UTC, epoch seconds)` : '';
+      L.push(`  { columnName: '${esc(f.columnName)}', operator: RuntimeFilterOp.IN, values: [${lit}] },${note}`);
     });
     L.push(']);');
   }
