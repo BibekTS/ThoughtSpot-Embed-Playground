@@ -63,6 +63,9 @@ and that the sidebar had "too many options". v3.1 fixed that. Keep it that way:
   and docs-vs-field conflicts go in `details.deeper` ("Go deeper") panels.
 - No TL;DR boxes. At most 2 scenario notes per section. Light mode is the default.
 - New facts usually belong inside an existing deeper panel, not in new visible prose.
+- Every decision is shown as a diagram. A `.wizard` outside a deeper panel is drawn automatically as a
+  left-to-right decision tree from its own JSON, and its click-through version moves into a panel below.
+  Keep wizard labels short (under about 60 characters) so the tree stays readable.
 
 ## Review-only mode
 When the prompt says **review-only**, you are the accuracy lens on someone else's guide diff. Skip

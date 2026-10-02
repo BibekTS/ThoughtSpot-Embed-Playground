@@ -4187,6 +4187,95 @@ await embed.render();</code></pre>
     show(tree.start);
   });
 
+  /* ---------- every wizard also gets a decision-tree diagram ----------
+     A wizard outside a "Go deeper" panel is drawn as a left-to-right tree from its own JSON
+     (questions, answers, results), and the click-through version moves into a panel below it.
+     Wizards already inside a panel (for example the auth one, which has a hand-drawn tree) are left alone. */
+  const NS = 'http://www.w3.org/2000/svg';
+  const sv = (tag, attrs = {}, text) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); if (text != null) n.textContent = text; return n; };
+  const plain = t => new DOMParser().parseFromString(String(t), 'text/html').body.textContent;
+  const wrapText = (text, max) => {
+    const out = []; let cur = '';
+    plain(text).split(/\s+/).forEach(w => { if (cur && (cur + ' ' + w).length > max) { out.push(cur); cur = w; } else cur = cur ? cur + ' ' + w : w; });
+    if (cur) out.push(cur);
+    return out;
+  };
+  const drawTree = (tree, title) => {
+    let depthProbe = 0;
+    const probe = (id, d, seen) => { const n = tree.nodes[id]; if (!n || n.result || seen.has(id)) return; depthProbe = Math.max(depthProbe, d + 1); n.options.forEach(o => probe(o.next, d + 1, new Set(seen).add(id))); };
+    probe(tree.start, 0, new Set());
+    const compact = depthProbe >= 3;
+    const QW = compact ? 168 : 210, AW = compact ? 132 : 158, RW = compact ? 176 : 220, GAP = compact ? 20 : 30, LH = 15, PAD = 11, ROWGAP = 14;
+    const QC = compact ? 21 : 27, AC = compact ? 18 : 22, RC = compact ? 21 : 27;
+    const build = (id, depth, seen) => {
+      const n = tree.nodes[id];
+      if (!n || seen.has(id)) return null;
+      if (n.result) return { kind: 'r', text: n.result, depth };
+      const next = new Set(seen).add(id);
+      return { kind: 'q', text: n.q, depth, kids: n.options.map(o => ({ label: o.label, node: build(o.next, depth + 1, next) })).filter(k => k.node) };
+    };
+    const root = build(tree.start, 0, new Set());
+    if (!root || root.kind !== 'q') return null;
+    let qDepth = 0;
+    const walk = n => { if (n.kind === 'q') { qDepth = Math.max(qDepth, n.depth + 1); n.kids.forEach(k => walk(k.node)); } };
+    walk(root);
+    const colX = d => d * (QW + GAP + AW + GAP);
+    const RX = colX(qDepth), W = RX + RW + 2;
+    let y = 2;
+    const place = (n, chipH) => {
+      if (n.kind === 'r') {
+        n.lines = wrapText(n.text, RC); n.h = n.lines.length * LH + 2 * PAD;
+        const row = Math.max(n.h, chipH || 0);
+        n.cy = y + row / 2; n.y = n.cy - n.h / 2; y += row + ROWGAP; return;
+      }
+      n.lines = wrapText(n.text, QC); n.h = n.lines.length * LH + 2 * PAD;
+      n.kids.forEach(k => { k.lines = wrapText(k.label, AC); k.h = k.lines.length * 14 + 12; place(k.node, k.h); k.cy = k.node.cy; });
+      n.cy = (n.kids[0].cy + n.kids[n.kids.length - 1].cy) / 2; n.y = n.cy - n.h / 2;
+    };
+    place(root);
+    const top = Math.min(0, root.y - 2), H = Math.max(y, root.y + root.h + 2) - top;
+    const svg = sv('svg', { viewBox: [0, top, W, H].join(' '), role: 'img', 'aria-label': 'Decision tree: ' + title, class: 'tree' });
+    const id = 'tree-ar-' + Math.random().toString(36).slice(2, 8);
+    const defs = sv('defs'); const mk = sv('marker', { id, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' });
+    mk.append(sv('path', { d: 'M0 0 L10 5 L0 10 z', fill: 'var(--text-mute)' })); defs.append(mk); svg.append(defs);
+    const lines = sv('g'), boxes = sv('g'); svg.append(lines, boxes);
+    const text = (x, yTop, rows, opt = {}) => rows.forEach((r, i) => boxes.append(sv('text', { x, y: yTop + i * (opt.lh || LH) + 11, 'text-anchor': 'middle', 'font-family': 'Inter, sans-serif', 'font-size': opt.size || 12, 'font-weight': opt.w || 400, fill: opt.fill || 'var(--text)' }, r)));
+    const draw = n => {
+      const x = n.kind === 'r' ? RX : colX(n.depth);
+      if (n.kind === 'r') {
+        boxes.append(sv('rect', { x, y: n.y, width: RW, height: n.h, rx: 10, fill: 'var(--good-soft)', stroke: 'var(--good)', 'stroke-width': 1.6 }));
+        text(x + RW / 2, n.y + PAD, n.lines, { w: 700, fill: 'var(--good)' });
+        return;
+      }
+      boxes.append(sv('rect', { x, y: n.y, width: QW, height: n.h, rx: 10, fill: 'var(--violet-soft)', stroke: 'var(--violet)', 'stroke-width': 1.5 }));
+      text(x + QW / 2, n.y + PAD, n.lines, { w: 600 });
+      const spine = x + QW + GAP / 2, chipX = x + QW + GAP;
+      n.kids.forEach(k => {
+        lines.append(sv('path', { d: 'M' + (x + QW) + ' ' + n.cy + ' H' + spine + ' V' + k.cy + ' H' + chipX, fill: 'none', stroke: 'var(--border-strong)', 'stroke-width': 1.5 }));
+        const childX = k.node.kind === 'r' ? RX : colX(k.node.depth);
+        lines.append(sv('path', { d: 'M' + (chipX + AW) + ' ' + k.cy + ' H' + (childX - 2), fill: 'none', stroke: 'var(--border-strong)', 'stroke-width': 1.5, 'marker-end': 'url(#' + id + ')' }));
+        boxes.append(sv('rect', { x: chipX, y: k.cy - k.h / 2, width: AW, height: k.h, rx: 8, fill: 'var(--bg)', stroke: 'var(--border-strong)' }));
+        text(chipX + AW / 2, k.cy - k.h / 2 + 6, k.lines, { size: 11, fill: 'var(--text-dim)', lh: 14 });
+        draw(k.node);
+      });
+    };
+    draw(root);
+    return { svg, width: W };
+  };
+  $$('.wizard').forEach(wz => {
+    if (wz.closest('details')) return;
+    let tree; try { tree = JSON.parse($('script[type="application/json"]', wz).textContent); } catch (_) { return; }
+    const title = $('.wz-title', wz)?.textContent || 'Decision';
+    const drawn = drawTree(tree, title);
+    if (!drawn) return;
+    drawn.svg.style.minWidth = Math.round(drawn.width * 0.62) + 'px';
+    const fig = h('figure', { class: 'fig tree-fig' }, h('div', { class: 'fig-box' }), h('figcaption', { text: 'Follow your answers left to right. Each green box is the recommendation; open the panel below for the details behind it.' }));
+    $('.fig-box', fig).append(drawn.svg);
+    const panel = h('details', { class: 'deeper' }, h('summary', {}, 'Prefer to click through it? Answer the questions ', h('small', { text: 'with the details for each result' })), h('div', { class: 'deeper-body' }));
+    wz.before(fig, panel);
+    $('.deeper-body', panel).append(wz);
+  });
+
   /* ---------- checklists ---------- */
   $$('.checklist-box').forEach(box => {
     const key = 'cl:' + box.dataset.checklist;
