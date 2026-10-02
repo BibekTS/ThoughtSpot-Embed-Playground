@@ -550,8 +550,14 @@ function drillPerVizCssRules(s) {
     [`[data-testid="popover-container"]:has([id="${DT_ACTION_ID}"]) #context-menu-item-show-underlying-data`]: { display: 'none !important' },
   };
 }
+// "Host header" layout (Custom Liveboard): the host renders title + tabs. hideLiveboardHeader would also
+// drop the native filter chips, and hideTabPanel makes HostEvent.SetActiveTab a silent no-op — so the
+// title is hidden by flag and the native tab bar by an UNSTABLE internal-class CSS rule (re-verify per release).
+const hostHeaderOn = (s) => s.section === 'liveboard-custom' && s.cfbLayout === 'host-header';
+const HOST_HEADER_FLAGS = { showLiveboardTitle: false, hideTabPanel: false };
+const HOST_HEADER_TAB_RULE = { '[class*="pinboard-tab-panel-module__tabPanel"]': { display: 'none !important' } };
 function effectiveCssRules(s) {
-  return { ...(s.styles.rules || {}), ...drillPerVizCssRules(s) };
+  return { ...(s.styles.rules || {}), ...drillPerVizCssRules(s), ...(hostHeaderOn(s) ? HOST_HEADER_TAB_RULE : {}) };
 }
 function hasStyles(s) {
   return Object.keys(s.styles.variables || {}).length || Object.keys(effectiveCssRules(s)).length || !!s.styles.cssUrl;
@@ -806,9 +812,47 @@ function setActive(id, { skipRender = false } = {}) {
   // Show/hide the website-native filter bar
   const cfb = $('#custom-filter-bar');
   if (cfb) cfb.hidden = id !== 'liveboard-custom';
+  hostHeaderSync();
   renderPersonalStrip(); // show/hide the Personal-liveboards strip for this section
   renderInspector();
   if (!skipRender) render();
+}
+
+// ── Host header (Custom Liveboard layout): host-rendered title + tabs above the filter bar ──────────
+function hostHeaderSync() {
+  const hh = $('#cfb-host-header');
+  if (hh) hh.hidden = !hostHeaderOn(getState());
+}
+async function hostHeaderBuild() {
+  hostHeaderSync();
+  const s = getState();
+  if (!hostHeaderOn(s)) return;
+  const embed = currentEmbed;
+  const id = effectiveLiveboardId(s);
+  // textContent only — the name comes from ThoughtSpot.
+  $('#cfb-hh-title').textContent = (discovered.liveboards || []).find(l => l.id === id || l.id === s.liveboardId)?.name || 'Liveboard';
+  const bar = $('#cfb-hh-tabs');
+  bar.replaceChildren(); bar.hidden = true;
+  let res;
+  try { res = await embed.trigger(HostEvent.GetTabs); logEvent('HostEvent', 'GetTabs'); }
+  catch (e) { logEvent('HostEvent', `✗ GetTabs: ${e.message}`); return; }
+  if (embed !== currentEmbed) return; // re-rendered while awaiting
+  const byId = new Map((res?.Tabs || []).map(t => [t.id, t]));
+  const tabs = (res?.orderedTabIds || [...byId.keys()]).map(i => byId.get(i)).filter(Boolean);
+  if (tabs.length < 2) return;
+  tabs.forEach((t, i) => {
+    const b = el('button', 'cfb-hh-tab' + (i ? '' : ' active')); b.type = 'button'; b.setAttribute('role', 'tab');
+    b.textContent = t.name || `Tab ${i + 1}`;
+    b.addEventListener('click', async () => {
+      try {
+        await embed.trigger(HostEvent.SetActiveTab, { tabId: t.id });
+        logEvent('HostEvent', `SetActiveTab: ${b.textContent}`);
+        bar.querySelectorAll('.cfb-hh-tab').forEach(x => x.classList.toggle('active', x === b));
+      } catch (e) { logEvent('HostEvent', `✗ SetActiveTab: ${e.message}`); }
+    });
+    bar.appendChild(b);
+  });
+  bar.hidden = false;
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────
@@ -891,7 +935,7 @@ function render() {
   authFailed = false; // fresh render — clear any prior auth-failure latch
   appliedRuntimeCols = new Set(); // fresh iframe carries no runtime filters yet
   currentEmbed = doRender(s.section, cfg, {
-    onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); applyLiveFilters(); if (getState().section === 'liveboard-custom') cfbBuild(); maybeOpenCreatedCopyForEdit(); },
+    onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); applyLiveFilters(); if (getState().section === 'liveboard-custom') { cfbBuild(); hostHeaderBuild(); } maybeOpenCreatedCopyForEdit(); },
     onError(msg) {
       clearTimeout(fallback);
       const str = typeof msg === 'string' ? msg : JSON.stringify(msg);
@@ -907,7 +951,7 @@ function render() {
     disabledActionReason: s.disabledActionReason,
     customActions: buildEmbedCustomActions(s),
     runtimeParameters: s.runtimeParameters,
-    flags: s.flags[s.section] || {},
+    flags: { ...(s.flags[s.section] || {}), ...(hostHeaderOn(s) ? HOST_HEADER_FLAGS : {}) },
     spotterQuery: s.section === 'spotter' ? pendingSpotterQuery : null,
   });
   pendingSpotterQuery = null; // consumed — only auto-runs on the render triggered by the bridge
@@ -5352,6 +5396,14 @@ async function downloadCfbReport() {
 // Inspector section: shows active filter columns + refresh.
 function sectionCfbSetup() {
   const c = el('div', 'sec-body');
+  const lay = el('select'); lay.setAttribute('aria-label', 'Layout');
+  [['default', 'ThoughtSpot header (default)'], ['host-header', 'Host header — title & tabs above filters']].forEach(([v, n]) => {
+    const o = el('option', '', n); o.value = v; lay.appendChild(o);
+  });
+  lay.value = getState().cfbLayout;
+  lay.addEventListener('change', () => { setState({ cfbLayout: lay.value }); hostHeaderSync(); render(); });
+  c.appendChild(lay);
+  c.appendChild(el('div', 'sec-note', 'Host header keeps ThoughtSpot’s native filter chips, renders the title and tabs in this page, and hides the native tab bar with an UNSTABLE internal CSS selector (re-verify after TS upgrades).'));
   c.appendChild(el('div', 'sec-note', 'Click "+ Add filter" in the bar above to add a column. Available columns are discovered from the liveboard data.'));
 
   if (cfbAllColumns.length) {
@@ -7024,6 +7076,7 @@ function generateCode() {
   if (s.section === 'fullapp') importNames.push('Page');
   if (s.section === 'ai-highlights') importNames.push('HostEvent');
   if (plbOn) importNames.push('HostEvent');
+  if (hostHeaderOn(s)) importNames.push('HostEvent');
 
   const L = [];
   L.push(`import {\n  ${[...new Set(importNames)].join(', ')}\n} from '@thoughtspot/visual-embed-sdk';`);
@@ -7044,6 +7097,7 @@ function generateCode() {
         if (Object.keys(s.styles.variables).length) { initLines.push('        variables: {'); Object.entries(s.styles.variables).forEach(([k, v]) => initLines.push(`          '${esc(k)}': '${esc(v)}',`)); initLines.push('        },'); }
         if (Object.keys(cssRules).length) {
           initLines.push('        rules_UNSTABLE: {');
+          if (hostHeaderOn(s)) initLines.push('          // UNSTABLE internal class: hides the native tab bar (hideTabPanel would break HostEvent.SetActiveTab).');
           if (Object.keys(perViz).length) initLines.push('          // Hide "Show underlying data" only in menus that also offer the drill-through action.');
           Object.entries(cssRules).forEach(([sel, decls]) => { initLines.push(`          '${esc(sel)}': {`); Object.entries(decls).forEach(([p, v]) => initLines.push(`            '${esc(p)}': '${esc(v)}',`)); initLines.push('          },'); });
           initLines.push('        },');
@@ -7087,12 +7141,14 @@ function generateCode() {
   // would disagree about which object the user is looking at. Keep this set in lockstep with the
   // constructors in js/embed.js.
   const pinnedKeys = new Set(['pageId']);
+  if (hostHeaderOn(s)) Object.keys(HOST_HEADER_FLAGS).forEach(k => pinnedKeys.add(k));
   if (['liveboard', 'liveboard-custom', 'ai-highlights', 'drillthrough'].includes(s.section)) pinnedKeys.add('liveboardId');
   if (s.section === 'viz') {
     if (s.answerId) { pinnedKeys.add('answerId'); pinnedKeys.add('hideSearchBar'); }
     else { pinnedKeys.add('liveboardId'); pinnedKeys.add('vizId'); }
   }
   Object.entries(s.flags[s.section] || {}).forEach(([k, v]) => { if (pinnedKeys.has(k)) return; if (k === 'isLiveboardMasterpiecesEnabled' && v === true) return; opt.push(`  ${k}: ${JSON.stringify(v)},`); });
+  if (hostHeaderOn(s)) opt.push('  showLiveboardTitle: false, // you render the title; keeps the native filter chips (hideLiveboardHeader would drop them)', '  hideTabPanel: false, // must stay false: true makes HostEvent.SetActiveTab a silent no-op');
   const hiddenKeys = hiddenActionKeys(s);
   if (hiddenKeys.length) opt.push(`  hiddenActions: [${hiddenKeys.map(a => `Action.${a}`).join(', ')}],`);
   if (s.disabledActions.length) opt.push(`  disabledActions: [${s.disabledActions.map(a => `Action.${a}`).join(', ')}],`);
@@ -7476,6 +7532,16 @@ function generateCode() {
       L.push(`  '${esc(col)}': ${entry},`);
     });
     L.push('};');
+  }
+  if (hostHeaderOn(s)) {
+    L.push(''); L.push('// Host header — your own title + tabs (the native tab bar is hidden by the rules_UNSTABLE rule in init()):');
+    L.push("embed.on(EmbedEvent.LiveboardRendered, async () => {");
+    L.push("  const { orderedTabIds, Tabs } = await embed.trigger(HostEvent.GetTabs);");
+    L.push("  // Render one button per tab in orderedTabIds order; titleEl.textContent = your liveboard name.");
+    L.push("  const tabEl = (id) => Tabs.find((t) => t.id === id); // { id, name, containerIds, ... }");
+    L.push("  // On click:");
+    L.push("  //   embed.trigger(HostEvent.SetActiveTab, { tabId: tabEl(orderedTabIds[0]).id });");
+    L.push("});");
   }
   if (cfbActiveFilters.length) {
     L.push(''); L.push('// Custom filter bar — selected values, applied live (ordered per filterValueOrder):');

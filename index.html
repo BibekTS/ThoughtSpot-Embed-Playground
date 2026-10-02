@@ -84,6 +84,12 @@
     <!-- Stage: render area + bottom panel -->
     <main id="stage">
 
+      <!-- Host-rendered Liveboard title + tabs (Custom Liveboard, "Host header" layout) -->
+      <div id="cfb-host-header" class="cfb-hh" hidden>
+        <h2 id="cfb-hh-title" class="cfb-hh-title"></h2>
+        <div id="cfb-hh-tabs" class="cfb-hh-tabs" role="tablist" aria-label="Liveboard tabs" hidden></div>
+      </div>
+
       <!-- Website-native filter bar (Custom Liveboard only) -->
       <div id="custom-filter-bar" class="cfb" hidden>
         <span class="cfb-heading">
