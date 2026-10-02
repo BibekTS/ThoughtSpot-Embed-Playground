@@ -1330,7 +1330,7 @@ app.get('/ts-token', requireAppSession, async (req, res) =&gt; {
     body: JSON.stringify({
       username,
       secret_key: SECRET_KEY,
-      validity_time_in_sec: 1800,          // cookieless: docs suggest 20-30 min or more
+      validity_time_in_sec: 300,           // bearer credential: keep short, autoLogin refreshes it
       org_identifier: tenant.org,          // only if Orgs are enabled
       persist_option: 'REPLACE',           // required; APPEND or REPLACE when sending variable_values
       // JIT: create the user on first visit (existing users are not updated)
@@ -1372,7 +1372,7 @@ init({
       <div class="card a"><h4>1. Identity from the request body</h4><p>The browser sends <code>{ tenant, region }</code> and the backend stamps it in. A user edits the body and gets someone else's scope.</p><p><b>Fix:</b> read identity from your verified session, then look up entitlements server-side. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_authenticate_the_user">docs</a></p></div>
       <div class="card b"><h4>2. Secret key in git or the browser</h4><p>The key allows a token request for any username with no further authentication. A leaked key lets anyone sign in as anyone.</p><p><b>Fix:</b> keep it in a secrets manager, never in the browser. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_store_the_secret_key">docs</a></p></div>
       <div class="card c"><h4>3. Endpoint without auth middleware</h4><p>The route is reachable with no session, so anyone can mint tokens. Easy to miss behind a load balancer.</p><p><b>Fix:</b> require your app session on the route, and test that an unauthenticated call returns 401.</p></div>
-      <div class="card d"><h4>4. Token lifetime nobody chose</h4><p>The default is 300 seconds, and the docs suggest 20 to 30 minutes or more for cookieless. A very long lifetime delays entitlement changes and offboarding.</p><p><b>Fix:</b> pick a lifetime on purpose, use <code>autoLogin: true</code> to refresh, and revoke at sign-out. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_v2_token">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/api-authv2#_revoking_a_token">docs</a></p></div>
+      <div class="card d"><h4>4. Token lifetime is a security setting</h4><p>A cookieless token is a bearer credential: whoever holds it acts as that user until it expires, and activity never extends it. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-sdk#_session_length">docs</a> A long lifetime widens the window for a leaked token and for offboarding.</p><p><b>Fix:</b> keep it as short as your refresh handles. <code>autoLogin: true</code> fetches a new token before expiry, so users are not signed out. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-sdk#_overview">docs</a> Revoke at sign-out and offboarding. <a class="src" href="https://developers.thoughtspot.com/docs/api-authv2#_revoking_a_token">docs</a></p></div>
     </div>
     <div class="callout"><div><strong>Plan for rotation</strong><p>Disabling trusted authentication invalidates the previous secret key, and a new key is generated when it is enabled again. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-secret-key#_disable_trusted_authentication">docs</a> Rehearse the cutover (new key into your secrets manager, confirm the service reads it) so rotation is a runbook step, not an outage. That runbook is our guidance, not a docs procedure.</p></div></div>
   </div></details>
@@ -1510,7 +1510,12 @@ const authEE = init({
     <div class="strip-arrow">→</div>
     <div class="strip-step d"><span class="n">3</span><b>Revoke</b><span>On sign-out, call <code>POST /api/rest/2.0/auth/token/revoke</code>.</span></div>
   </div>
-  <p class="takeaway">Cookieless tokens run <b>20 to 30 minutes or longer</b>; cookie-based tokens stay under a minute. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_v2_token">docs</a></p>
+  <p class="takeaway">A cookieless token is a <b>bearer credential until it expires</b>. Keep it short and let <code>autoLogin</code> refresh it. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-sdk#_overview">docs</a></p>
+  <div class="callout warn"><div><strong>Lifetime is a trade-off, and security wins ties</strong>
+    <p>The default is 300 seconds. For cookieless the docs say you may want "20 or 30 minutes, or more", and for cookie-based under a minute, because the token is used once to open a session. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_v2_token">docs</a> The longer cookieless suggestion saves token requests. It is not a security recommendation.</p>
+    <p>A longer token means a stolen token works longer and a removed user keeps access until it expires (or until you revoke it). <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-sdk#_session_length">docs</a> Our guidance: start at the default, lengthen only if refreshes cause visible problems, keep the token in memory rather than in storage or URLs, and size your token service for the extra requests.</p>
+    <p>One documented exception: for Spotter, set the token to at least 10 minutes, because Spotter workflows can run longer, and keep <code>refreshAuthTokenOnNearExpiry</code> on. <a class="src" href="https://developers.thoughtspot.com/docs/embed-spotter#_before_you_begin">docs</a></p>
+  </div></div>
 
   <details class="deeper"><summary>Go deeper: refresh options, v1 tokens and endpoints <small>about 3 min</small></summary><div class="deeper-body">
     <ul>
