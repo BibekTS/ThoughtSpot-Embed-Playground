@@ -20,6 +20,9 @@
  *     record_offset, the KPI/row-count badge reconciles, and a javascript: link template is refused
  *   ✓ Drill-through snippet probe (BACKLOG S46): the generated snippet's date helpers carry the
  *     LIVE CFB_DATE_NAME_RE (read from js/app.js) and the whole snippet parses as an ES module
+ *   ✓ Custom-filter-bar date probe (BACKLOG S14): a filter-bar selection on a date column pushes
+ *     NUMERIC UTC epochs (ms → s; Month(...) → BW_INC on the unwrapped column) — live AND in the
+ *     generated snippet — while text/number columns stay strings
  *   ✓ Custom-styles paste probe (BACKLOG S37): a pasted rules object is PARSED, never evaluated —
  *     an embedded expression must not run, while a plain rules object still adds its rule
  *   ✓ Connect-race probe (BACKLOG S33): a slow connect to host A that resolves after a connect to
@@ -826,6 +829,100 @@ async function runDrillthroughProbe(browser) {
   }
 }
 
+// Custom-filter-bar date probe (BACKLOG S14): cfbSelected holds STRINGS (state.js keeps it so across
+// links), and the bar used to push them as-is — TS silently ignores a date epoch sent as a string, so
+// picking a date in the filter bar filtered nothing. Both the live push (cfbApply) and the SDK-code
+// generator now route through cfbRuntimeFilter → dtCarryFilter. The liveboard data fetch is stubbed
+// in-page, so this runs with no ThoughtSpot instance; window.__lastCfbFilters (opt-in via
+// __TS_PLAYGROUND_PROBE) exposes what WOULD be pushed without a live embed.
+//   Date legs: a seconds epoch, a MILLISECONDS epoch (→ seconds), and a Month(...) bucket (→ unwrapped
+//     column + BW_INC over the whole month) must all arrive as NUMBERS.
+//   Positive controls (mandatory): a text column and a numeric-but-not-date column ('Store Id', whose
+//     value is in the epoch-seconds range) must stay IN over STRINGS — so "everything became a
+//     number" cannot pass.
+async function runCfbDateProbe(browser) {
+  const COLS = ['Region', 'Store Id', 'Ship Date', 'Month(Order Date)'];
+  const hash = Buffer.from(JSON.stringify({
+    section: 'liveboard-custom', liveboardId: 'lb-cfb', cfbCols: COLS,
+    cfbSelected: {
+      Region: ['East', 'West'], 'Store Id': ['150000000'],
+      'Ship Date': ['1769644800', '1769731200000'], 'Month(Order Date)': ['1733011200'],
+    },
+  }), 'utf8').toString('base64url');
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  try {
+    await probe.evaluateOnNewDocument((cols) => {
+      window.__TS_PLAYGROUND_PROBE = true;
+      window.__cfbDataHits = 0;
+      const realFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const u = typeof input === 'string' ? input : input?.url || String(input);
+        if (u.includes('/api/filter-values') || u.includes('metadata/liveboard/data')) {
+          window.__cfbDataHits++;
+          return new Response(JSON.stringify({ contents: [{ column_names: cols, data_rows: [
+            ['East', '150000000', 1769644800, 1733011200],
+            ['West', '150000001', 1769731200000, 1733011200],
+          ] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return realFetch(input, init);
+      };
+    }, COLS);
+    await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    const pushedSeen = await probe.waitForFunction(() => {
+      if (window.__lastCfbFilters) return true;
+      [...document.querySelectorAll('#insp-body button')].find((b) => b.textContent.includes('Refresh values'))?.click();
+      return false;
+    }, { polling: 500, timeout: 20_000 }).then(() => true, () => false);
+    const run = await probe.evaluate(async () => {
+      const { RuntimeFilterOp } = await import('./js/embed.js');
+      const filters = (window.__lastCfbFilters || []).map((f) => ({
+        columnName: f.columnName, operator: f.operator, values: f.values, types: f.values.map((v) => typeof v),
+      }));
+      document.querySelector('[data-tab="code"]')?.click();
+      await new Promise((r) => setTimeout(r, 400));
+      return {
+        filters, IN: RuntimeFilterOp.IN, BW_INC: RuntimeFilterOp.BW_INC, dataHits: window.__cfbDataHits,
+        code: document.getElementById('code-view')?.textContent || '',
+      };
+    });
+    const by = Object.fromEntries(run.filters.map((f) => [f.columnName, f]));
+    const same = (f, op, values, type) => !!f && f.operator === op
+      && JSON.stringify(f.values) === JSON.stringify(values) && f.types.every((t) => t === type);
+    const filtersOk = pushedSeen && run.filters.length === 4
+      && run.filters.every((f) => !/[()]/.test(f.columnName))
+      && same(by.Region, run.IN, ['East', 'West'], 'string')
+      && same(by['Store Id'], run.IN, ['150000000'], 'string')
+      && same(by['Ship Date'], run.IN, [1769644800, 1769731200], 'number')
+      && same(by['Order Date'], run.BW_INC, [1733011200, 1735689599], 'number');
+
+    const code = run.code;
+    const line = (col) => code.split('\n').find((l) => l.includes(`columnName: '${col}'`)) || '';
+    const codeOk = line('Region').includes("operator: RuntimeFilterOp.IN, values: ['East', 'West']")
+      && line('Store Id').includes("operator: RuntimeFilterOp.IN, values: ['150000000']")
+      && line('Ship Date').includes('operator: RuntimeFilterOp.IN, values: [1769644800, 1769731200]')
+      && line('Order Date').includes('operator: RuntimeFilterOp.BW_INC, values: [1733011200, 1735689599]')
+      && !["'1769644800'", "'1769731200000'", "'1733011200'"].some((q) => code.includes(q));
+
+    const snipDir = mkdtempSync(path.join(os.tmpdir(), 'cfb-snippet-'));
+    let codeParses = false;
+    try {
+      writeFileSync(path.join(snipDir, 'snippet.mjs'), code);
+      codeParses = spawnSync(process.execPath, ['--check', path.join(snipDir, 'snippet.mjs')]).status === 0;
+    } finally {
+      rmSync(snipDir, { recursive: true, force: true });
+    }
+    const importGaps = importGapsIn(code);
+    return {
+      filtersOk, codeOk, codeParses, importGaps, pushed: run.filters, dataHits: run.dataHits,
+      codeLines: code.split('\n').filter((l) => l.includes('columnName:')), probeErrors,
+    };
+  } finally {
+    await probe.close();
+  }
+}
+
 /**
  * A shared link's `flags` are NOT key-whitelisted by state.js sanitize, so a link can carry
  * `flags.<section>.liveboardId`. doRender spreads the explicit ids AFTER ...flags, so the render
@@ -1352,6 +1449,19 @@ try {
     && dtp.monthRangeOk && dtp.raceOk && dtp.carriedOk && dtp.presetOk && dtp.pinOk
     && dtp.probeErrors.length === 0;
 
+  const cfb = await runCfbDateProbe(browser);
+  console.log('');
+  console.log(`Custom-filter-bar probe (S14) — pushed filters: date columns carry NUMERIC UTC epochs (ms → s, Month(...) → BW_INC on the unwrapped column); text/number columns stay strings: ${cfb.filtersOk}`);
+  console.log(`Custom-filter-bar probe (S14) — generated snippet emits the same filters (unquoted epochs, BW_INC), parses, and imports what it uses: ${cfb.codeOk && cfb.codeParses && Array.isArray(cfb.importGaps) && cfb.importGaps.length === 0}`);
+  console.log(`  pushed: ${JSON.stringify(cfb.pushed)}`);
+  if (!cfb.codeOk) cfb.codeLines.forEach((l) => console.log('  - emitted:', l.trim()));
+  if (!cfb.codeParses) console.log('  - generated snippet does not parse');
+  (cfb.importGaps || ['(no SDK import line)']).forEach((g) => console.log('  - missing import:', g));
+  console.log(`  [diagnostic] stubbed liveboard data fetches: ${cfb.dataHits}`);
+  cfb.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const cfbOk = cfb.filtersOk && cfb.codeOk && cfb.codeParses && Array.isArray(cfb.importGaps)
+    && cfb.importGaps.length === 0 && cfb.probeErrors.length === 0;
+
   const gen = await runCodeGenImportProbe(browser);
   console.log('');
   console.log(`Code-gen import probe (S29) — sections walked: ${gen.sections} (snippets with an SDK import: ${gen.checked})`);
@@ -1417,7 +1527,7 @@ try {
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
     && s3pre.confirmShown && s3pre.noDiscoveryContact && s3pre.noAnyContact
-    && urlActOk && dtOk && genOk && flagOvOk && exfilOk && pasteOk && raceOk;
+    && urlActOk && dtOk && cfbOk && genOk && flagOvOk && exfilOk && pasteOk && raceOk;
   console.log(ok ? '\nBOOT CHECK: PASS' : '\nBOOT CHECK: FAIL');
 } finally {
   try { await browser?.close(); } catch { /* already gone */ }

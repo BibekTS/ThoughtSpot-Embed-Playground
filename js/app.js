@@ -5298,11 +5298,14 @@ function cfbSortValues(colName, values) {
 
 function cfbApply() {
   persistCfb();
-  if (!currentEmbed) return;
   // Merge cfb selections with any Inspector runtime filters so neither overwrites the other. Send the
   // full combined set; pushRuntimeFilters clears any column that was applied before but is now removed
   // (UpdateRuntimeFilters appends, so a de-selected column stays on the board unless we clear it).
   const filters = buildParentRuntimeFilters().filter(f => f.columnName && f.values && f.values.length);
+  // Diagnostic surface for the headless gate ONLY (same opt-in as enterDrill's __lastDrillFilters):
+  // lets a probe assert the TYPES of what would be pushed without a live embed.
+  if (window.__TS_PLAYGROUND_PROBE) window.__lastCfbFilters = filters;
+  if (!currentEmbed) return;
   try {
     pushRuntimeFilters(filters);
     const cfbActive = Object.entries(cfbSelected).filter(([, v]) => v?.length);
@@ -5563,12 +5566,21 @@ function extractRow(payload) {
 }
 
 // ── Drill-down carry-over (Q4) ────────────────────────────────────────────────
+// A custom-filter-bar selection as a runtime filter. cfbSelected stays STRINGS (state.js keeps it so
+// across links/reloads); coerce here, at trigger time. dtCarryFilter turns a date-named column's epoch
+// values into NUMBERS (UTC seconds; ms → s), unwraps Day(...)/Month(...), and makes a non-Day bucket
+// a BW_INC span; anything else stays IN over its strings. Shared by the live push and the SDK-code
+// generator so the two cannot diverge. Known, accepted trade-offs: a {Null} mixed into a date
+// selection makes that column fall back to strings, and several selected months become ONE span.
+function cfbRuntimeFilter(col, vals) {
+  return dtCarryFilter(col, vals, RuntimeFilterOp.IN);
+}
 // Parent filters = the website-native filter bar (cfbSelected) + any applied runtime filters.
 function buildParentRuntimeFilters() {
   const s = getState();
   const fromCfb = Object.entries(cfbSelected)
     .filter(([, v]) => v && v.length)
-    .map(([col, vals]) => ({ columnName: col, operator: RuntimeFilterOp.IN, values: vals }));
+    .map(([col, vals]) => cfbRuntimeFilter(col, vals));
   const fromActive = (s.activeFilters || [])
     .map(f => ({ columnName: f.columnName, operator: RuntimeFilterOp[f.opKey] ?? RuntimeFilterOp.IN, values: dateAwareValues(f) }));
   return [...fromActive, ...fromCfb];
@@ -7468,8 +7480,14 @@ function generateCode() {
     L.push(''); L.push('// Custom filter bar — selected values, applied live (ordered per filterValueOrder):');
     L.push('embed.trigger(HostEvent.UpdateRuntimeFilters, [');
     cfbActiveFilters.forEach(([col, vals]) => {
-      const ordered = cfbSortValues(col, vals);
-      L.push(`  { columnName: '${esc(col)}', operator: RuntimeFilterOp.IN, values: [${ordered.map(v => `'${esc(v)}'`).join(', ')}] },`);
+      const f = cfbRuntimeFilter(col, cfbSortValues(col, vals));
+      // dtCarryFilter returns all-numbers (a date column) or all-strings — never a mix.
+      const isDate = f.values.length && typeof f.values[0] === 'number';
+      const opKey = f.operator === RuntimeFilterOp.BW_INC ? 'BW_INC' : 'IN';
+      // Date epochs must be NUMBERS (unquoted); text/number values stay quoted strings.
+      const lit = f.values.map(v => typeof v === 'number' ? String(v) : `'${esc(v)}'`).join(', ');
+      const note = isDate ? `  // ${f.values.map(epochSecToISO).join(opKey === 'BW_INC' ? ' … ' : ', ')} (UTC, epoch seconds)` : '';
+      L.push(`  { columnName: '${esc(f.columnName)}', operator: RuntimeFilterOp.${opKey}, values: [${lit}] },${note}`);
     });
     L.push(']);');
   }
