@@ -121,3 +121,8 @@ This log is the raw material for org retrospectives (BACKLOG M2).
   `git git` typo, a QA step that read the tree the mutation test had just reverted, and M2 blind
   to a live 3.91:1 failure. The fix was a fixture of known violations, the M9/M10 lesson applied to
   checks. (2) This session also hit the shared-checkout collision already filed as M22.
+- 2026-10-01 (S14, `deep`): research and architect reused `dtCarryFilter` wholesale, which quietly widened
+  scope (unwrapping bucketed cfb names) past the acceptance criteria. Every lens plus /code-review caught it,
+  but only after a full build, so a second build/review/QA round was needed (M32). Running the Review Board
+  with four lenses plus /code-review in parallel worked well. Stopping a stale QA run mid-mutation left an
+  orphan worktree (M33). The guide lane ran in parallel and found the guide current.
