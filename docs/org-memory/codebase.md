@@ -973,10 +973,38 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   - Warehouse OAuth is a documented fourth row-level mechanism.
   - The live `handling-embed-errors` page has no `INIT_ERROR`, `LOGIN_FAILED` or `FatalError`. It says
     "do not destroy the embed on errors", but also says SEV1 errors may need a teardown.
-  - `EmbedErrorSeverity`: the reference says SDK 1.52.0, the error page announces it for 1.53.0 (filed M32).
+  - `EmbedErrorSeverity`: the reference says SDK 1.52.0, the error page announces it for 1.53.0 (filed M34).
   - CSP allowlists: the docs support `*.domain` wildcards and localhost, and only recommend removing
     localhost in production.
   - Spotter 3: What's new says Early Access, while the FAQ says "Recommended".
   - The `users/import` `dry_run` default is true.
   - Working doc slugs: `set-locale` and `embed-ai-search-analytics`. The MCP's `locale-setting` and
     `embed-ai-analytics` return "Not found".
+- 2026-10-01 (S14): **`cfbRuntimeFilter(col, vals)` (js/app.js ~5575) is the single path from custom-filter-bar
+  selections to runtime filters**, shared by `buildParentRuntimeFilters().fromCfb` and the SDK-code
+  generator. Plain columns go through `dtCarryFilter(col, vals)` (operator defaults to IN): date-named
+  (`CFB_DATE_NAME_RE`) + every value an epoch (1e8..1e11 s, or ms → s) → NUMBER UTC seconds, else IN over
+  the original strings. With no bucket, `dtCarryFilter` never changes columnName/operator and never
+  returns BW_INC. Bucket-wrapped names (`Month(...)`) pass through untouched, still dead (S51).
+  `cfbSelected` MUST stay strings: state.js `str()`/`strArr` drop non-strings on reload/share, so coerce
+  at trigger time only. Report exports still read raw `cfbSelected` (S52). Supersedes the S14 line refs
+  above (2026-07-13 entry), which are stale.
+- 2026-10-01 (S14): headless cfb probing needs no TS host: `cfbLoadData()` with authType None fetches the
+  relative `/api/rest/2.0/metadata/liveboard/data`; an in-page `window.fetch` stub feeds it, and clicking
+  "↻ Refresh values" in `#insp-body` runs `cfbBuild` → `cfbApply`. `cfbApply` records
+  `window.__lastCfbFilters` (only under `__TS_PLAYGROUND_PROBE`) BEFORE its `!currentEmbed` return.
+  The probe runs before `runCodeGenImportProbe`, whose `#s=` load overwrites the cfb probe's persisted
+  localStorage before the bare-URL S37/S33 probes — inserting a probe between gen and paste/race is NOT safe.
+- 2026-10-01 (S14 review): "pick a day" disagrees across the app: `dtCarryFilter` sends Day/unbucketed
+  dates as IN [dayStart], the date button sends a full-day BW_INC (matches DATE and DATE_TIME). IN on a
+  day epoch is only right for DATE columns or exact stored timestamps. `JSON.stringify(values)` in a
+  probe already distinguishes `"1"` from `1` — a separate `typeof` check is redundant.
+- 2026-10-01 (S14 guide lane): the TS runtime-filters doc's own multi-filter example uses a STRING epoch
+  (`'1656680400'`); only filters-overview states epochs must be numbers. The guide (v3.2.0) already
+  flags this contradiction. Upcoming (not released): `EmbedEvent.Error` gains `severity` (SEV1–3) in
+  26.10.0.cl / SDK 1.53.0.
+- 2026-10-01 (S14 QA): **when a probe reads a diagnostic hook, the mutation test must keep the hook and
+  revert only the logic.** Reverting the whole file removes `__lastCfbFilters` too, so the leg fails on
+  `pushed: []`, which proves nothing about the values; only "hook kept, coercion reverted" did. Also:
+  macOS `sed` BRE treats `\(...\)` as a group, so a mutation can silently not land; run `git diff` to
+  confirm it applied. zsh has `pipestatus`, not `PIPESTATUS`.
