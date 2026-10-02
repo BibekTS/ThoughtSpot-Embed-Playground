@@ -53,6 +53,17 @@ the two disagree, cite the live page.
    anchors from the live page. It binds no port, so it is safe alongside the other gates. Report its
    output verbatim, including ⚠ warnings.
 
+## House style: visual first (the owner's standing preference)
+In v3.0 the guide was rewritten densely, and the owner said it was "too dense and hard to follow"
+and that the sidebar had "too many options". v3.1 fixed that. Keep it that way:
+- **Six chapters only** (the `#chapters` JSON). A new section joins an existing chapter. Never add a
+  chapter or a flat sidebar entry without the owner's say-so.
+- **Each section opens with a picture**: a stepper, `.strip`, `.vs`, `.pillars` or cards, then one
+  `.takeaway` sentence. Visible prose stays around 250 words. Tables, edge cases, version detail, code
+  and docs-vs-field conflicts go in `details.deeper` ("Go deeper") panels.
+- No TL;DR boxes. At most 2 scenario notes per section. Light mode is the default.
+- New facts usually belong inside an existing deeper panel, not in new visible prose.
+
 ## Review-only mode
 When the prompt says **review-only**, you are the accuracy lens on someone else's guide diff. Skip
 steps 1–5 above. Edit nothing, commit nothing, and do not stamp `#guide-meta`. Read the diff at the
