@@ -1017,3 +1017,13 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   after LiveboardRendered returns `{ orderedTabIds, numberOfTabs, Tabs: [{ id, name, containerIds, … }] }`; order by
   `orderedTabIds`. App wiring: `hostHeaderOn(s)` / `HOST_HEADER_*` (js/app.js ~553) feed `effectiveCssRules` (so
   `hasStyles` is true without other styles) and the `flags` passed to `doRender`; state key `cfbLayout`.
+- 2026-10-02 (cfb 'host-header-actions' layout, SDK 1.49.0, verified headless vs ps-internal): the native action row
+  (star, AI Highlights, Share, "…") is hidden by `rules_UNSTABLE` `'[class*="pinboard-header-module__headerContainer"]'
+  { display: 'none !important' }` (internal class, UNSTABLE); native filter chips stay. With it hidden the sticky header
+  draws a faded DUPLICATE chip row — force `isLiveboardHeaderSticky: false` (also stops chips spilling under the row).
+  `HostEvent.Share` opens TS's Share modal; `HostEvent.AIHighlights` generates highlights (TS toast "Highlights are
+  ready! View"). AIHighlights logs TS-internal `DataCloneError ... Symbol(react.element)` console errors from TS's own
+  event bridge inside the iframe — harmless, do NOT "fix". There is NO HostEvent for the Favorite star and REST
+  favorites need admin (users/{id}/update), so the star is dropped. 1.49.0 members used: Edit, MakeACopy,
+  DownloadAsPdf, Present, Schedule, SchedulesList, ExportTML, LiveboardInfo, Share, AIHighlights. App: `hostActionsOn`,
+  `hostFlags`, `hostHeaderWire` (js/app.js ~556, ~830).

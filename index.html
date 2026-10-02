@@ -86,7 +86,17 @@
 
       <!-- Host-rendered Liveboard title + tabs (Custom Liveboard, "Host header" layout) -->
       <div id="cfb-host-header" class="cfb-hh" hidden>
-        <h2 id="cfb-hh-title" class="cfb-hh-title"></h2>
+        <div class="cfb-hh-row">
+          <h2 id="cfb-hh-title" class="cfb-hh-title"></h2>
+          <div id="cfb-hh-actions" class="cfb-hh-actions" hidden>
+            <button id="cfb-hh-ai" class="cfb-hh-ai" type="button">AI Highlights</button>
+            <button id="cfb-hh-share" class="cfb-hh-btn" type="button">Share</button>
+            <div class="cfb-hh-menuwrap">
+              <button id="cfb-hh-more" class="cfb-hh-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions">&hellip;</button>
+              <div id="cfb-hh-menu" class="cfb-hh-menu" role="menu" hidden></div>
+            </div>
+          </div>
+        </div>
         <div id="cfb-hh-tabs" class="cfb-hh-tabs" role="tablist" aria-label="Liveboard tabs" hidden></div>
       </div>
 
