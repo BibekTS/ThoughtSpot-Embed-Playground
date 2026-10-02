@@ -30,7 +30,7 @@
 </script>
 <script type="application/json" id="guide-meta">
 {
-  "version": "3.1.0",
+  "version": "3.2.0",
   "lastUpdated": "2026-10-01",
   "verifiedAgainst": {
     "sdk": "1.52.0",
@@ -40,6 +40,11 @@
   "staleAfterDays": 90,
   "sourceOfTruth": "https://developers.thoughtspot.com/docs/",
   "changelog": [
+    {
+      "version": "3.2.0",
+      "date": "2026-10-01",
+      "summary": "Trusted auth now mints with auth/token/custom, with the conditions for just-in-time users and how ABAC values reach RLS. The v2 decision-tree diagram is back under \"Which way fits you?\". Copy pass to remove AI-sounding phrasing, and no em dashes anywhere."
+    },
     {
       "version": "3.1.0",
       "date": "2026-10-01",
@@ -1144,7 +1149,8 @@
       </g>
       <g data-step="6" color="var(--lane-b)">
         <line x1="539" y1="414" x2="771" y2="414" stroke="currentColor" stroke-width="2" marker-end="url(#ar-flow1)"/>
-        <text x="655" y="406" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="var(--text)">6 POST auth/token/full + secret_key</text>
+        <text x="655" y="406" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="var(--text)">6 POST auth/token/custom + secret_key</text>
+        <text x="655" y="429" text-anchor="middle" font-family="Inter, sans-serif" font-size="9.5" fill="var(--text-mute)">username, JIT fields, RLS variable values</text>
       </g>
       <g data-step="7" color="var(--lane-d)">
         <line x1="771" y1="450" x2="539" y2="450" stroke="currentColor" stroke-width="2" marker-end="url(#ar-flow1)"/>
@@ -1164,8 +1170,8 @@
       <li><b>User signs in at your IdP</b><div class="detail">Your app sends the user to Okta, Auth0, Cognito, Entra, or your own login form. You can use SAML, OIDC or a custom login; ThoughtSpot never sees it. The docs list user sessions, JWTs and LDAP/AD as places the token service finds the user. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_authenticate_the_user">docs</a></div></li>
       <li><b>Your app sets its own session</b><div class="detail">This cookie or JWT belongs to your app. Its only job later is to prove to your backend who the user is. ThoughtSpot never receives it.</div></li>
       <li><b>The SDK asks for a token</b><div class="detail">Phase B begins. <code>init()</code> calls your <code>getAuthToken</code> callback, which calls your endpoint with the app session attached. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth#_overview_of_implementation">docs</a></div></li>
-      <li><b>Your backend decides who</b><div class="detail">It verifies the session and derives the username itself, never from the request body. If you pass groups or RLS variable values, look them up here, server-side. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_authenticate_the_user">docs</a></div></li>
-      <li><b>Backend calls ThoughtSpot with the secret key</b><div class="detail"><code>POST /api/rest/2.0/auth/token/full</code>. No user password is needed. The secret key lets the caller request a token for any username, so it stays on the server. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_store_the_secret_key">docs</a></div></li>
+      <li><b>Your backend decides who</b><div class="detail">It verifies the session and derives the username itself, never from the request body. It also looks up, server-side, the user's groups and the values your RLS rules need, and whether a first-time user should be created. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_authenticate_the_user">docs</a></div></li>
+      <li><b>Backend calls ThoughtSpot with the secret key</b><div class="detail"><code>POST /api/rest/2.0/auth/token/custom</code> (TS 10.4.0.cl+), which the docs recommend for ABAC via RLS. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a> One call can create the user (JIT) and hand over the values RLS reads. No user password is needed. The secret key lets the caller request a token for any username, so it stays on the server. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_store_the_secret_key">docs</a></div></li>
       <li><b>ThoughtSpot returns a token</b><div class="detail">The default validity is 300 seconds. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_v2_token">docs</a></div></li>
       <li><b>Backend returns a fresh token</b><div class="detail">Return a new token on every call. A duplicate triggers <code>DUPLICATE_TOKEN_ERR</code>. <a class="src" href="https://developers.thoughtspot.com/docs/handling-embed-errors#_error_handling_guidelines">docs</a></div></li>
       <li><b>The SDK uses it as a bearer token</b><div class="detail">In cookieless mode the token is used on every request and no browser session is created. With <code>autoLogin: true</code> the SDK fetches a new token before expiry. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-sdk#_overview">docs</a></div></li>
@@ -1175,6 +1181,42 @@
 
   <p class="takeaway">The session cookie proves the user <b>to your backend</b>. The secret key proves your backend <b>to ThoughtSpot</b>. Two credentials, two trust relationships.</p>
 
+  <h3 id="trusted-flow-request">What goes in the token request</h3>
+  <p>One <code>auth/token/custom</code> call answers three questions about the user. Only <code>username</code> and <code>persist_option</code> are required. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a></p>
+  <div class="pillars">
+    <div class="pillar b"><span class="ico">⚿</span><b>Who is this?</b><span><code>username</code>, <code>secret_key</code>, <code>org_identifier</code>, <code>validity_time_in_sec</code> (default 300)</span></div>
+    <div class="pillar a"><span class="ico">＋</span><b>Create them on first visit?</b><span>JIT: <code>auto_create</code>, <code>display_name</code>, <code>email</code>, <code>groups</code></span></div>
+    <div class="pillar c"><span class="ico">⛨</span><b>Which rows may they see?</b><span>ABAC: <code>variable_values</code> + <code>persist_option</code>, optionally scoped with <code>objects</code></span></div>
+  </div>
+
+  <h4 id="trusted-flow-jit">Just-in-time users: the conditions</h4>
+  <div class="rules">
+    <div class="rule do"><ul>
+      <li>Send <code>auto_create: true</code> with <code>display_name</code>, <code>email</code> and <code>groups</code> (<code>[{ "identifier": "…" }]</code>) for users who may not exist yet. <a class="src" href="https://developers.thoughtspot.com/docs/just-in-time-provisioning#_autocreate_using_token_request">docs</a></li>
+      <li>Use the <code>secret_key</code>: JIT provisioning requires it. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a></li>
+      <li>Check privileges: adding a user during auto-creation requires <code>ADMINISTRATION</code>, or under RBAC <code>CONTROL_TRUSTED_AUTH</code> plus edit access to the data source. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a></li>
+    </ul></div>
+    <div class="rule dont"><ul>
+      <li>Expect JIT to update an existing user: with <code>auto_create: true</code> their display name, email, Org and group entitlements are <b>not</b> changed. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a></li>
+      <li>Expect it to create formula variables. It creates the user (and any new groups, with default options), never the variables. <a class="src" href="https://developers.thoughtspot.com/docs/just-in-time-provisioning#_autocreate_using_token_request">docs</a></li>
+      <li>Forget the default: <code>auto_create</code> is <code>true</code> on <code>auth/token/custom</code> (10.5.0.cl+) but <code>false</code> on <code>auth/token/full</code>. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a></li>
+    </ul></div>
+  </div>
+
+  <h4 id="trusted-flow-abac">ABAC with RLS: how the values reach a query</h4>
+  <div class="strip">
+    <div class="strip-step b"><span class="n">1</span><b>Create the variable</b><span>A formula variable, once, via <code>template/variables/create</code></span></div><div class="strip-arrow">→</div>
+    <div class="strip-step c"><span class="n">2</span><b>Reference it in RLS</b><span>The table's RLS rule reads the variable</span></div><div class="strip-arrow">→</div>
+    <div class="strip-step d"><span class="n">3</span><b>Send values in the token</b><span><code>variable_values</code> per user, at mint time</span></div><div class="strip-arrow">→</div>
+    <div class="strip-step a"><span class="n">4</span><b>Every query is filtered</b><span>Models, Liveboards, Answers and Spotter</span></div>
+  </div>
+  <div class="callout warn"><div><strong>Watch for these</strong>
+    <p>The variable must already exist: <code>name</code> refers to an existing formula variable. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a></p>
+    <p>With <code>variable_values</code>, <code>persist_option</code> must be <code>APPEND</code> or <code>REPLACE</code>. <code>RESET</code> and <code>NONE</code> work only without them. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a></p>
+    <p>Values are written to the user's profile <b>when the token is created</b>, not when it is used, and later sessions keep using them. A token you mint and throw away still changes the user. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a></p>
+    <p>Version gates differ between pages (the REST field says 10.14.0.cl, the ABAC guide says 10.15.0.cl), and RLS, not runtime filters, is the security boundary. Details in <a href="#data-security">Data security</a>.</p>
+  </div></div>
+
   <h3 id="trusted-flow-jobs">The token endpoint does six jobs</h3>
   <p>The path is yours (<code>/ts-token</code> or anything else). ThoughtSpot does not provide this endpoint, and every security property of the integration passes through it.</p>
   <div class="strip">
@@ -1183,7 +1225,7 @@
     <div class="strip-step b"><span class="n">3</span><b>Resolve</b><span>Look up groups or RLS values server-side.</span></div>
   </div>
   <div class="strip">
-    <div class="strip-step b"><span class="n">4</span><b>Build payload</b><span>Username, org, validity.</span></div><div class="strip-arrow">→</div>
+    <div class="strip-step b"><span class="n">4</span><b>Build payload</b><span>Username, org, JIT fields, RLS values.</span></div><div class="strip-arrow">→</div>
     <div class="strip-step d"><span class="n">5</span><b>Call ThoughtSpot</b><span>With <code>secret_key</code> from a secrets manager.</span></div><div class="strip-arrow">→</div>
     <div class="strip-step a"><span class="n">6</span><b>Return and log</b><span>Send the token, record the mint.</span></div>
   </div>
@@ -1200,7 +1242,9 @@ app.get('/ts-token', requireAppSession, async (req, res) =&gt; {
   // 2. Identity comes from YOUR verified session, not from req.query or req.body.
   const username = req.user.email;
 
-  const r = await fetch(`${TS_HOST}/api/rest/2.0/auth/token/full`, {
+  const tenant = await lookupTenant(req.user);   // your data: org, groups, RLS values
+
+  const r = await fetch(`${TS_HOST}/api/rest/2.0/auth/token/custom`, {
     method: 'POST',
     headers: {
       'Accept': 'application/json',
@@ -1210,9 +1254,16 @@ app.get('/ts-token', requireAppSession, async (req, res) =&gt; {
     body: JSON.stringify({
       username,
       secret_key: SECRET_KEY,
-      validity_time_in_sec: 1800, // cookieless: docs suggest 20-30 min or more
-      org_id: 0,                  // your Org id if Orgs are enabled
-      auto_create: false,         // true only if you rely on JIT provisioning
+      validity_time_in_sec: 1800,          // cookieless: docs suggest 20-30 min or more
+      org_identifier: tenant.org,          // only if Orgs are enabled
+      persist_option: 'REPLACE',           // required; APPEND or REPLACE when sending variable_values
+      // JIT: create the user on first visit (existing users are not updated)
+      auto_create: true,
+      display_name: req.user.name,
+      email: req.user.email,
+      groups: [{ identifier: tenant.group }],
+      // ABAC: values for the formula variable your RLS rule reads
+      variable_values: [{ name: 'allowed_regions', values: tenant.regions }],
     }),
   });
 
@@ -1224,7 +1275,7 @@ app.get('/ts-token', requireAppSession, async (req, res) =&gt; {
   res.set('Cache-Control', 'no-store');
   res.json({ token });
 });</code></pre>
-    <p>This request shape follows the documented quick example. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_quick_code_example">docs</a></p>
+    <p>The fields follow the <code>auth/token/custom</code> reference. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a> <code>allowed_regions</code> and <code>lookupTenant</code> are placeholders for your own names.</p>
     <pre class="code" data-lang="js" data-title="Front end: no secret, no entitlement logic"><code>import { init, AuthType } from '@thoughtspot/visual-embed-sdk';
 
 init({
@@ -1236,7 +1287,7 @@ init({
       .then((r) =&gt; r.json())
       .then((d) =&gt; d.token),
 });</code></pre>
-    <p>Mint with <code>auth/token/custom</code> instead if you pass RLS variable values; see the token endpoint table in the identity chapter. When you set <code>auto_create: true</code>, the user is created in the same call, and any new groups are created with default options. <a class="src" href="https://developers.thoughtspot.com/docs/just-in-time-provisioning#_autocreate_using_token_request">docs</a></p>
+    <p>No RLS variables and no JIT? <code>auth/token/full</code> with <code>username</code>, <code>secret_key</code> and <code>validity_time_in_sec</code> is enough, and its <code>auto_create</code> defaults to <code>false</code>. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-token-request-service#_quick_code_example">docs</a></p>
   </div></details>
 
   <details class="deeper"><summary>Go deeper: four bugs to look for in review <small>about 2 min</small></summary><div class="deeper-body">
