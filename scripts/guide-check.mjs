@@ -12,6 +12,8 @@
  *   - a source link or feature badge whose source is not developers.thoughtspot.com
  *   - an interactive widget that does not render or throws when clicked
  *   - horizontal page scroll at phone width (390px)
+ * With --links (network; the docs-curator runs it before every guide PR) it also fetches every cited
+ * developers.thoughtspot.com page and fails on a page that does not load or an #anchor the page lacks.
  * Stale sections (data-verified older than meta.staleAfterDays) are reported as WARNINGS — the
  * docs-curator re-verifies them; they do not fail the gate.
  *
@@ -27,7 +29,9 @@ const require = createRequire(import.meta.url);
 const puppeteer = require('puppeteer-core');
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const FILE = path.resolve(process.argv[2] || path.join(ROOT, 'docs', 'tse-best-practices.html'));
+const ARGS = process.argv.slice(2);
+const CHECK_LINKS = ARGS.includes('--links');
+const FILE = path.resolve(ARGS.find((a) => !a.startsWith('--')) || path.join(ROOT, 'docs', 'tse-best-practices.html'));
 const DOCS = 'https://developers.thoughtspot.com/';
 
 const CHROME = [
@@ -44,9 +48,12 @@ if (!existsSync(FILE)) { console.error(`guide-check: ${FILE} not found`); proces
 const failures = [];
 const warnings = [];
 const fail = (m) => failures.push(m);
-const watchdog = setTimeout(() => { console.error('guide-check: timed out'); process.exit(1); }, 90_000);
-
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
+const watchdog = setTimeout(async () => {
+  console.error('guide-check: timed out');
+  await browser.close().catch(() => {});   // never orphan Chrome
+  process.exit(1);
+}, CHECK_LINKS ? 240_000 : 90_000);
 try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 900 });
@@ -97,6 +104,7 @@ try {
       if (!s.querySelector('h2')) out.errs.push(`section #${s.id} has no <h2>`);
       const v = s.dataset.verified;
       if (!iso.test(v || '')) out.errs.push(`section #${s.id} has no valid data-verified`);
+      else if (Date.parse(v) > Date.parse(meta.lastUpdated)) out.errs.push(`section #${s.id} data-verified ${v} is after meta.lastUpdated ${meta.lastUpdated}`);
       else if (Date.now() - Date.parse(v) > staleMs) out.warns.push(`section #${s.id} last verified ${v} (older than ${meta.staleAfterDays || 90} days)`);
     });
 
@@ -116,8 +124,10 @@ try {
       const host = b.closest('tr, .card, .callout') || b.closest('li, p, h3, h4, div');
       if (!b.dataset.src && !host?.querySelector('a.src')) out.warns.push(`${b.className.replace('badge ', '')} badge without a nearby source: "${(host?.textContent || '').trim().slice(0, 60)}"`);
     });
-    if (document.getElementById('foot-updated')?.textContent.trim() === '—') out.errs.push('footer "Last updated" did not render');
-    if (document.getElementById('feature-index') && !document.querySelector('#feature-index tbody tr')) out.errs.push('feature status index rendered no rows');
+    const foot = document.getElementById('foot-updated');
+    if (!foot || foot.textContent.trim() === '—') out.errs.push('footer "Last updated" is missing or did not render');
+    if (!document.getElementById('feature-index')) out.errs.push('feature status index (#feature-index) is missing');
+    else if (!document.querySelector('#feature-index tbody tr')) out.errs.push('feature status index rendered no rows');
     if (!document.querySelector('#nav a')) out.errs.push('sidebar nav did not render');
     $$('.wizard').forEach((w, i) => { if (!w.querySelector('.wz-opts button')) out.errs.push(`wizard #${i} rendered no options`); });
     $$('.stepper').forEach((s, i) => { if (!s.querySelector('.stepper-bar')) out.errs.push(`stepper #${i} rendered no controls`); });
@@ -174,6 +184,31 @@ try {
   if (overflow) fail(`horizontal page scroll at 390px: ${overflow}`);
 
   errors.forEach(fail);
+
+  // ---- --links: every cited docs page loads and every #anchor exists on it ----
+  if (CHECK_LINKS) {
+    const urls = await page.evaluate(() => [...new Set([...document.querySelectorAll('a[href^="https://developers.thoughtspot.com/"]')].map((a) => a.href)
+      .concat([...document.querySelectorAll('.badge[data-src]')].map((b) => b.dataset.src)))]);
+    const byPage = new Map();
+    urls.forEach((u) => { const [p, a] = u.split('#'); if (!byPage.has(p)) byPage.set(p, new Set()); if (a) byPage.get(p).add(a); });
+    let bad = 0;
+    const pages = [...byPage];
+    for (let i = 0; i < pages.length; i += 8) {
+      await Promise.all(pages.slice(i, i + 8).map(async ([p, anchors]) => {
+        let html = '';
+        try {
+          const r = await fetch(p, { redirect: 'follow', signal: AbortSignal.timeout(20_000) });
+          if (!r.ok) { fail(`source page ${r.status}: ${p}`); bad++; return; }
+          html = await r.text();
+        } catch (e) { fail(`source page unreachable: ${p} (${e.message})`); bad++; return; }
+        const ids = new Set([...html.matchAll(/\s(?:id|name)="([^"]+)"/g)].map((m) => m[1]));
+        // restV2-playground deep links are client-side routes, not anchors; skip them.
+        if (/restV2-playground/.test(p)) return;
+        anchors.forEach((a) => { if (!ids.has(decodeURIComponent(a))) { fail(`anchor #${a} not found on ${p}`); bad++; } });
+      }));
+    }
+    console.log(`  --links: ${byPage.size} pages, ${urls.length} links checked, ${bad} broken`);
+  }
 
   const c = report.counts || {};
   console.log(`guide-check: ${path.relative(ROOT, FILE)} — v${report.meta?.version} · last updated ${report.meta?.lastUpdated} · `

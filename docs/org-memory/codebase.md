@@ -954,5 +954,11 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `variable_values` (10.14.0.cl+). Docs/field
   contradictions recorded in the guide: `available_data_row_count` equals the page size on full pages
   (docs call it a total), runtime-filter date examples use string epochs (`UpdateFilters` requires numbers),
-  and the `GetFilters` envelope (filed as S50). Section writers WITHOUT the MCP guessed REST doc URLs,
-  so a per-section MCP fact-check pass is mandatory before publishing new guide content.
+  and the `GetFilters` envelope (filed as S50). The docs themselves disagree here (array vs
+  `{liveboardFilters}`), so handle both. Section writers WITHOUT the MCP guessed REST doc URLs, so a
+  per-section MCP fact-check pass is mandatory before publishing new guide content. **The MCP index can
+  lag the live site.** It said 49 runtime filters, while the live page says URL 50 and SDK `runtimeFilters`
+  default/max 1,000 (configurable). For limits, versions and statuses, confirm on the published page.
+  Published heading ids keep underscores (`_non_embedded`) where MCP text collapses them; 68 anchors broke
+  this way, and `guide-check --links` catches it. The `reviewer` agent cannot load the MCP (its tools are
+  Read/Glob/Grep/Bash), so accuracy review uses `docs-curator` in review-only mode.

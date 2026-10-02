@@ -17,6 +17,11 @@ names, endpoints, defaults, limits and status. Confirm SDK members with the `sym
 write from memory. The docs mark beta features as `[beta betaBackground]Beta`. Also watch for "Early
 Access", "contact ThoughtSpot Support to enable", and deprecation notices.
 If the MCP is unavailable, **stop and report**. Do not edit claims without a source.
+**The published page is the tie-breaker.** The MCP index can lag the live site. In the v3.0.0 rewrite,
+the MCP gave a runtime-filter limit of 49, while the live `runtime-filters` page says URL filters are
+capped at 50 and the SDK `runtimeFilters` limit is configurable, with a default and maximum of 1,000.
+For any limit, version or status you change, `curl` the cited page and confirm the text there. When
+the two disagree, cite the live page.
 
 ## Each run
 1. **Find the drift.** Compare `#guide-meta.verifiedAgainst` with the latest SDK and Cloud release in
@@ -42,12 +47,21 @@ If the MCP is unavailable, **stop and report**. Do not edit claims without a sou
    `verifiedAgainst` if you checked against a newer release, and **prepend** a `changelog` entry
    `{version, date, summary}` whose version and date match. The footer, hero and "What changed" log
    render from this block. Never hand-edit those.
-6. **Gate.** Run `npm run guide-check`. It must pass with no ✗ lines. It binds no port, so it is safe
-   alongside the other gates. Report its output verbatim, including ⚠ warnings.
+6. **Gate.** Run `npm run guide-check -- --links`. It must pass with no ✗ lines. `--links` fetches every
+   cited page and fails on a page that does not load or an `#anchor` the page lacks. The published
+   docs keep underscores where the MCP collapses them (`_non_embedded`, not `_nonembedded`), so copy
+   anchors from the live page. It binds no port, so it is safe alongside the other gates. Report its
+   output verbatim, including ⚠ warnings.
 
 ## Rules
 - Never weaken `scripts/guide-check.mjs` to make the guide pass.
-- Never touch app code, `server.js`, or protected paths. Your diff is the guide (plus records).
+- Never touch app code, `server.js`, or protected paths. **Your diff is the guide only.** Do not edit
+  `BACKLOG.md` or `docs/org-memory/*`: the cycle's item PR owns the records, and two PRs editing them
+  conflict. Report Memory-worthy facts and new S-row candidates, and the CEO records them.
+- **One open guide PR at a time.** Before branching, run `gh pr list --state open --json headRefName,files`.
+  If an open PR already edits `docs/tse-best-practices.html` (a `docs/guide-refresh-*` or `ts-watch/*`
+  branch), update that branch instead of opening a second one. Both would stamp the same `#guide-meta`
+  changelog head and conflict.
 - Sources are `https://developers.thoughtspot.com/...` URLs only.
 - Escape `<`, `>` and `&` in code blocks. Keep ids unique (prefix with the section id).
 - Report back: what changed (per section), the new and changed badges, the version bump, the
