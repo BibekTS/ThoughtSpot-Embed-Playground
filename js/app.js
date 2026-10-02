@@ -823,8 +823,10 @@ function hostHeaderSync() {
   const hh = $('#cfb-host-header');
   if (hh) hh.hidden = !hostHeaderOn(getState());
 }
+let _hhSeq = 0; // latest build wins — two builds on the same embed (connect → re-render) must not both append
 async function hostHeaderBuild() {
   hostHeaderSync();
+  const seq = ++_hhSeq;
   const s = getState();
   if (!hostHeaderOn(s)) return;
   const embed = currentEmbed;
@@ -836,7 +838,8 @@ async function hostHeaderBuild() {
   let res;
   try { res = await embed.trigger(HostEvent.GetTabs); logEvent('HostEvent', 'GetTabs'); }
   catch (e) { logEvent('HostEvent', `✗ GetTabs: ${e.message}`); return; }
-  if (embed !== currentEmbed) return; // re-rendered while awaiting
+  if (embed !== currentEmbed || seq !== _hhSeq) return; // superseded while awaiting
+  bar.replaceChildren();
   const byId = new Map((res?.Tabs || []).map(t => [t.id, t]));
   const tabs = (res?.orderedTabIds || [...byId.keys()]).map(i => byId.get(i)).filter(Boolean);
   if (tabs.length < 2) return;
@@ -5396,13 +5399,9 @@ async function downloadCfbReport() {
 // Inspector section: shows active filter columns + refresh.
 function sectionCfbSetup() {
   const c = el('div', 'sec-body');
-  const lay = el('select'); lay.setAttribute('aria-label', 'Layout');
-  [['default', 'ThoughtSpot header (default)'], ['host-header', 'Host header — title & tabs above filters']].forEach(([v, n]) => {
-    const o = el('option', '', n); o.value = v; lay.appendChild(o);
-  });
-  lay.value = getState().cfbLayout;
-  lay.addEventListener('change', () => { setState({ cfbLayout: lay.value }); hostHeaderSync(); render(); });
-  c.appendChild(lay);
+  c.appendChild(enumSelect('Layout', getState().cfbLayout,
+    [{ value: 'default', label: 'ThoughtSpot header (default)' }, { value: 'host-header', label: 'Host header — title & tabs above filters' }],
+    v => { setState({ cfbLayout: v }); hostHeaderSync(); render(); }));
   c.appendChild(el('div', 'sec-note', 'Host header keeps ThoughtSpot’s native filter chips, renders the title and tabs in this page, and hides the native tab bar with an UNSTABLE internal CSS selector (re-verify after TS upgrades).'));
   c.appendChild(el('div', 'sec-note', 'Click "+ Add filter" in the bar above to add a column. Available columns are discovered from the liveboard data.'));
 
