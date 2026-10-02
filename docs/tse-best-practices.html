@@ -30,7 +30,7 @@
 </script>
 <script type="application/json" id="guide-meta">
 {
-  "version": "3.3.0",
+  "version": "3.4.0",
   "lastUpdated": "2026-10-01",
   "verifiedAgainst": {
     "sdk": "1.52.0",
@@ -40,6 +40,11 @@
   "staleAfterDays": 90,
   "sourceOfTruth": "https://developers.thoughtspot.com/docs/",
   "changelog": [
+    {
+      "version": "3.4.0",
+      "date": "2026-10-01",
+      "summary": "Environments and releases rebuilt around the standard dev, test and prod flow: a release diagram, obj_id as the way objects match across Orgs (doc-stated prerequisite), Publishing versus TML import, connections and tables across environments, and the import settings that matter (validate first, force_create, deletes, one deploy at a time). Prod content is shared read-only."
+    },
     {
       "version": "3.3.0",
       "date": "2026-10-01",
@@ -3832,68 +3837,105 @@ await embed.render();</code></pre>
 </section>
 
 <!-- ===== 60-deploy.html ===== -->
-<section class="sec" id="deploy" data-chapter="ch-ship" data-nav="Environments &amp; releases"
-         data-verified="2026-10-01" data-scenarios="saas regulated">
+<section class="sec" id="deploy" data-chapter="ch-ship" data-nav="Environments &amp; releases" data-verified="2026-10-01" data-scenarios="saas regulated">
   <header class="sec-head">
-    <span class="num">14</span>
-    <h2>Environments and releases</h2>
-    <p class="sec-lede">Move Liveboards, Models and settings from dev to test to prod, and keep your SDK in step with Cloud releases. Several designs work; this section shows the options and what each costs.</p>
+    <span class="num">0</span>
+    <h2>Environments and releases: dev, test, prod</h2>
+    <p class="sec-lede">Build in dev, prove it in test, ship it to prod. TML carries content between them, and <code>obj_id</code> tells each environment which object a file belongs to.</p>
   </header>
 
-  <figure class="fig stepper">
-    <div class="fig-box"><svg viewBox="0 0 880 330" role="img" aria-label="Promotion pipeline from dev Org through Git to test and prod Orgs">
-      <defs><marker id="ar-dep1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
-      <rect x="20" y="30" width="170" height="240" rx="10" fill="var(--good-soft)" stroke="var(--lane-a)" stroke-width="1.5"/>
-      <rect x="355" y="30" width="170" height="240" rx="10" fill="var(--violet-soft)" stroke="var(--lane-b)" stroke-width="1.5"/>
-      <rect x="690" y="30" width="170" height="240" rx="10" fill="var(--warn-soft)" stroke="var(--lane-c)" stroke-width="1.5"/>
-      <text x="105" y="52" text-anchor="middle" font-family="Inter, sans-serif" font-size="12" font-weight="600" fill="var(--text)">Dev Org</text>
-      <text x="440" y="52" text-anchor="middle" font-family="Inter, sans-serif" font-size="12" font-weight="600" fill="var(--text)">Git (GitHub / GHE)</text>
-      <text x="775" y="52" text-anchor="middle" font-family="Inter, sans-serif" font-size="12" font-weight="600" fill="var(--text)">Test then Prod Org</text>
-      <g data-step="1"><rect x="40" y="75" width="130" height="36" rx="6" fill="var(--bg)" stroke="var(--border-strong)"/><text x="105" y="98" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">Author Liveboard</text></g>
-      <g data-step="2" color="var(--lane-a)"><line x1="170" y1="150" x2="372" y2="150" stroke="currentColor" stroke-width="2" marker-end="url(#ar-dep1)"/><text x="270" y="142" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="var(--text)">commit TML</text></g>
-      <g data-step="3"><rect x="375" y="75" width="130" height="36" rx="6" fill="var(--bg)" stroke="var(--border-strong)"/><text x="440" y="98" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">Dev branch commit</text></g>
-      <g data-step="4"><rect x="375" y="195" width="130" height="36" rx="6" fill="var(--bg)" stroke="var(--border-strong)"/><text x="440" y="218" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">PR review + merge</text></g>
-      <g data-step="5" color="var(--lane-b)"><line x1="505" y1="150" x2="707" y2="150" stroke="currentColor" stroke-width="2" marker-end="url(#ar-dep1)"/><text x="605" y="142" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="var(--text)">deploy (test)</text></g>
-      <g data-step="6"><rect x="710" y="75" width="130" height="36" rx="6" fill="var(--bg)" stroke="var(--border-strong)"/><text x="775" y="98" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">Verify in test</text></g>
-      <g data-step="7"><rect x="710" y="195" width="130" height="36" rx="6" fill="var(--good-soft)" stroke="var(--border-strong)"/><text x="775" y="218" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">Deploy tag to prod</text></g>
+  <figure class="fig stepper" id="deploy-flow">
+    <div class="fig-box"><svg viewBox="0 0 900 360" role="img" aria-label="Standard release flow. Authors build in the dev Org and tag what ships. TML is exported to a release branch in Git. A pull request moves it to the test branch, which is validated and imported into the test Org. After testing, a pull request moves it to the prod branch, which is imported into the prod Org.">
+      <defs><marker id="dep-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
+      <rect x="20" y="20" width="230" height="110" rx="12" fill="var(--good-soft)" stroke="var(--lane-a)" stroke-width="1.6"/>
+      <text x="135" y="48" text-anchor="middle" font-family="Inter, sans-serif" font-size="15" font-weight="700" fill="var(--text)">Dev Org</text>
+      <text x="135" y="72" text-anchor="middle" font-family="Inter, sans-serif" font-size="11.5" fill="var(--text-dim)">authors build and edit here</text>
+      <text x="135" y="92" text-anchor="middle" font-family="Inter, sans-serif" font-size="11.5" fill="var(--text-dim)">the only place content changes</text>
+      <rect x="335" y="20" width="230" height="110" rx="12" fill="var(--warn-soft)" stroke="var(--lane-c)" stroke-width="1.6"/>
+      <text x="450" y="48" text-anchor="middle" font-family="Inter, sans-serif" font-size="15" font-weight="700" fill="var(--text)">Test Org</text>
+      <text x="450" y="68" text-anchor="middle" font-family="Inter, sans-serif" font-size="11.5" fill="var(--text-dim)">receives imports only</text>
+      <text x="450" y="86" text-anchor="middle" font-family="Inter, sans-serif" font-size="11.5" fill="var(--text-dim)">testers and UAT, no edits</text>
+      <rect x="650" y="20" width="230" height="110" rx="12" fill="var(--violet-soft)" stroke="var(--lane-b)" stroke-width="1.6"/>
+      <text x="765" y="48" text-anchor="middle" font-family="Inter, sans-serif" font-size="15" font-weight="700" fill="var(--text)">Prod Org</text>
+      <text x="765" y="72" text-anchor="middle" font-family="Inter, sans-serif" font-size="11.5" fill="var(--text-dim)">receives imports only</text>
+      <text x="765" y="92" text-anchor="middle" font-family="Inter, sans-serif" font-size="11.5" fill="var(--text-dim)">your end users are here</text>
+      <rect x="20" y="230" width="860" height="110" rx="12" fill="var(--bg)" stroke="var(--border-strong)" stroke-width="1.4" stroke-dasharray="5 4"/>
+      <text x="40" y="254" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600" fill="var(--text-mute)">Git</text>
+      <rect x="60" y="270" width="150" height="44" rx="8" fill="var(--bg-soft)" stroke="var(--border-strong)"/>
+      <text x="135" y="297" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" fill="var(--text)">release</text>
+      <rect x="375" y="270" width="150" height="44" rx="8" fill="var(--bg-soft)" stroke="var(--border-strong)"/>
+      <text x="450" y="297" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" fill="var(--text)">test</text>
+      <rect x="690" y="270" width="150" height="44" rx="8" fill="var(--bg-soft)" stroke="var(--border-strong)"/>
+      <text x="765" y="297" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" fill="var(--text)">prod</text>
+      <g data-step="1" color="var(--lane-a)"><circle cx="135" cy="152" r="11" fill="var(--bg)" stroke="currentColor" stroke-width="1.6"/><text x="135" y="156" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" font-weight="700" fill="var(--text)">1</text><text x="155" y="156" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">tag what ships</text></g>
+      <g data-step="2" color="var(--lane-a)"><line x1="135" y1="166" x2="135" y2="266" stroke="currentColor" stroke-width="2" marker-end="url(#dep-ar)"/><text x="145" y="214" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">2 export TML</text></g>
+      <g data-step="3" color="var(--lane-c)"><line x1="212" y1="292" x2="371" y2="292" stroke="currentColor" stroke-width="2" marker-end="url(#dep-ar)"/><text x="292" y="284" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">3 pull request</text></g>
+      <g data-step="4" color="var(--lane-c)"><line x1="450" y1="266" x2="450" y2="134" stroke="currentColor" stroke-width="2" marker-end="url(#dep-ar)"/><text x="460" y="194" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">4 validate, then import</text></g>
+      <g data-step="5" color="var(--lane-c)"><circle cx="398" cy="112" r="10" fill="var(--bg)" stroke="currentColor" stroke-width="1.6"/><text x="398" y="116" text-anchor="middle" font-family="Inter, sans-serif" font-size="10.5" font-weight="700" fill="var(--text)">5</text><text x="414" y="116" font-family="Inter, sans-serif" font-size="11" font-weight="600" fill="var(--text)">test and sign off</text></g>
+      <g data-step="6" color="var(--lane-b)"><line x1="527" y1="292" x2="686" y2="292" stroke="currentColor" stroke-width="2" marker-end="url(#dep-ar)"/><text x="607" y="284" text-anchor="middle" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">6 pull request</text></g>
+      <g data-step="7" color="var(--lane-b)"><line x1="765" y1="266" x2="765" y2="134" stroke="currentColor" stroke-width="2" marker-end="url(#dep-ar)"/><text x="775" y="194" font-family="Inter, sans-serif" font-size="11" fill="var(--text)">7 validate, then import</text></g>
     </svg></div>
     <ol class="steps">
-      <li><b>Author in dev</b><div class="detail">The docs' standard workflow does all development in the dev environment.<a class="src" href="https://developers.thoughtspot.com/docs/git-integration#_moving_tml_changes_between_environments">docs</a></div></li>
-      <li><b>Export / commit TML</b><div class="detail">Use <code>/vcs/git/branches/commit</code>, which the docs recommend so deleted and renamed files stay in sync, or export TML with <code>export_fqn</code> and commit the files yourself (the TML-scripts route). <code>enable_guid_mapping</code> defaults to true.<a class="src" href="https://developers.thoughtspot.com/docs/git-api">docs</a></div></li>
-      <li><b>Commit lands on the dev branch</b><div class="detail">The dev branch holds exactly what the dev Org exported.</div></li>
-      <li><b>PR review and merge</b><div class="detail">ThoughtSpot does not merge for you. The docs recommend a pull request, so approvals follow your own Git rules. Merges between environment branches should be conflict-free.<a class="src" href="https://developers.thoughtspot.com/docs/git-provider-integration#_branches">docs</a></div></li>
-      <li><b>Deploy to test with GUID mapping</b><div class="detail">Run <code>/vcs/git/commits/deploy</code>. The docs advise validating before you deploy: <code>deploy_policy: VALIDATE_ONLY</code> first, then <code>ALL_OR_NONE</code> (the default). A GUID mapping file is generated and maintained at deploy (in the configuration branch) so objects in test map to their dev originals. Git keeps the dev GUIDs; the substitution happens during import.<a class="src" href="https://developers.thoughtspot.com/docs/guid-mapping">docs</a></div></li>
-      <li><b>Verify</b><div class="detail">Open the embed against test with a non-admin test user. Set sharing, tags and custom actions on any new objects, then check filters, actions and exports.<a class="src" href="https://developers.thoughtspot.com/docs/git-integration#_moving_tml_changes_between_environments">docs</a></div></li>
-      <li><b>Deploy to prod</b><div class="detail">Deploy the same reviewed commit. Passing <code>commit_id</code> (for example a tag's SHA) pins prod to the commit test verified. Without it the branch head deploys, which may have moved. For many customer Orgs, loop sequentially.<a class="src" href="https://developers.thoughtspot.com/docs/git-api#_deploy_commits">docs</a></div></li>
+      <li><b>Build in dev and tag the release</b><div class="detail">All authoring happens in the dev Org. Mark the objects that make up the release, including the Models and Tables a Liveboard depends on. <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis">docs</a></div></li>
+      <li><b>Export the TML to a release branch</b><div class="detail"><code>POST /api/rest/2.0/metadata/tml/export</code> writes one file per object. Each file carries its <code>obj_id</code>, so it can be imported into any Org. <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis">docs</a></div></li>
+      <li><b>Open a pull request to the test branch</b><div class="detail">The docs move release TML into each environment's deployment branch by pull or merge request. Reviewers read a YAML diff of exactly what will change. <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis">docs</a></div></li>
+      <li><b>Validate, then import into test</b><div class="detail">Run the import with <code>import_policy: VALIDATE_ONLY</code> first, then import for real. Import matches on <code>obj_id</code>: it updates an object that already exists and creates one that does not.</div></li>
+      <li><b>Test and sign off</b><div class="detail">Testers work in the test Org. Nobody edits content there; a fix goes back to dev and comes through the flow again.</div></li>
+      <li><b>Pull request to the prod branch</b><div class="detail">Approving this pull request is the production sign-off. Who must approve is your decision; the docs recommend a pull request and validation, not a specific approver.</div></li>
+      <li><b>Validate, then import into prod</b><div class="detail">The same files that passed in test are imported into prod. Newly created objects are not shared with anyone, so share them after the import; the docs say standard content in prod should only be shared read-only. <a class="src" href="https://developers.thoughtspot.com/docs/git-integration#_moving_tml_changes_between_environments">docs</a></div></li>
     </ol>
-    <figcaption>One documented pattern. The environment layout, the promotion tool and the approval gates are your choices.</figcaption>
+    <figcaption>Content only moves forward through Git. Test and prod never change by hand, so every release is reviewable and repeatable.</figcaption>
   </figure>
-  <p class="takeaway">The docs define an environment as an <b>Org plus a Git branch</b> and author in dev only. How many environments you run, and which tool promotes between them, is a trade-off: see the options below.</p>
 
-  <div class="callout warn"><div><strong>Two limits to know up front</strong><p>The built-in Git integration (the <code>/vcs/git</code> APIs) supports GitHub and GitHub Enterprise only <a class="src" href="https://developers.thoughtspot.com/docs/git-api">docs</a>. Deploying to several Orgs in one cluster in parallel is not supported, so loop sequentially and stop on the first failure <a class="src" href="https://developers.thoughtspot.com/docs/git-api#_deploy_commits">docs</a>. The docs also say not to commit Connection TML (credentials): configure connections by hand or by script, ideally with identical names in every environment <a class="src" href="https://developers.thoughtspot.com/docs/git-integration#_configure_connections_before_using_deploy_api">docs</a>.</p></div></div>
+  <p class="takeaway">Edit <b>only in dev</b>. Test and prod receive imports, never hand edits; the next import would overwrite them anyway.</p>
 
-  <div class="quiz"><p class="q">Prod must run exactly what test verified. What do you pass to the deploy call?</p><div class="opts">
-    <button>Nothing. The branch head is always the same as test.</button>
-    <button data-correct>A <code>commit_id</code> (for example the release tag's SHA).</button>
-    <button>Deploy to all Orgs in parallel to be consistent.</button></div>
-    <p class="why">Deploy uses the branch head unless you pass <code>commit_id</code>, so the head can move after you verified. Parallel Org deploys are not supported. (Whether to pin at all is your call; pinning is what makes test and prod identical.)<a class="src" href="https://developers.thoughtspot.com/docs/git-api#_deploy_commits">docs</a></p></div>
+  <h3 id="deploy-objid">obj_id: how an object finds itself in the next environment</h3>
+  <div class="vs">
+    <div class="side a"><span class="k">GUID</span><h4>Unique per instance</h4><p>Every object has a GUID. GUIDs cannot repeat in different Orgs, so the same Liveboard has a different GUID in dev, test and prod. <a class="src" href="https://developers.thoughtspot.com/docs/thoughtspot-objects#_object_identifiers">docs</a></p></div>
+    <div class="or">vs</div>
+    <div class="side b"><span class="k">obj_id</span><h4>Unique per Org, set by you</h4><p>Each Org can hold one object with a given <code>obj_id</code>, so <code>Sales-KPIs</code> can exist once in dev, once in test and once in prod. Org plus <code>obj_id</code> identifies the object like a GUID does. <a class="src" href="https://developers.thoughtspot.com/docs/thoughtspot-objects#_object_identifiers">docs</a></p></div>
+  </div>
+  <p class="takeaway">Import looks for <b>Org + obj_id first</b>, then GUID, and creates the object if neither matches. That is why TML with <code>obj_id</code> moves between Orgs without GUID mapping. <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis#_rules_for_create_vs_update_operations">docs</a></p>
+  <div class="cards">
+    <div class="card a"><h4>Turn it on before you build the process</h4><p>The docs list <code>obj_id</code> as a prerequisite for any deployment process. Objects get an automatic <code>obj_id</code> only after their first change once it is enabled. <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis#_obj_id">docs</a></p></div>
+    <div class="card b"><h4>Give objects readable ids</h4><p>Set them with <code>POST /api/rest/2.0/metadata/update-obj-id</code>, in bulk. For existing environments, use your GUID mapping files once to align the other Orgs, then deploy by <code>obj_id</code> from then on. <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis#_implementing_obj_id_in_existing_environments">docs</a></p></div>
+    <div class="card c"><h4>Names are free, ids are not</h4><p>Import never matches on object names, so renaming a Liveboard is safe. Changing an <code>obj_id</code> after it has been promoted means the next import creates a new object downstream (our reading of the matching rule). <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis#_rules_for_create_vs_update_operations">docs</a></p></div>
+    <div class="card d"><h4>Tables are the exception</h4><p>Table objects match on the physical table in the database, not on <code>obj_id</code> or GUID. Each Connection holds one Table object per database table. <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis#_rules_for_create_vs_update_operations">docs</a></p></div>
+  </div>
 
-  <div class="scn" data-scenario="saas"><p><strong>Multi-tenant SaaS:</strong> the docs' standard pattern for a multi-tenant database is one prod Org, RLS filtering the shared Models, and every end customer added as a user of that Org. Per-customer Orgs are the pattern for single-tenant customer databases, using Publishing or a TML import per Org.<a class="src" href="https://developers.thoughtspot.com/docs/development-and-deployment#_deployment">docs</a></p></div>
-  <div class="scn" data-scenario="regulated"><p><strong>Regulated:</strong> the docs do not prescribe approval gates. Common choices (our guidance) are required PR approval on the environment branches, <code>VALIDATE_ONLY</code> as a CI gate, and deploying tagged commit SHAs so each prod change maps to a Git commit. Each adds process time, so weigh it against your change policy.</p></div>
+  <h3 id="deploy-publish">Publish or import TML?</h3>
+  <p>Both put the same content in more than one Org. They differ in whether each Org gets its own copy. <a class="src" href="https://developers.thoughtspot.com/docs/publish-data-overview#_when_to_use_publishing_feature">docs</a></p>
+  <div class="vs">
+    <div class="side a"><span class="k">Publishing</span><h4>One object, visible in many Orgs</h4><ul><li>Fits: a multi-tenant instance where tenant Orgs need the same, standardized content.</li><li>The object lives in the Primary Org; no copies, so no GUID mapping.</li><li>Per-Org differences come only from variables on Connections and Tables.</li><li>An update in the publisher Org reaches every Org it is published to at once.</li><li>Gives up: per-Org customization beyond variables, and works within one instance.</li></ul></div>
+    <div class="or">or</div>
+    <div class="side b"><span class="k">TML import</span><h4>A separate copy in each Org</h4><ul><li>Fits: dev to test to prod, Orgs that need unique customizations, or moving between instances.</li><li>Full freedom to vary each copy.</li><li>Gives up: one copy per Org to deploy and keep in step, and more memory use.</li></ul></div>
+  </div>
+  <p class="takeaway">A common combination: <b>TML import</b> moves a release from dev to test to prod, and in a prod made of many single-tenant Orgs, that last import goes into the <b>publisher Org</b>, which updates every published Org at once. <a class="src" href="https://developers.thoughtspot.com/docs/development-and-deployment#_publishing">docs</a></p>
 
-  <details class="deeper"><summary>Go deeper: the mental model, environment layouts and the tools <small>about 3 min</small></summary><div class="deeper-body">
-    <p>ThoughtSpot defines an environment as a linked pair of an Org and a Git branch. The pair can only export (commit) or import (deploy commits). All development happens in the dev environment. You commit to the dev branch, move the change to the next environment's branch with normal Git tooling, and deploy that branch into the target Org.<a class="src" href="https://developers.thoughtspot.com/docs/git-integration#_moving_tml_changes_between_environments">docs</a></p>
-    <p>Two details are easy to miss. First, ThoughtSpot does not recommend committing to Git and then deploying back into the dev environment. Second, objects created by a deploy are new objects in the target: you still set sharing, tags and custom actions on them afterward.<a class="src" href="https://developers.thoughtspot.com/docs/git-integration#_moving_tml_changes_between_environments">docs</a></p>
-    <h4>Environment model: three options</h4>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Option</th><th>When it fits</th><th>What it costs</th><th>Risk / what you give up</th></tr></thead>
-      <tbody>
-        <tr><td><b>Org per environment</b> (dev, test, prod Orgs on one cluster)</td><td>You want separated content and config without a second cluster. The docs say Orgs "should always be enabled" for TSE customers who need a structured process, and call a separate dev Org and prod Org the best practice.<a class="src" href="https://developers.thoughtspot.com/docs/development-and-deployment#_overview">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/guid-mapping#_switching_dev_orgs">docs</a></td><td>Org administration, one Git branch per Org, GUID mapping files.</td><td>All Orgs share one cluster, so release timing and cluster-level settings are shared. Our reading, not a doc statement.</td></tr>
-        <tr><td><b>Cluster (instance) per environment</b></td><td>You need separate release timing, cluster settings or compliance scope. Environments need not share an instance, and one dev environment can deploy to several prod instances.<a class="src" href="https://developers.thoughtspot.com/docs/git-integration#_git_integration_overview">docs</a></td><td>More instances to provision and keep in step. The docs advise against importing TML from a newer ThoughtSpot version into an older one, so plan version order.<a class="src" href="https://developers.thoughtspot.com/docs/development-and-deployment#_overview">docs</a></td><td>Version skew between clusters is the main risk. How and when your clusters are upgraded is not stated in the developer docs: confirm with ThoughtSpot Support.</td></tr>
-        <tr><td><b>Single Org, environments by naming or tags</b></td><td>A short evaluation or a very small team. The Git integration does not support moving objects within the same Org; copies with variations need the TML APIs directly.<a class="src" href="https://developers.thoughtspot.com/docs/git-integration#_git_integration_overview">docs</a></td><td>Lowest setup effort.</td><td>No separation of content, sharing or RLS testing from production users. The docs do not describe this as a deployment model; we do not recommend it for production.</td></tr>
-      </tbody></table></div>
-    <p class="note">Single-tenant customer databases add a second choice. Publishing makes objects visible in other Orgs without copies, so one import into the publisher Org updates all of them. Per-Org TML import deploys unique copies and can vary the TML. The docs use Publishing when the databases are structurally the same and TML import when they differ.<a class="src" href="https://developers.thoughtspot.com/docs/development-and-deployment#_publishing">docs</a></p>
-    <h4>Promotion mechanism: three options</h4>
+  <h3 id="deploy-connections">Connections and tables across environments</h3>
+  <p>Content points at data through Connections and Tables, and those usually differ by environment (database, schema, credentials). The docs give two ways to handle it; many teams also keep Connections out of Git entirely.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Option</th><th>How it works</th><th>Trade-off</th></tr></thead>
+    <tbody>
+      <tr><td><b>Variables (parameterization)</b></td><td>Connection and Table properties such as <code>db</code> and <code>schema</code> reference variables (<code>${dc_db}</code>) whose values are set per Org. Works with both Publishing and TML import. <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis#_pre_requisites">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/development-and-deployment#_publishing">docs</a></td><td>One set of TML for every environment. Variables must be created and assigned in each Org first.</td></tr>
+      <tr><td><b>GUID mapping find/replace</b></td><td>With ThoughtSpot's Git integration, the mapping file can rewrite strings such as <code>db: DEVDB</code> to <code>db: PRODDB</code> during deploy. <a class="src" href="https://developers.thoughtspot.com/docs/guid-mapping#_using_mapping_for_table_tml_properties">docs</a></td><td>Exact string replacement across all deployed files; scope it per file with <code>additionalMapping</code> when one global rule could hit the wrong file.</td></tr>
+      <tr><td><b>A same-named Connection in each Org</b></td><td>Each Org has its own Connection, pointing at its own database, with the same name. Connections are never deployed; only content that references them is.</td><td>Credentials never travel through Git. You must keep names in step by hand. This is a field practice from pipelines we have built, not a doc-stated pattern.</td></tr>
+    </tbody></table></div>
+
+  <h3 id="deploy-import">Import settings that matter</h3>
+  <div class="cards">
+    <div class="card a"><h4><code>import_policy</code></h4><p><code>VALIDATE_ONLY</code> checks without changing anything, <code>ALL_OR_NONE</code> applies everything or nothing, and <code>PARTIAL</code> (the default) imports what it can. <a class="src" href="https://developers.thoughtspot.com/docs/tml">docs</a></p></div>
+    <div class="card b"><h4><code>force_create</code></h4><p>Creates a new object for every file, ignoring matches. Useful for deliberate copies; harmful in a normal promotion. <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis#_rules_for_create_vs_update_operations">docs</a></p></div>
+    <div class="card c"><h4>Deletes do not flow</h4><p>TML import only creates or updates, so removing a file does not delete anything downstream. <a class="src" href="https://developers.thoughtspot.com/docs/deploy-with-tml-apis#_rules_for_create_vs_update_operations">docs</a> ThoughtSpot's Git deploy differs: with <code>deploy_type: FULL</code>, objects deleted in the commit are deleted from the target. <a class="src" href="https://developers.thoughtspot.com/docs/git-api#_results">docs</a> Choose deliberately, and check for dependent user content before deleting.</p></div>
+    <div class="card d"><h4>One deploy at a time</h4><p>Parallel deployment to several Orgs on one cluster is not supported; run them one after another. <a class="src" href="https://developers.thoughtspot.com/docs/git-api#_deploy_commits">docs</a></p></div>
+  </div>
+
+  <div class="scn" data-scenario="saas"><p><strong>Multi-tenant SaaS:</strong> the docs' standard pattern is one prod Org with row-level security filtering shared Models for every customer. Per-customer Orgs fit single-tenant databases, deployed by Publishing or per-Org import. <a class="src" href="https://developers.thoughtspot.com/docs/development-and-deployment#_deployment">docs</a></p></div>
+  <div class="scn" data-scenario="regulated"><p><strong>Regulated:</strong> the pull request into the prod branch is a natural approval record. Who approves, and whether a second gate is needed, is your policy; the docs do not prescribe it.</p></div>
+
+  <details class="deeper"><summary>Go deeper: three ways to move TML, the export and import tools <small>about 3 min</small></summary><div class="deeper-body">
+    <p>Separate instances per environment are also possible. Plan version order, because the docs advise against importing TML from a newer ThoughtSpot version into an older one. <a class="src" href="https://developers.thoughtspot.com/docs/development-and-deployment#_overview">docs</a></p>
+    <h4>Three ways to move TML</h4>
     <div class="table-wrap"><table>
       <thead><tr><th>Option</th><th>When it fits</th><th>What it costs</th><th>Risk / what you give up</th></tr></thead>
       <tbody>
@@ -3916,6 +3958,7 @@ await embed.render();</code></pre>
 
 // CI step 2: same call with deploy_policy "ALL_OR_NONE" and a commit_id for releases</code></pre>
   </div></details>
+
 
   <details class="deeper"><summary>Go deeper: branch scheme and what does not travel with TML <small>about 2 min</small></summary><div class="deeper-body">
     <p>ThoughtSpot's Git guidance suggests a <code>main</code> branch for actions and workflows (no TML), plus per-environment branches such as <code>dev_vc</code>, <code>release</code>, <code>test_deploy</code>, <code>test_vc</code>, <code>uat_deploy</code>, <code>prod_deploy</code>, <code>prod_vc</code>, and one version-control branch per single-tenant customer Org. This is guidance, not a requirement.<a class="src" href="https://developers.thoughtspot.com/docs/git-provider-integration#_branches">docs</a></p>
