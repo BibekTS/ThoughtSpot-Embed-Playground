@@ -67,6 +67,21 @@ and that the sidebar had "too many options". v3.1 fixed that. Keep it that way:
   left-to-right decision tree from its own JSON, and its click-through version moves into a panel below.
   Keep wizard labels short (under about 60 characters) so the tree stays readable.
 
+## Voice: options and trade-offs, not confident prescriptions (the owner's standing rule)
+This is an **enterprise** best-practices guide. Readers are architects and security reviewers making
+decisions under their own constraints (license, compliance, IdP, scale, team skills).
+- **Be prescriptive only when the docs are, or when the risk is one-sided.** Examples: never send the
+  `secret_key` to a browser, and runtime filters are not a security boundary. Cite the docs.
+- **Otherwise present options with their trade-offs.** Use a `.vs` or a table with these columns: when
+  it fits, what it costs (effort, license, operations), the risk, and what you give up. Name the
+  conditions that tip the choice. Do not pick a winner the docs do not pick.
+- **Label opinions.** Anything that is our judgement and not doc-stated reads as "our guidance" or
+  "a common choice", never as fact. Unsure or unverified means you say so plainly.
+- **Decision trees and wizards** end in a best fit *for the stated answers*, plus the main alternative
+  and what would change the answer. They do not issue a single command.
+- **Numbers that are security settings** (token lifetimes, allowlists, privileges) are presented as
+  trade-offs, with the docs' figures and the risk on each side.
+
 ## Review-only mode
 When the prompt says **review-only**, you are the accuracy lens on someone else's guide diff. Skip
 steps 1–5 above. Edit nothing, commit nothing, and do not stamp `#guide-meta`. Read the diff at the
