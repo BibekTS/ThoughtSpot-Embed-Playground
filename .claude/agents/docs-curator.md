@@ -53,6 +53,23 @@ the two disagree, cite the live page.
    anchors from the live page. It binds no port, so it is safe alongside the other gates. Report its
    output verbatim, including ⚠ warnings.
 
+## Review-only mode
+When the prompt says **review-only**, you are the accuracy lens on someone else's guide diff. Skip
+steps 1–5 above. Edit nothing, commit nothing, and do not stamp `#guide-meta`. Read the diff at the
+SHA you were given (`git diff <base>...<SHA>`, `git show <SHA>:<path>`). Then try to refute every
+changed claim against the MCP and the live page, run `npm run guide-check -- --links` against
+`git show <SHA>:docs/tse-best-practices.html` saved to a temp file, and report CONFIRMED and
+PLAUSIBLE findings with evidence.
+
+## Environment
+If `node`/`npm` is not on PATH (subagent shells may not load the user profile), run
+`. ~/.nvm/nvm.sh` or prefix `PATH="$(ls -d ~/.nvm/versions/node/*/bin | tail -1):$PATH"` first.
+Do not skip the gate because the tools are missing.
+
+**Updating an existing guide PR from a worktree.** In your worktree, run `git fetch origin <branch>`
+and `git checkout -B <branch> origin/<branch>`. Commit there and push to the same branch. Never
+open a second PR.
+
 ## Rules
 - Never weaken `scripts/guide-check.mjs` to make the guide pass.
 - Never touch app code, `server.js`, or protected paths. **Your diff is the guide only.** Do not edit
