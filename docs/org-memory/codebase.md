@@ -962,3 +962,21 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   Published heading ids keep underscores (`_non_embedded`) where MCP text collapses them; 68 anchors broke
   this way, and `guide-check --links` catches it. The `reviewer` agent cannot load the MCP (its tools are
   Read/Glob/Grep/Bash), so accuracy review uses `docs-curator` in review-only mode.
+- 2026-10-01 (guide v3.3, enterprise review): **Voice rule.** Where the docs leave a choice open, the guide
+  gives options and trade-offs, not one path. This is codified in `.claude/agents/docs-curator.md`. Docs facts
+  the review established:
+  - REST rate limit: 100 requests per second per client IP from 26.2.0.cl, burst of 10, then 429.
+    Cluster-level only.
+  - `logs/fetch`: needs `ADMINISTRATION`, with no log-only privilege, and a 24-hour window. The
+    `get_all_logs` default conflicts: the schema says true, the guide page says opt-in.
+  - Spotter conversation list and read APIs are per calling user, so they give no org-wide audit.
+  - Warehouse OAuth is a documented fourth row-level mechanism.
+  - The live `handling-embed-errors` page has no `INIT_ERROR`, `LOGIN_FAILED` or `FatalError`. It says
+    "do not destroy the embed on errors", but also says SEV1 errors may need a teardown.
+  - `EmbedErrorSeverity`: the reference says SDK 1.52.0, the error page announces it for 1.53.0 (filed M32).
+  - CSP allowlists: the docs support `*.domain` wildcards and localhost, and only recommend removing
+    localhost in production.
+  - Spotter 3: What's new says Early Access, while the FAQ says "Recommended".
+  - The `users/import` `dry_run` default is true.
+  - Working doc slugs: `set-locale` and `embed-ai-search-analytics`. The MCP's `locale-setting` and
+    `embed-ai-analytics` return "Not found".
