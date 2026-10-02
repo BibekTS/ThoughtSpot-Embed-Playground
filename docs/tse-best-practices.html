@@ -10,7 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
 <!--
-  GUIDE METADATA — the single source of truth for "last updated", the guide version and the
+  GUIDE METADATA: the single source of truth for "last updated", the guide version and the
   versions every claim was checked against. The footer, the hero and the "What changed" log are
   rendered from it. Every edit to this file bumps `version` and `lastUpdated` and prepends a
   `changelog` entry (see .claude/agents/docs-curator.md). Sections carry their own
@@ -207,7 +207,7 @@
   .hero { padding: 52px 0 18px; }
   .eyebrow { font-family: "JetBrains Mono", monospace; font-size: 11.5px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--cyan-bright); }
   .hero h1 { font-size: clamp(30px, 4.4vw, 44px); line-height: 1.12; letter-spacing: -.025em; margin: 12px 0 16px; text-wrap: balance; }
-  .hero h1 em { font-style: normal; background: linear-gradient(90deg, var(--cyan-bright), var(--violet)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero h1 em { font-style: normal; color: var(--cyan-bright); }
   .hero .lede { font-size: 17px; color: var(--text-dim); max-width: 700px; margin: 0; }
   .meta-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
   .chip {
@@ -489,7 +489,6 @@
 
   /* ============ VISUAL COMPONENTS (v2 look) ============ */
   .big-idea { margin: 20px 0; padding: 22px 26px; border-radius: 14px; background: #1a1f4a; color: #e8ecf7; border-top: 3px solid var(--cyan-bright); }
-  .big-idea::before { content: "// the big idea"; display: block; font: 600 10.5px "JetBrains Mono", monospace; letter-spacing: .14em; text-transform: uppercase; color: #45d6e6; margin-bottom: 8px; }
   .big-idea p { margin: 0; color: #e8ecf7 !important; font-size: 17.5px; line-height: 1.5; }
   .big-idea b, .big-idea strong { color: #45d6e6; }
   .big-idea code { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.15); color: #e8ecf7; }
@@ -602,9 +601,8 @@
     <div class="wrap">
       <!-- ===== 10-start.html ===== -->
 <section class="hero" id="top">
-  <div class="eyebrow">ThoughtSpot Embedded · Best practices</div>
-  <h1>Build analytics into your product <em>the way it is meant to work.</em></h1>
-  <p class="lede">An interactive field guide to embedding ThoughtSpot: how each piece works, the decisions you will face, and the mistakes that only show up in production. Pick your scenario and the guide adapts.</p>
+  <h1>Embedding ThoughtSpot, <em>explained.</em></h1>
+  <p class="lede">How each piece works, which choices matter, and what breaks in production. Every claim links to the docs.</p>
   <div class="meta-row">
     <span class="chip">Last updated <b data-meta="lastUpdated"></b></span>
     <span class="chip">Checked against <b data-meta="verified"></b></span>
@@ -619,11 +617,11 @@
   </header>
 
   <div class="pillars">
-    <div class="pillar a"><span class="k">Pillar 01</span><span class="ico">⚿</span><b>Who am I?</b><span>Authentication</span></div>
-    <div class="pillar b"><span class="k">Pillar 02</span><span class="ico">⚙</span><b>What can I do?</b><span>Roles and privileges</span></div>
-    <div class="pillar c"><span class="k">Pillar 03</span><span class="ico">▤</span><b>What can I see?</b><span>Content access through sharing</span></div>
-    <div class="pillar d"><span class="k">Pillar 04</span><span class="ico">▦</span><b>Which data?</b><span>Row and column security</span></div>
-    <div class="pillar e"><span class="k">Pillar 05</span><span class="ico">☁</span><b>Which platform?</b><span>Your data platform may add its own controls</span></div>
+    <div class="pillar a"><span class="ico">⚿</span><b>Who am I?</b><span>Authentication</span></div>
+    <div class="pillar b"><span class="ico">⚙</span><b>What can I do?</b><span>Roles and privileges</span></div>
+    <div class="pillar c"><span class="ico">▤</span><b>What can I see?</b><span>Content access through sharing</span></div>
+    <div class="pillar d"><span class="ico">▦</span><b>Which data?</b><span>Row and column security</span></div>
+    <div class="pillar e"><span class="ico">☁</span><b>Which platform?</b><span>Your data platform may add its own controls</span></div>
   </div>
   <p class="takeaway">Answer the pillars <b>in order</b>: each one builds on the identity the one before it produced.</p>
 
@@ -977,12 +975,80 @@
 
   <h3 id="auth-choice-preconditions">Way A only works if all three hold</h3>
   <div class="pillars">
-    <div class="pillar a"><span class="k">Must 01</span><span class="ico">①</span><b>One IdP</b><span>The docs do not recommend EmbeddedSSO with multiple IdPs. <a class="src" href="https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods">docs</a></span></div>
-    <div class="pillar b"><span class="k">Must 02</span><span class="ico">②</span><b>IdP allows iframes</b><span>Most IdPs block SAML inside an iframe by default. Okta has an "Enable iframe embedding" option. <a class="src" href="https://developers.thoughtspot.com/docs/saml-sso#_configure_idp_to_allow_iframe_embedding">docs</a></span></div>
-    <div class="pillar c"><span class="k">Must 03</span><span class="ico">③</span><b>SSO set up on ThoughtSpot</b><span>Without SAML/OIDC configured there, EmbeddedSSO behaves like <code>None</code>. <a class="src" href="https://developers.thoughtspot.com/docs/embed-auth">docs</a></span></div>
+    <div class="pillar a"><span class="ico">①</span><b>One IdP</b><span>The docs do not recommend EmbeddedSSO with multiple IdPs. <a class="src" href="https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods">docs</a></span></div>
+    <div class="pillar b"><span class="ico">②</span><b>IdP allows iframes</b><span>Most IdPs block SAML inside an iframe by default. Okta has an "Enable iframe embedding" option. <a class="src" href="https://developers.thoughtspot.com/docs/saml-sso#_configure_idp_to_allow_iframe_embedding">docs</a></span></div>
+    <div class="pillar c"><span class="ico">③</span><b>SSO set up on ThoughtSpot</b><span>Without SAML/OIDC configured there, EmbeddedSSO behaves like <code>None</code>. <a class="src" href="https://developers.thoughtspot.com/docs/embed-auth">docs</a></span></div>
   </div>
 
   <h3 id="auth-choice-wizard">Which way fits you?</h3>
+  <figure class="fig" id="auth-choice-tree">
+  <div class="fig-box"><svg viewBox="0 0 900 600" role="img" aria-label="Decision tree. Q0: do users sign in through a SAML or OIDC identity provider? No leads to trusted auth. Q1: are all users in one IdP? If not, Q1a: is there IdP federation? No leads to trusted auth. Q2: can the IdP login load in an iframe? No leads to trusted auth. Yes leads to setting up SAML or OIDC on ThoughtSpot, then Embedded SSO.">
+    <defs>
+      <marker id="tree-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--good)"/></marker>
+      <marker id="tree-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--bad)"/></marker>
+      <marker id="tree-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--text-mute)"/></marker>
+      <marker id="tree-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--lane-c)"/></marker>
+    </defs>
+    <rect x="330" y="18" width="240" height="44" rx="9" fill="#1a1f4a"/>
+    <text x="450" y="38" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" fill="#ffffff">Choosing how users sign in</text>
+    <text x="450" y="53" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#45d6e6">start here</text>
+    <polyline points="450,62 450,88" fill="none" stroke="var(--text-mute)" stroke-width="1.6" marker-end="url(#tree-m)"/>
+    
+    <g>
+      <rect x="290" y="90" width="320" height="50" rx="9" fill="var(--violet-soft)" stroke="var(--violet)" stroke-width="1.5"/>
+      <text x="302" y="105" font-family="JetBrains Mono, monospace" font-size="9.5" font-weight="600" fill="var(--violet)">Q0</text>
+      <text x="450" y="113" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" fill="var(--text)">Do users sign in through an IdP?</text>
+      <text x="450" y="130" text-anchor="middle" font-family="Inter, sans-serif" font-size="10.5" fill="var(--text-mute)">SAML or OIDC: Okta, Entra, Auth0, Cognito</text>
+    </g>
+    
+    <g>
+      <rect x="290" y="170" width="320" height="50" rx="9" fill="var(--violet-soft)" stroke="var(--violet)" stroke-width="1.5"/>
+      <text x="302" y="185" font-family="JetBrains Mono, monospace" font-size="9.5" font-weight="600" fill="var(--violet)">Q1</text>
+      <text x="450" y="193" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" fill="var(--text)">Are all users in the same IdP?</text>
+      <text x="450" y="210" text-anchor="middle" font-family="Inter, sans-serif" font-size="10.5" fill="var(--text-mute)">or does each tenant bring its own</text>
+    </g>
+    
+    <g>
+      <rect x="110" y="250" width="260" height="50" rx="9" fill="var(--violet-soft)" stroke="var(--violet)" stroke-width="1.5"/>
+      <text x="122" y="265" font-family="JetBrains Mono, monospace" font-size="9.5" font-weight="600" fill="var(--violet)">Q1a</text>
+      <text x="240" y="273" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" fill="var(--text)">Is there IdP federation?</text>
+      <text x="240" y="290" text-anchor="middle" font-family="Inter, sans-serif" font-size="10.5" fill="var(--text-mute)">one IdP fronts the others</text>
+    </g>
+    
+    <g>
+      <rect x="290" y="330" width="320" height="50" rx="9" fill="var(--violet-soft)" stroke="var(--violet)" stroke-width="1.5"/>
+      <text x="302" y="345" font-family="JetBrains Mono, monospace" font-size="9.5" font-weight="600" fill="var(--violet)">Q2</text>
+      <text x="450" y="353" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" fill="var(--text)">Can the IdP login load inside an iframe?</text>
+      <text x="450" y="370" text-anchor="middle" font-family="Inter, sans-serif" font-size="10.5" fill="var(--text-mute)">check X-Frame-Options and frame-ancestors</text>
+    </g>
+    
+    <g>
+      <rect x="290" y="410" width="320" height="50" rx="9" fill="var(--ea-soft)" stroke="var(--lane-c)" stroke-width="1.5"/>
+      <text x="450" y="433" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" fill="var(--text)">Set up SAML or OIDC on ThoughtSpot</text>
+      <text x="450" y="450" text-anchor="middle" font-family="Inter, sans-serif" font-size="10.5" fill="var(--text-mute)">a setup step, not a decision</text>
+    </g>
+    <rect x="40" y="500" width="300" height="74" rx="11" fill="var(--violet-soft)" stroke="var(--violet)" stroke-width="2"/>
+    <text x="190" y="524" text-anchor="middle" font-family="Inter, sans-serif" font-size="13.5" font-weight="700" fill="var(--violet)">Use trusted auth</text>
+    <text x="190" y="543" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="var(--text)">AuthType.TrustedAuthTokenCookieless</text>
+    <text x="190" y="561" text-anchor="middle" font-family="Inter, sans-serif" font-size="10.5" fill="var(--text-mute)">your backend vouches for each user</text>
+    <rect x="580" y="500" width="280" height="74" rx="11" fill="var(--good-soft)" stroke="var(--good)" stroke-width="2"/>
+    <text x="720" y="524" text-anchor="middle" font-family="Inter, sans-serif" font-size="13.5" font-weight="700" fill="var(--good)">Use Embedded SSO</text>
+    <text x="720" y="543" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="var(--text)">AuthType.EmbeddedSSO</text>
+    <text x="720" y="561" text-anchor="middle" font-family="Inter, sans-serif" font-size="10.5" fill="var(--text-mute)">no token service to build</text>
+    <polyline points="450,140 450,168" fill="none" stroke="var(--good)" stroke-width="1.6" marker-end="url(#tree-g)"/><text x="460" y="158" text-anchor="start" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="var(--good)">YES</text>
+    <polyline points="290,115 70,115 70,498" fill="none" stroke="var(--bad)" stroke-width="1.6" marker-end="url(#tree-r)"/><text x="270" y="108" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="var(--bad)">NO</text>
+    <text x="80" y="132" font-family="Inter, sans-serif" font-size="10" fill="var(--text-mute)">custom login, magic links, passkeys</text>
+    <polyline points="450,220 450,328" fill="none" stroke="var(--good)" stroke-width="1.6" marker-end="url(#tree-g)"/><text x="460" y="280" text-anchor="start" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="var(--good)">YES</text>
+    <polyline points="290,195 240,195 240,248" fill="none" stroke="var(--bad)" stroke-width="1.6" marker-end="url(#tree-r)"/><text x="270" y="188" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="var(--bad)">NO</text>
+    <polyline points="370,275 420,275 420,328" fill="none" stroke="var(--good)" stroke-width="1.6" marker-end="url(#tree-g)"/><text x="378" y="268" text-anchor="start" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="var(--good)">YES</text>
+    <polyline points="240,300 240,498" fill="none" stroke="var(--bad)" stroke-width="1.6" marker-end="url(#tree-r)"/><text x="248" y="330" text-anchor="start" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="var(--bad)">NO</text>
+    <polyline points="290,355 170,355 170,498" fill="none" stroke="var(--bad)" stroke-width="1.6" marker-end="url(#tree-r)"/><text x="282" y="348" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="var(--bad)">NO</text>
+    <polyline points="450,380 450,408" fill="none" stroke="var(--good)" stroke-width="1.6" marker-end="url(#tree-g)"/><text x="460" y="398" text-anchor="start" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="var(--good)">YES</text>
+    <polyline points="450,460 450,480 720,480 720,498" fill="none" stroke="var(--lane-c)" stroke-width="1.6" marker-end="url(#tree-o)"/>
+  </svg></div>
+  <figcaption>Four checks and one setup step. Any "no" sends you to trusted auth. The docs list multiple IdPs without federation, users outside your IdP, and an IdP that cannot allow iframe redirects as reasons to choose trusted authentication <a class="src" href="https://developers.thoughtspot.com/docs/embed-auth">docs</a>.</figcaption>
+</figure>
+  <details class="deeper"><summary>Prefer to click through it? Answer the four questions <small>about 1 min</small></summary><div class="deeper-body">
   <div class="wizard"><div class="wz-title">Your login + ThoughtSpot</div>
   <script type="application/json">{"start":"q0","nodes":{
     "q0":{"q":"Do your users sign in through a SAML or OIDC identity provider at all?","hint":"Okta, Entra, Auth0, Cognito and similar.","options":[
@@ -1002,6 +1068,7 @@
     "r_trusted_iframe":{"result":"Way B: Trusted auth","html":"<p>The docs do not recommend EmbeddedSSO when the IdP cannot be configured to allow iframe redirects. <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods'>docs</a> Use <code>TrustedAuthTokenCookieless</code>. If you cannot add a backend, <code>SAMLRedirect</code> and <code>OIDCRedirect</code> redirect the whole page to the IdP instead. <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_samlredirect_authentication'>docs</a></p>"},
     "r_esso":{"result":"Way A: EmbeddedSSO is possible","html":"<p>Configure SAML or OIDC on ThoughtSpot, allow iframing at the IdP, then <code>init({ thoughtSpotHost, authType: AuthType.EmbeddedSSO })</code>. <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_embedded_sso_authentication'>docs</a> Also consider ThoughtSpot on a custom domain under your app's domain, which the docs recommend to avoid third-party cookie blocking. <a class='src' href='https://developers.thoughtspot.com/docs/security-settings#_third_party_cookies'>docs</a></p><p>Even then, Way B is easier if you need per-session data rules or fast offboarding (see the comparison below).</p>"}
   }}</script></div>
+  </div></details>
 
   <details class="deeper"><summary>Go deeper: ten dimensions, side by side <small>about 2 min</small></summary><div class="deeper-body">
     <div class="table-wrap"><table>
@@ -2058,10 +2125,10 @@ await embed.trigger(HostEvent.Pin, payload, ContextType.Answer);</code></pre>
   </header>
 
   <div class="pillars">
-    <div class="pillar a"><span class="k">Kind 01</span><span class="ico">&#9881;</span><b>Runtime filters</b><span>Host-imposed context. Not shown as chips.</span></div>
-    <div class="pillar b"><span class="k">Kind 02</span><span class="ico">&#9638;</span><b>Runtime parameters</b><span>What-if values. Hidden by default.</span></div>
-    <div class="pillar c"><span class="k">Kind 03</span><span class="ico">&#9776;</span><b>Liveboard filters</b><span>Visible chips the user can edit.</span></div>
-    <div class="pillar d"><span class="k">Kind 04</span><span class="ico">&#9786;</span><b>User&rsquo;s own filters</b><span>Chips, cross filters, search filters.</span></div>
+    <div class="pillar a"><span class="ico">&#9881;</span><b>Runtime filters</b><span>Host-imposed context. Not shown as chips.</span></div>
+    <div class="pillar b"><span class="ico">&#9638;</span><b>Runtime parameters</b><span>What-if values. Hidden by default.</span></div>
+    <div class="pillar c"><span class="ico">&#9776;</span><b>Liveboard filters</b><span>Visible chips the user can edit.</span></div>
+    <div class="pillar d"><span class="ico">&#9786;</span><b>User&rsquo;s own filters</b><span>Chips, cross filters, search filters.</span></div>
   </div>
   <p class="takeaway">Pick by intent, and remember that <b>none of the four is a security boundary</b>. Use row-level security for that. <a class="src" href="https://developers.thoughtspot.com/docs/runtime-filters#_overview">docs</a></p>
 
@@ -2214,9 +2281,9 @@ const current = await liveboardEmbed.trigger(HostEvent.GetFilters);</code></pre>
   </header>
 
   <div class="pillars">
-    <div class="pillar a"><span class="k">Kind 01</span><span class="ico">&#x2193;</span><b>Native drill down</b><span>ThoughtSpot's own menu item. Nothing to build.</span><span class="ver">Action.DrillDown</span></div>
-    <div class="pillar b"><span class="k">Kind 02</span><span class="ico">&#x21E8;</span><b>Left-click to a second Liveboard</b><span>One click opens a filtered detail board.</span><span class="ver">EmbedEvent.VizPointClick</span></div>
-    <div class="pillar c"><span class="k">Kind 03</span><span class="ico">&#x2630;</span><b>Right-click to your own panel</b><span>Your app fetches and draws the records.</span><span class="ver">customActions &middot; searchdata</span></div>
+    <div class="pillar a"><span class="ico">&#x2193;</span><b>Native drill down</b><span>ThoughtSpot's own menu item. Nothing to build.</span><span class="ver">Action.DrillDown</span></div>
+    <div class="pillar b"><span class="ico">&#x21E8;</span><b>Left-click to a second Liveboard</b><span>One click opens a filtered detail board.</span><span class="ver">EmbedEvent.VizPointClick</span></div>
+    <div class="pillar c"><span class="ico">&#x2630;</span><b>Right-click to your own panel</b><span>Your app fetches and draws the records.</span><span class="ver">customActions &middot; searchdata</span></div>
   </div>
   <p class="takeaway">They look alike to a user and share almost no code, so <b>decide which one you want first</b>.</p>
 
@@ -3227,9 +3294,9 @@ spotter.trigger(HostEvent.ResetSpotterConversation);</code></pre>
   </header>
 
   <div class="pillars">
-    <div class="pillar a"><span class="k">Strategy 01</span><span class="ico">⚡</span><b>Pre-render with ID</b><span>Fastest on view, but the most resource-intensive. It loads data even if never viewed. For the landing page everyone opens.</span></div>
-    <div class="pillar b"><span class="k">Strategy 02</span><span class="ico">◐</span><b>Pre-render without ID</b><span>Fast shell and a short loading state for data. For many possible Liveboards.</span></div>
-    <div class="pillar c"><span class="k">Strategy 03</span><span class="ico">↻</span><b>On demand</b><span>First visit is normal, revisits are instant, with the lowest waste. The best balance for most secondary pages.</span></div>
+    <div class="pillar a"><span class="ico">⚡</span><b>Pre-render with ID</b><span>Fastest on view, but the most resource-intensive. It loads data even if never viewed. For the landing page everyone opens.</span></div>
+    <div class="pillar b"><span class="ico">◐</span><b>Pre-render without ID</b><span>Fast shell and a short loading state for data. For many possible Liveboards.</span></div>
+    <div class="pillar c"><span class="ico">↻</span><b>On demand</b><span>First visit is normal, revisits are instant, with the lowest waste. The best balance for most secondary pages.</span></div>
   </div>
   <p class="takeaway">Pre-rendering is the biggest lever, and <b>on-demand pre-render is the best balance</b> for most pages. <a class="src" href="https://developers.thoughtspot.com/docs/prerender#_strategy_comparison_table">docs</a></p>
 
@@ -3721,9 +3788,9 @@ await embed.render();</code></pre>
 
       <footer class="foot" id="foot">
         <div class="foot-grid">
-          <span>Last updated <b id="foot-updated">—</b></span>
-          <span>Guide <b id="foot-version">—</b></span>
-          <span>Verified against <b id="foot-verified">—</b></span>
+          <span>Last updated <b id="foot-updated">-</b></span>
+          <span>Guide <b id="foot-version">-</b></span>
+          <span>Verified against <b id="foot-verified">-</b></span>
           <span><a href="#about">What changed</a></span>
         </div>
         <p style="margin:10px 0 0">An independent best-practices reference grounded on the ThoughtSpot developer documentation. Every claim links to its source. Behaviour marked <span class="badge field">Field-observed</span> was measured on a live instance and is not a documented guarantee. Confirm specifics against the docs for your release before relying on them.</p>
@@ -3760,9 +3827,9 @@ await embed.render();</code></pre>
     const d = new Date(iso + 'T00:00:00Z');
     return isNaN(d) ? iso : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
   };
-  const verifiedStr = meta.verifiedAgainst ? `SDK ${meta.verifiedAgainst.sdk} · ThoughtSpot ${meta.verifiedAgainst.thoughtspot}` : '—';
-  $('#foot-updated').textContent = meta.lastUpdated ? fmtDate(meta.lastUpdated) : '—';
-  $('#foot-version').textContent = meta.version ? 'v' + meta.version : '—';
+  const verifiedStr = meta.verifiedAgainst ? `SDK ${meta.verifiedAgainst.sdk} · ThoughtSpot ${meta.verifiedAgainst.thoughtspot}` : '-';
+  $('#foot-updated').textContent = meta.lastUpdated ? fmtDate(meta.lastUpdated) : '-';
+  $('#foot-version').textContent = meta.version ? 'v' + meta.version : '-';
   $('#foot-verified').textContent = verifiedStr;
   $('#brand-ver').textContent = meta.version ? 'v' + meta.version : '';
   $$('[data-meta]').forEach(n => {
@@ -3770,7 +3837,7 @@ await embed.render();</code></pre>
     n.textContent = k === 'lastUpdated' ? fmtDate(meta.lastUpdated) : k === 'verified' ? verifiedStr : k === 'version' ? 'v' + meta.version : (meta[k] ?? '');
   });
   const sm = $('#side-meta');
-  sm.append(h('div', {}, 'Last updated ', h('b', { text: meta.lastUpdated ? fmtDate(meta.lastUpdated) : '—' })),
+  sm.append(h('div', {}, 'Last updated ', h('b', { text: meta.lastUpdated ? fmtDate(meta.lastUpdated) : '-' })),
             h('div', {}, 'Checked against ', h('b', { text: verifiedStr })));
   const cl = $('#changelog');
   if (cl && Array.isArray(meta.changelog)) {
@@ -3815,7 +3882,7 @@ await embed.render();</code></pre>
     const tools = $('.sec-tools', s) || $('.sec-head', s)?.appendChild(h('div', { class: 'sec-tools' }));
     if (v && tools) {
       const stale = (Date.now() - Date.parse(v)) > staleMs && (ref - Date.parse(v)) > staleMs;
-      tools.prepend(h('span', { class: 'verified' + (stale ? ' stale' : ''), title: stale ? 'Not re-verified recently — check the linked docs' : 'Claims in this section were checked against the docs on this date',
+      tools.prepend(h('span', { class: 'verified' + (stale ? ' stale' : ''), title: stale ? 'Not re-verified recently. Check the linked docs.' : 'Claims in this section were checked against the docs on this date',
         text: (stale ? '⚠ verified ' : '✓ verified ') + fmtDate(v) }));
     }
   });
@@ -4070,7 +4137,7 @@ await embed.render();</code></pre>
       const tr = h('tr', { 'data-status': r.status },
         h('td', {}, h('b', { text: r.name })),
         h('td', {}, h('span', { class: 'badge ' + r.status, text: label[r.status] })),
-        h('td', {}, h('span', { class: 'ver', text: r.ver || '—' })),
+        h('td', {}, h('span', { class: 'ver', text: r.ver || '-' })),
         h('td', {}, r.sec ? h('a', { href: '#' + r.sec, text: r.secTitle }) : ''),
         h('td', {}, r.src ? h('a', { class: 'src', href: r.src, target: '_blank', rel: 'noopener', text: 'docs' }) : ''));
       tbody.append(tr);

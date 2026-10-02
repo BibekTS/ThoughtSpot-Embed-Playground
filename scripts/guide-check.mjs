@@ -125,10 +125,13 @@ try {
       if (!b.dataset.src && !host?.querySelector('a.src')) out.warns.push(`${b.className.replace('badge ', '')} badge without a nearby source: "${(host?.textContent || '').trim().slice(0, 60)}"`);
     });
     const foot = document.getElementById('foot-updated');
-    if (!foot || foot.textContent.trim() === '—') out.errs.push('footer "Last updated" is missing or did not render');
+    if (!foot || foot.textContent.trim() === '-') out.errs.push('footer "Last updated" is missing or did not render');
     if (!document.getElementById('feature-index')) out.errs.push('feature status index (#feature-index) is missing');
     else if (!document.querySelector('#feature-index tbody tr')) out.errs.push('feature status index rendered no rows');
     if (!document.querySelector('#nav a')) out.errs.push('sidebar nav did not render');
+    // House style: no em or en dashes in visible text (the owner's "no AI tells" rule).
+    const dashes = [...document.querySelectorAll('main, .sidebar, .topbar')].map((n) => n.textContent).join('\n').split('\n').filter((l) => /[\u2013\u2014]/.test(l));
+    dashes.slice(0, 5).forEach((l) => out.errs.push(`em/en dash in visible text: "${l.trim().slice(0, 70)}"`));
     $$('.wizard').forEach((w, i) => { if (!w.querySelector('.wz-opts button')) out.errs.push(`wizard #${i} rendered no options`); });
     $$('.stepper').forEach((s, i) => { if (!s.querySelector('.stepper-bar')) out.errs.push(`stepper #${i} rendered no controls`); });
     $$('.checklist-box').forEach((c) => { if (!c.querySelector('.checklist-head')) out.errs.push(`checklist ${c.dataset.checklist} did not render`); });
