@@ -79,6 +79,7 @@ export function defaultState() {
     runtimeParameters: [],            // [{ name, value }]
     activeFilters: [],                // [{ columnName, dataType, opKey, values }]
     activeFilterVia: 'runtime',       // 'runtime' = UpdateRuntimeFilters (invisible) | 'liveboard' = UpdateFilters (visible chip)
+    cfbLayout: 'default',             // custom-liveboard layout: 'default' | 'host-header' | 'host-header-actions' (host-rendered title + tabs above the filter bar)
     cfbCols: [],                      // custom-liveboard filter bar: ordered column names
     cfbSelected: {},                  // custom-liveboard filter bar: { colName: [selectedValues] }
     cfbSort: {},                      // custom-liveboard filter bar: { colName: 'asc'|'desc'|'custom'|'metric' }
@@ -368,6 +369,7 @@ function sanitize(raw) {
     .map(f => ({ columnName: str(f?.columnName, 256), dataType: ['text', 'number', 'date'].includes(f?.dataType) ? f.dataType : 'text', opKey: str(f?.opKey, 32), values: strArr(f?.values) }));
   if (has('activeFilterVia')) out.activeFilterVia = raw.activeFilterVia === 'liveboard' ? 'liveboard' : 'runtime';
 
+  if (has('cfbLayout')) out.cfbLayout = ['host-header', 'host-header-actions'].includes(raw.cfbLayout) ? raw.cfbLayout : 'default';
   if (has('cfbCols')) out.cfbCols = strArr(raw.cfbCols);
   if (has('cfbSelected')) out.cfbSelected = cleanMap(raw.cfbSelected, v => strArr(v));
   if (has('cfbSort')) out.cfbSort = cleanMap(raw.cfbSort, v => (['asc', 'desc', 'custom', 'metric'].includes(v) ? v : undefined));
