@@ -335,6 +335,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindBottomPanel();
   bindDisplayMenu();
   bindDemoMode();
+  bindApiHints();
   bindStateOverlay();
   // When a trusted-auth token is minted & applied, feed it to REST discovery so object lists
   // populate for token-only users (no browser session), then re-discover against the host.
@@ -846,7 +847,7 @@ function hostHeaderWire() {
   $('#cfb-hh-ai').addEventListener('click', () => hhTrigger('AIHighlights', 'AI Highlights'));
   $('#cfb-hh-share').addEventListener('click', () => hhTrigger('Share', 'Share'));
   HH_MENU.forEach(([label, name]) => {
-    const b = el('button'); b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = label;
+    const b = el('button'); b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = label; b.dataset.hostEvent = name;
     b.addEventListener('click', () => { close(); hhTrigger(name, label); });
     menu.appendChild(b);
   });
@@ -1238,6 +1239,7 @@ const DEMO_PREF_KEY = 'ts-playground.demoMode';
 function applyDemoMode(on, { persist = false } = {}) {
   document.body.classList.toggle('demo-mode', on);
   $('#demo-exit').hidden = !on;
+  $('#demo-api').hidden = !on;
   if (persist) { try { localStorage.setItem(DEMO_PREF_KEY, on ? '1' : '0'); } catch (_) {} }
 }
 
@@ -1254,6 +1256,89 @@ function bindDemoMode() {
     e.preventDefault();
     applyDemoMode(!document.body.classList.contains('demo-mode'), { persist: true });
   });
+}
+
+// ── API hints ─────────────────────────────────────────────────────────────────
+// A toggle (like Demo mode): when on, hovering a host-rendered control pops the ThoughtSpot API(s)
+// behind it. Controls rendered INSIDE the embed iframe (e.g. the SDK's own custom-action buttons)
+// are cross-origin and can't be hovered from here — their configured counterparts (the chips in the
+// Custom actions inspector) are covered instead. Per-browser UI preference, not shared state.
+const API_HINT_PREF_KEY = 'ts-playground.apiHints';
+const hhEvent = (name, desc) => [{ method: 'SDK', scope: 'visual-embed-sdk', path: `embed.trigger(HostEvent.${name})`, desc }];
+const REPORT_API = { method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/report/liveboard', desc: 'Export the liveboard (PDF/XLSX/CSV/PNG); active filters bake in as override_filters.' };
+const RUNTIME_FILTERS_API = { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.trigger(HostEvent.UpdateRuntimeFilters, …)', desc: 'Apply runtime filters live — no re-render. Appends, so clearing resends the column with values:[].' };
+const CUSTOM_ACTION_API = { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.on(EmbedEvent.CustomAction)', desc: 'Fires when the action is clicked inside the embed; the payload carries the clicked row/viz.' };
+// [selector, (element) => catalog items]. First match wins (most specific selectors first).
+const API_HINT_RULES = [
+  ['#cfb-hh-title', () => [{ method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/search', desc: 'The Liveboard name comes from metadata discovery (the same call that fills the pickers).' }]],
+  ['#cfb-hh-ai', () => hhEvent('AIHighlights', 'Opens the AI Highlights insights panel inside the Liveboard.')],
+  ['#cfb-hh-share', () => hhEvent('Share', 'Opens ThoughtSpot’s share dialog for the Liveboard.')],
+  ['#cfb-hh-more', () => [{ method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.trigger(HostEvent.*)', desc: 'Each menu item fires one HostEvent (Edit, MakeACopy, DownloadAsPdf, Present, Schedule, …).' }]],
+  ['#cfb-hh-menu button', (e) => hhEvent(e.dataset.hostEvent, `Menu action “${e.textContent}”.`)],
+  ['.cfb-hh-tab', () => [
+    { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.trigger(HostEvent.SetActiveTab, { tabId })', desc: 'Switches the Liveboard tab inside the iframe.' },
+    { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.trigger(HostEvent.GetTabs)', desc: 'Read once after render to build this tab bar.' }]],
+  ['#cfb-clear', () => [RUNTIME_FILTERS_API]],
+  ['#cfb-export, #cfb-format', () => [REPORT_API]],
+  ['.cfb-col', () => [
+    { method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/liveboard/data', desc: 'Derives the filter’s values from the Liveboard’s data.' },
+    { method: 'POST', scope: 'playground', path: '/api/filter-values', desc: 'CORS-safe relay for filter values, using YOUR minted token.' }, RUNTIME_FILTERS_API]],
+  ['.plb-add', () => [
+    { method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/copyobject', desc: 'Makes your own editable copy of the Liveboard.' },
+    { method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/tags/assign', desc: 'Tags the copy so it can be found again.' }]],
+  ['.plb-tab-close', () => [{ method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/delete', desc: 'Deletes this personal copy from ThoughtSpot.' }]],
+  ['.plb-tab', () => [{ method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/search', desc: 'Personal copies are listed by owner + tag; switching re-renders the embed on the chosen Liveboard.' }]],
+  ['.chip', (e) => {
+    const a = getState().customActions.find(x => e.textContent.startsWith(`${x.label} · `));
+    const items = [{ method: 'SDK', scope: 'visual-embed-sdk', path: 'customActions: [{ id, name, position, target }]', desc: 'Registers the button in the embed config; ThoughtSpot renders it inside the iframe.' }, CUSTOM_ACTION_API];
+    if (a?.type === 'writeback') items.push({ method: 'POST', scope: 'playground', path: '/api/writeback', desc: 'Write-back sink (stub; requires TS_ALLOW_DEV_PROXY on the server).' });
+    if (a?.type === 'drill') items.push({ method: 'SDK', scope: 'visual-embed-sdk', path: 'new LiveboardEmbed(…, { runtimeFilters })', desc: 'Re-renders the detail Liveboard with the parent + clicked-point filters.' });
+    return items;
+  }],
+  ['#connect-btn', () => [{ method: 'GET', scope: 'TS REST', path: '/api/rest/2.0/auth/session/user', desc: 'Verify the session and read user + current org.' }]],
+  ['#auth-select, #auth-config-btn', () => [
+    { method: 'POST', scope: 'playground', path: '/api/auth/token', desc: 'Trusted auth: mint a short-lived token (the server injects secret_key).' },
+    { method: 'POST', scope: 'server→TS', path: '/api/rest/2.0/auth/token/full', desc: 'ThoughtSpot token mint — server-side only.' }]],
+];
+
+function bindApiHints() {
+  const btns = [$('#api-hint-btn'), $('#demo-api')];
+  const pop = $('#api-hint-pop');
+  let on = false;
+  try { on = localStorage.getItem(API_HINT_PREF_KEY) === '1'; } catch (_) {}
+  let current = null;
+  const hide = () => { pop.hidden = true; current = null; };
+  const show = (target, items) => {
+    pop.innerHTML = '';
+    pop.appendChild(el('div', 'api-group-t', 'ThoughtSpot API used'));
+    items.forEach(it => pop.appendChild(apiRow(it)));
+    pop.hidden = false;
+    const r = target.getBoundingClientRect();
+    const w = pop.offsetWidth, h = pop.offsetHeight;
+    const left = Math.max(12, Math.min(r.left, window.innerWidth - w - 12));
+    const top = r.bottom + 6 + h > window.innerHeight ? Math.max(12, r.top - 6 - h) : r.bottom + 6;
+    pop.style.left = left + 'px'; pop.style.top = top + 'px';
+  };
+  const apply = () => btns.forEach(b => { b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+  apply();
+  btns.forEach(b => b.addEventListener('click', () => {
+    on = !on; apply(); hide();
+    try { localStorage.setItem(API_HINT_PREF_KEY, on ? '1' : '0'); } catch (_) {}
+  }));
+  document.addEventListener('mouseover', (e) => {
+    if (!on || !(e.target instanceof Element) || pop.contains(e.target)) return;
+    for (const [sel, fn] of API_HINT_RULES) {
+      const t = e.target.closest(sel);
+      if (!t) continue;
+      if (t === current) return;
+      const items = fn(t).filter(it => it.path && !/undefined/.test(it.path));
+      if (!items.length) break;
+      current = t; show(t, items); return;
+    }
+    hide();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+  document.addEventListener('scroll', hide, true);
 }
 
 // ── Bottom panel ────────────────────────────────────────────────────────────

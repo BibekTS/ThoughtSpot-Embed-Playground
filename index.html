@@ -58,6 +58,7 @@
           </label>
         </div>
       </div>
+      <button id="api-hint-btn" class="tb-icon-btn" aria-pressed="false" title="API hints — turn on, then hover the title, AI Highlights, tabs, filters, Export, custom-action chips… to see the ThoughtSpot API behind each">API hints</button>
       <button id="demo-btn" class="tb-icon-btn" title="Demo mode — hide the top bar, options panel and bottom panel (Shift+D)">Demo mode</button>
       <label id="mobile-options-btn" class="mobile-opt-btn" for="mobile-options-toggle" title="Show or hide the options panel">⚙ Options</label>
       <button id="share-btn" class="tb-icon-btn" title="Copy a shareable link to the current setup" hidden>Share</button>
@@ -287,7 +288,9 @@
   </div>
 </div>
 
+<div id="api-hint-pop" class="api-hint-pop" role="tooltip" hidden></div>
 <!-- Demo mode: the only chrome left on screen — restores the full tool UI. -->
+<button id="demo-api" class="demo-exit demo-api" hidden aria-pressed="false" title="API hints — turn on, then hover host controls to see the ThoughtSpot API behind each">APIs</button>
 <button id="demo-exit" class="demo-exit" hidden title="Exit demo mode (Shift+D)">Exit demo</button>
 
 <!-- ── Trusted-auth token-claims playground (slide-over) ────────────────── -->
