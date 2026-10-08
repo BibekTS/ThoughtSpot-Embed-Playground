@@ -111,6 +111,19 @@ export function defaultState() {
       column: 'Order Date',           // target column
       applyVia: 'runtime',            // 'runtime' = UpdateRuntimeFilters (invisible) | 'liveboard' = UpdateFilters (visible chip)
     },
+    // "Display by" PRIMARY custom-action button on a table tile — opens a host-side picker that
+    // switches what the Liveboard shows. mode: 'vizs' = HostEvent.SetVisibleVizs (one table viz per
+    // option), 'tabs' = HostEvent.SetActiveTab, 'param' = HostEvent.UpdateParameters. options[].value
+    // is a vizId | tabId | parameter value per mode. Off by default.
+    displayBy: {
+      enabled: false,
+      mode: 'vizs',
+      label: 'Display by',
+      options: [],                    // [{ label, value }]
+      keepVisible: [],                // vizs mode: viz ids that stay visible alongside the chosen table
+      attachVizIds: [],               // tabs/param modes: metadataIds.vizIds the button attaches to
+      paramName: '',                  // param mode: the Liveboard parameter to drive
+    },
     // Personal liveboards — per-source-board editable copies, shown as a host-side tab strip
     // (Standard | your copies | ＋ Personalize). Each copy is a full, user-owned clone made via
     // POST metadata/copyobject and tagged for re-discovery. `copies` is keyed by the SOURCE board
@@ -418,6 +431,25 @@ function sanitize(raw) {
     };
   }
 
+  if (has('displayBy') && raw.displayBy && typeof raw.displayBy === 'object') {
+    const d = raw.displayBy;
+    // All of this arrives from the #s= hash and ends up in an SDK ViewConfig / HostEvent payload:
+    // coerce types, cap lengths and counts. Array rows are rebuilt as fresh {label,value} objects,
+    // so no attacker-supplied key (e.g. __proto__) is ever copied across.
+    out.displayBy = {
+      enabled: bool(d.enabled),
+      mode: ['vizs', 'tabs', 'param'].includes(d.mode) ? d.mode : 'vizs',
+      label: str(d.label, 64) || 'Display by',
+      options: (Array.isArray(d.options) ? d.options : []).slice(0, 20)
+        .filter(o => o && typeof o === 'object')
+        .map(o => ({ label: str(o.label, 64), value: str(o.value, 128) }))
+        .filter(o => o.value),
+      keepVisible: strArr(d.keepVisible).slice(0, 50).map(v => str(v, 128)),
+      attachVizIds: strArr(d.attachVizIds).slice(0, 50).map(v => str(v, 128)),
+      paramName: str(d.paramName, 256),
+    };
+  }
+
   if (has('personalLb') && raw.personalLb && typeof raw.personalLb === 'object') {
     const p = raw.personalLb;
     // `activeCopyId` and every copies[].id are GUIDs from the attacker-controllable #s= hash that get
@@ -509,6 +541,7 @@ function mergeKnown(base, loaded) {
   out.flags = { ...(loaded.flags || {}) };
   out.exportOpts = { ...base.exportOpts, ...(loaded.exportOpts || {}) };
   out.dateBtn = { ...base.dateBtn, ...(loaded.dateBtn || {}) };
+  out.displayBy = { ...base.displayBy, ...(loaded.displayBy || {}) };
   out.personalLb = { ...base.personalLb, ...(loaded.personalLb || {}) };
   out.drill = { ...base.drill, ...(loaded.drill || {}) };
   return out;
