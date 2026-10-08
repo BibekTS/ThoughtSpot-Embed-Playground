@@ -110,7 +110,7 @@ window.TS_CONFIG = {
 5. Return to `localhost:5500` — embeds will render using your active session cookie
 
 > **Why localhost:5500?**
-> ThoughtSpot's CORS whitelist for `ps-internal.thoughtspot.cloud` includes:
+> Your instance's CORS allowlist (e.g. `your-instance.thoughtspot.cloud`) typically includes:
 > `localhost`, `localhost:3000`, `localhost:4200`, `localhost:5500`, `localhost:8000`
 > Opening from `file://` is not whitelisted and will block all SDK requests.
 
@@ -261,11 +261,11 @@ Project/
 
 ═══ CONFIG (config.js) ═══════════════════════════════════════════════════
 window.TS_CONFIG = {
-  thoughtSpotHost:   'https://ps-internal.thoughtspot.cloud',
+  thoughtSpotHost:   'https://your-instance.thoughtspot.cloud',
   authType:          'None',
-  worksheetId:       '04d7c86c-cac6-410d-ac7d-9698bda8b21b',
-  liveboardId:       '47074597-d3fa-4dd1-944b-258254353a04',
-  vizId:             '429e43c4-7368-4959-9a60-4ecbea225bcd',
+  worksheetId:       'YOUR-WORKSHEET-GUID',
+  liveboardId:       'YOUR-LIVEBOARD-GUID',
+  vizId:             'YOUR-VIZ-GUID',
   searchTokenString: '[Sales Amount] [Region]',
   executeSearch:     true,
 };

@@ -258,3 +258,10 @@ This repo is maintained by an organization of AI agents running a continuous-imp
 Rules live in [`CLAUDE.md`](CLAUDE.md), the work queue in [`BACKLOG.md`](BACKLOG.md), and verified
 findings in [`docs/org-memory/`](docs/org-memory/). Every change ships as a branch + PR with CI
 gates (`smoke`, `esm-parse`, `guard`); protected paths require a human `human-approved` label.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Bibek Shrestha. The ThoughtSpot Visual Embed SDK and other
+dependencies are covered by their own licenses.

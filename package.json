@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "ThoughtSpot Visual Embed SDK playground with a hardened trusted-auth token service",
+  "license": "MIT",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",

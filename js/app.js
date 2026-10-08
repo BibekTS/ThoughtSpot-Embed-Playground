@@ -68,10 +68,10 @@ const ACTIONS = {
   search:   [...VIZ_DOWNLOAD_ACTIONS, 'Edit', 'Share', 'Pin', 'DrillDown', 'ShowUnderlyingData', 'SpotIQAnalyze'],
   spotter:  ['Share', 'Pin', 'SpotIQAnalyze'],
   liveboard: [...LB_DOWNLOAD_ACTIONS, ...VIZ_DOWNLOAD_ACTIONS,
-    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi'],
+    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi', 'PersonalizedViewsDropdown', 'AddToFavorites'],
   viz:      [...VIZ_DOWNLOAD_ACTIONS, 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'SpotIQAnalyze'],
   fullapp:  [...LB_DOWNLOAD_ACTIONS, ...VIZ_DOWNLOAD_ACTIONS,
-    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi'],
+    'Edit', 'MakeACopy', 'Share', 'Pin', 'Explore', 'DrillDown', 'ShowUnderlyingData', 'LiveboardInfo', 'LiveboardUsers', 'SpotIQAnalyze', 'AskAi', 'PersonalizedViewsDropdown', 'AddToFavorites'],
 };
 ACTIONS['liveboard-custom'] = ACTIONS.liveboard;
 ACTIONS['ai-highlights'] = ACTIONS.liveboard;
@@ -79,6 +79,8 @@ ACTIONS['drillthrough'] = ACTIONS.liveboard;
 
 // Per-action scope tooltips for the "Modify actions" rows (which surface to hover title).
 const ACTION_HINTS = {
+  PersonalizedViewsDropdown: 'Liveboard-level: the "Select view" (Personalized Views) dropdown at the left of the filter chips.',
+  AddToFavorites: 'The Favorite star. Hide/disable only — the SDK has no HostEvent to toggle a favorite.',
   DownloadLiveboard: 'Liveboard-level: the whole-board Download button. Leave visible to keep Liveboard exports working.',
   DownloadLiveboardAsContinuousPDF: 'Liveboard-level: the Continuous-PDF option in the Download modal (needs “Enable continuous PDF” on).',
   DownloadLiveboardAsA4Pdf: 'Liveboard-level: the paginated A4-PDF option in the Download modal.',
@@ -339,6 +341,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindBottomPanel();
   bindDisplayMenu();
   bindDemoMode();
+  bindApiHints();
   bindStateOverlay();
   // When a trusted-auth token is minted & applied, feed it to REST discovery so object lists
   // populate for token-only users (no browser session), then re-discover against the host.
@@ -556,8 +559,18 @@ function drillPerVizCssRules(s) {
     [`[data-testid="popover-container"]:has([id="${DT_ACTION_ID}"]) #context-menu-item-show-underlying-data`]: { display: 'none !important' },
   };
 }
+// "Host header" layout (Custom Liveboard): the host renders title + tabs. hideLiveboardHeader would also
+// drop the native filter chips, and hideTabPanel makes HostEvent.SetActiveTab a silent no-op — so the
+// title is hidden by flag and the native tab bar by an UNSTABLE internal-class CSS rule (re-verify per release).
+const hostHeaderOn = (s) => s.section === 'liveboard-custom' && (s.cfbLayout === 'host-header' || s.cfbLayout === 'host-header-actions');
+// Actions variant: also hides the native action row (UNSTABLE class) — no HostEvent exists for the star, so it is dropped.
+// isLiveboardHeaderSticky:false stops the sticky header drawing a faded duplicate chip row once that row is hidden.
+const hostActionsOn = (s) => hostHeaderOn(s) && s.cfbLayout === 'host-header-actions';
+const HOST_ACTIONS_RULE = { '[class*="pinboard-header-module__headerContainer"]': { display: 'none !important' } };
+const hostFlags = (s) => ({ showLiveboardTitle: false, hideTabPanel: false, ...(hostActionsOn(s) && { isLiveboardHeaderSticky: false }) });
+const HOST_HEADER_TAB_RULE = { '[class*="pinboard-tab-panel-module__tabPanel"]': { display: 'none !important' } };
 function effectiveCssRules(s) {
-  return { ...(s.styles.rules || {}), ...drillPerVizCssRules(s) };
+  return { ...(s.styles.rules || {}), ...drillPerVizCssRules(s), ...(hostHeaderOn(s) ? HOST_HEADER_TAB_RULE : {}), ...(hostActionsOn(s) ? HOST_ACTIONS_RULE : {}) };
 }
 function hasStyles(s) {
   return Object.keys(s.styles.variables || {}).length || Object.keys(effectiveCssRules(s)).length || !!s.styles.cssUrl;
@@ -812,9 +825,80 @@ function setActive(id, { skipRender = false } = {}) {
   // Show/hide the website-native filter bar
   const cfb = $('#custom-filter-bar');
   if (cfb) cfb.hidden = id !== 'liveboard-custom';
+  hostHeaderSync();
   renderPersonalStrip(); // show/hide the Personal-liveboards strip for this section
   renderInspector();
   if (!skipRender) render();
+}
+
+// ── Host header (Custom Liveboard layout): host-rendered title + tabs above the filter bar ──────────
+function hostHeaderSync() {
+  const hh = $('#cfb-host-header');
+  if (hh) hh.hidden = !hostHeaderOn(getState());
+  const ac = $('#cfb-hh-actions');
+  if (ac) ac.hidden = !hostActionsOn(getState());
+}
+// Host action buttons → HostEvents (static labels). No Delete (destructive). Wired once.
+const HH_MENU = [['Edit', 'Edit'], ['Make a copy', 'MakeACopy'], ['Download PDF', 'DownloadAsPdf'], ['Present', 'Present'],
+  ['Schedule', 'Schedule'], ['Manage schedules', 'SchedulesList'], ['Liveboard info', 'LiveboardInfo'], ['Export TML', 'ExportTML']];
+let _hhWired = false;
+async function hhTrigger(name, label) {
+  try { await currentEmbed.trigger(HostEvent[name]); logEvent('HostEvent', `${name}: ${label}`); }
+  catch (e) { logEvent('HostEvent', `✗ ${name}: ${e.message}`); }
+}
+function hostHeaderWire() {
+  if (_hhWired) return; _hhWired = true;
+  const more = $('#cfb-hh-more'), menu = $('#cfb-hh-menu');
+  const close = () => { menu.hidden = true; more.setAttribute('aria-expanded', 'false'); };
+  $('#cfb-hh-ai').addEventListener('click', () => hhTrigger('AIHighlights', 'AI Highlights'));
+  $('#cfb-hh-share').addEventListener('click', () => hhTrigger('Share', 'Share'));
+  HH_MENU.forEach(([label, name]) => {
+    const b = el('button'); b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = label; b.dataset.hostEvent = name;
+    b.addEventListener('click', () => { close(); hhTrigger(name, label); });
+    menu.appendChild(b);
+  });
+  more.addEventListener('click', e => {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden; more.setAttribute('aria-expanded', String(!menu.hidden));
+    if (!menu.hidden) menu.querySelector('button').focus();
+  });
+  document.addEventListener('click', e => { if (!menu.contains(e.target)) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !menu.hidden) { close(); more.focus(); } });
+}
+let _hhSeq = 0; // latest build wins — two builds on the same embed (connect → re-render) must not both append
+async function hostHeaderBuild() {
+  hostHeaderSync();
+  const seq = ++_hhSeq;
+  const s = getState();
+  if (!hostHeaderOn(s)) return;
+  hostHeaderWire();
+  const embed = currentEmbed;
+  const id = effectiveLiveboardId(s);
+  // textContent only — the name comes from ThoughtSpot.
+  $('#cfb-hh-title').textContent = (discovered.liveboards || []).find(l => l.id === id || l.id === s.liveboardId)?.name || 'Liveboard';
+  const bar = $('#cfb-hh-tabs');
+  bar.replaceChildren(); bar.hidden = true;
+  let res;
+  try { res = await embed.trigger(HostEvent.GetTabs); logEvent('HostEvent', 'GetTabs'); }
+  catch (e) { logEvent('HostEvent', `✗ GetTabs: ${e.message}`); return; }
+  if (embed !== currentEmbed || seq !== _hhSeq) return; // superseded while awaiting
+  bar.replaceChildren();
+  const byId = new Map((res?.Tabs || []).map(t => [t.id, t]));
+  const tabs = (res?.orderedTabIds || [...byId.keys()]).map(i => byId.get(i)).filter(Boolean);
+  if (tabs.length < 2) return;
+  tabs.forEach((t, i) => {
+    const b = el('button', 'cfb-hh-tab' + (i ? '' : ' active')); b.type = 'button'; b.setAttribute('role', 'tab');
+    b.textContent = t.name || `Tab ${i + 1}`;
+    b.addEventListener('click', async () => {
+      try {
+        await embed.trigger(HostEvent.SetActiveTab, { tabId: t.id });
+        logEvent('HostEvent', `SetActiveTab: ${b.textContent}`);
+        bar.querySelectorAll('.cfb-hh-tab').forEach(x => x.classList.toggle('active', x === b));
+      } catch (e) { logEvent('HostEvent', `✗ SetActiveTab: ${e.message}`); }
+    });
+    bar.appendChild(b);
+  });
+  bar.hidden = false;
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────
@@ -898,7 +982,7 @@ function render() {
   appliedRuntimeCols = new Set(); // fresh iframe carries no runtime filters yet
   displayByChoice = displayByActive(s) && s.displayBy.mode === 'vizs' ? (s.displayBy.options[0]?.value || '') : ''; // fresh iframe = initial view
   currentEmbed = doRender(s.section, cfg, {
-    onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); applyLiveFilters(); if (getState().section === 'liveboard-custom') cfbBuild(); maybeOpenCreatedCopyForEdit(); },
+    onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); applyLiveFilters(); if (getState().section === 'liveboard-custom') { cfbBuild(); hostHeaderBuild(); } maybeOpenCreatedCopyForEdit(); },
     onError(msg) {
       clearTimeout(fallback);
       const str = typeof msg === 'string' ? msg : JSON.stringify(msg);
@@ -916,7 +1000,7 @@ function render() {
     runtimeParameters: s.runtimeParameters,
     // visibleVizs goes AFTER the shared-link flags so it wins: vizs-mode "Display by" starts on the
     // first option's table (plus the always-visible charts).
-    flags: { ...(s.flags[s.section] || {}), ...displayByInitialConfig(s) },
+    flags: { ...(s.flags[s.section] || {}), ...(hostHeaderOn(s) ? hostFlags(s) : {}), ...displayByInitialConfig(s) },
     spotterQuery: s.section === 'spotter' ? pendingSpotterQuery : null,
   });
   pendingSpotterQuery = null; // consumed — only auto-runs on the render triggered by the bridge
@@ -1175,6 +1259,7 @@ const DEMO_PREF_KEY = 'ts-playground.demoMode';
 function applyDemoMode(on, { persist = false } = {}) {
   document.body.classList.toggle('demo-mode', on);
   $('#demo-exit').hidden = !on;
+  $('#demo-api').hidden = !on;
   if (persist) { try { localStorage.setItem(DEMO_PREF_KEY, on ? '1' : '0'); } catch (_) {} }
 }
 
@@ -1191,6 +1276,89 @@ function bindDemoMode() {
     e.preventDefault();
     applyDemoMode(!document.body.classList.contains('demo-mode'), { persist: true });
   });
+}
+
+// ── API hints ─────────────────────────────────────────────────────────────────
+// A toggle (like Demo mode): when on, hovering a host-rendered control pops the ThoughtSpot API(s)
+// behind it. Controls rendered INSIDE the embed iframe (e.g. the SDK's own custom-action buttons)
+// are cross-origin and can't be hovered from here — their configured counterparts (the chips in the
+// Custom actions inspector) are covered instead. Per-browser UI preference, not shared state.
+const API_HINT_PREF_KEY = 'ts-playground.apiHints';
+const hhEvent = (name, desc) => [{ method: 'SDK', scope: 'visual-embed-sdk', path: `embed.trigger(HostEvent.${name})`, desc }];
+const REPORT_API = { method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/report/liveboard', desc: 'Export the liveboard (PDF/XLSX/CSV/PNG); active filters bake in as override_filters.' };
+const RUNTIME_FILTERS_API = { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.trigger(HostEvent.UpdateRuntimeFilters, …)', desc: 'Apply runtime filters live — no re-render. Appends, so clearing resends the column with values:[].' };
+const CUSTOM_ACTION_API = { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.on(EmbedEvent.CustomAction)', desc: 'Fires when the action is clicked inside the embed; the payload carries the clicked row/viz.' };
+// [selector, (element) => catalog items]. First match wins (most specific selectors first).
+const API_HINT_RULES = [
+  ['#cfb-hh-title', () => [{ method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/search', desc: 'The Liveboard name comes from metadata discovery (the same call that fills the pickers).' }]],
+  ['#cfb-hh-ai', () => hhEvent('AIHighlights', 'Opens the AI Highlights insights panel inside the Liveboard.')],
+  ['#cfb-hh-share', () => hhEvent('Share', 'Opens ThoughtSpot’s share dialog for the Liveboard.')],
+  ['#cfb-hh-more', () => [{ method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.trigger(HostEvent.*)', desc: 'Each menu item fires one HostEvent (Edit, MakeACopy, DownloadAsPdf, Present, Schedule, …).' }]],
+  ['#cfb-hh-menu button', (e) => hhEvent(e.dataset.hostEvent, `Menu action “${e.textContent}”.`)],
+  ['.cfb-hh-tab', () => [
+    { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.trigger(HostEvent.SetActiveTab, { tabId })', desc: 'Switches the Liveboard tab inside the iframe.' },
+    { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.trigger(HostEvent.GetTabs)', desc: 'Read once after render to build this tab bar.' }]],
+  ['#cfb-clear', () => [RUNTIME_FILTERS_API]],
+  ['#cfb-export, #cfb-format', () => [REPORT_API]],
+  ['.cfb-col', () => [
+    { method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/liveboard/data', desc: 'Derives the filter’s values from the Liveboard’s data.' },
+    { method: 'POST', scope: 'playground', path: '/api/filter-values', desc: 'CORS-safe relay for filter values, using YOUR minted token.' }, RUNTIME_FILTERS_API]],
+  ['.plb-add', () => [
+    { method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/copyobject', desc: 'Makes your own editable copy of the Liveboard.' },
+    { method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/tags/assign', desc: 'Tags the copy so it can be found again.' }]],
+  ['.plb-tab-close', () => [{ method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/delete', desc: 'Deletes this personal copy from ThoughtSpot.' }]],
+  ['.plb-tab', () => [{ method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/search', desc: 'Personal copies are listed by owner + tag; switching re-renders the embed on the chosen Liveboard.' }]],
+  ['.chip', (e) => {
+    const a = getState().customActions.find(x => e.textContent.startsWith(`${x.label} · `));
+    const items = [{ method: 'SDK', scope: 'visual-embed-sdk', path: 'customActions: [{ id, name, position, target }]', desc: 'Registers the button in the embed config; ThoughtSpot renders it inside the iframe.' }, CUSTOM_ACTION_API];
+    if (a?.type === 'writeback') items.push({ method: 'POST', scope: 'playground', path: '/api/writeback', desc: 'Write-back sink (stub; requires TS_ALLOW_DEV_PROXY on the server).' });
+    if (a?.type === 'drill') items.push({ method: 'SDK', scope: 'visual-embed-sdk', path: 'new LiveboardEmbed(…, { runtimeFilters })', desc: 'Re-renders the detail Liveboard with the parent + clicked-point filters.' });
+    return items;
+  }],
+  ['#connect-btn', () => [{ method: 'GET', scope: 'TS REST', path: '/api/rest/2.0/auth/session/user', desc: 'Verify the session and read user + current org.' }]],
+  ['#auth-select, #auth-config-btn', () => [
+    { method: 'POST', scope: 'playground', path: '/api/auth/token', desc: 'Trusted auth: mint a short-lived token (the server injects secret_key).' },
+    { method: 'POST', scope: 'server→TS', path: '/api/rest/2.0/auth/token/full', desc: 'ThoughtSpot token mint — server-side only.' }]],
+];
+
+function bindApiHints() {
+  const btns = [$('#api-hint-btn'), $('#demo-api')];
+  const pop = $('#api-hint-pop');
+  let on = false;
+  try { on = localStorage.getItem(API_HINT_PREF_KEY) === '1'; } catch (_) {}
+  let current = null;
+  const hide = () => { pop.hidden = true; current = null; };
+  const show = (target, items) => {
+    pop.innerHTML = '';
+    pop.appendChild(el('div', 'api-group-t', 'ThoughtSpot API used'));
+    items.forEach(it => pop.appendChild(apiRow(it)));
+    pop.hidden = false;
+    const r = target.getBoundingClientRect();
+    const w = pop.offsetWidth, h = pop.offsetHeight;
+    const left = Math.max(12, Math.min(r.left, window.innerWidth - w - 12));
+    const top = r.bottom + 6 + h > window.innerHeight ? Math.max(12, r.top - 6 - h) : r.bottom + 6;
+    pop.style.left = left + 'px'; pop.style.top = top + 'px';
+  };
+  const apply = () => btns.forEach(b => { b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+  apply();
+  btns.forEach(b => b.addEventListener('click', () => {
+    on = !on; apply(); hide();
+    try { localStorage.setItem(API_HINT_PREF_KEY, on ? '1' : '0'); } catch (_) {}
+  }));
+  document.addEventListener('mouseover', (e) => {
+    if (!on || !(e.target instanceof Element) || pop.contains(e.target)) return;
+    for (const [sel, fn] of API_HINT_RULES) {
+      const t = e.target.closest(sel);
+      if (!t) continue;
+      if (t === current) return;
+      const items = fn(t).filter(it => it.path && !/undefined/.test(it.path));
+      if (!items.length) break;
+      current = t; show(t, items); return;
+    }
+    hide();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+  document.addEventListener('scroll', hide, true);
 }
 
 // ── Bottom panel ────────────────────────────────────────────────────────────
@@ -5509,6 +5677,11 @@ async function downloadCfbReport() {
 // Inspector section: shows active filter columns + refresh.
 function sectionCfbSetup() {
   const c = el('div', 'sec-body');
+  c.appendChild(enumSelect('Layout', getState().cfbLayout,
+    [{ value: 'default', label: 'ThoughtSpot header (default)' }, { value: 'host-header', label: 'Host header — title & tabs above filters' },
+     { value: 'host-header-actions', label: 'Host header + actions — title, tabs & action buttons above filters' }],
+    v => { setState({ cfbLayout: v }); hostHeaderSync(); render(); }));
+  c.appendChild(el('div', 'sec-note', 'Host header keeps ThoughtSpot’s native filter chips, renders the title and tabs in this page, and hides the native tab bar (and, with actions, the native action row) with UNSTABLE internal CSS selectors (re-verify after TS upgrades). The Favorite star has no HostEvent, so it is dropped. Tip: hide "Select view" via Modify actions → PersonalizedViewsDropdown.'));
   c.appendChild(el('div', 'sec-note', 'Click "+ Add filter" in the bar above to add a column. Available columns are discovered from the liveboard data.'));
 
   if (cfbAllColumns.length) {
@@ -7188,6 +7361,7 @@ function generateCode() {
   if (s.section === 'ai-highlights') importNames.push('HostEvent');
   if (plbOn) importNames.push('HostEvent');
   if (dispBy) importNames.push('HostEvent');
+  if (hostHeaderOn(s)) importNames.push('HostEvent');
 
   const L = [];
   L.push(`import {\n  ${[...new Set(importNames)].join(', ')}\n} from '@thoughtspot/visual-embed-sdk';`);
@@ -7208,6 +7382,8 @@ function generateCode() {
         if (Object.keys(s.styles.variables).length) { initLines.push('        variables: {'); Object.entries(s.styles.variables).forEach(([k, v]) => initLines.push(`          '${esc(k)}': '${esc(v)}',`)); initLines.push('        },'); }
         if (Object.keys(cssRules).length) {
           initLines.push('        rules_UNSTABLE: {');
+          if (hostActionsOn(s)) initLines.push('          // UNSTABLE internal class: hides the native action row (star, AI Highlights, Share, ...). Keeps the filter chips.');
+          if (hostHeaderOn(s)) initLines.push('          // UNSTABLE internal class: hides the native tab bar (hideTabPanel would break HostEvent.SetActiveTab).');
           if (Object.keys(perViz).length) initLines.push('          // Hide "Show underlying data" only in menus that also offer the drill-through action.');
           Object.entries(cssRules).forEach(([sel, decls]) => { initLines.push(`          '${esc(sel)}': {`); Object.entries(decls).forEach(([p, v]) => initLines.push(`            '${esc(p)}': '${esc(v)}',`)); initLines.push('          },'); });
           initLines.push('        },');
@@ -7251,12 +7427,15 @@ function generateCode() {
   // would disagree about which object the user is looking at. Keep this set in lockstep with the
   // constructors in js/embed.js.
   const pinnedKeys = new Set(['pageId']);
+  if (hostHeaderOn(s)) Object.keys(hostFlags(s)).forEach(k => pinnedKeys.add(k));
   if (['liveboard', 'liveboard-custom', 'ai-highlights', 'drillthrough'].includes(s.section)) pinnedKeys.add('liveboardId');
   if (s.section === 'viz') {
     if (s.answerId) { pinnedKeys.add('answerId'); pinnedKeys.add('hideSearchBar'); }
     else { pinnedKeys.add('liveboardId'); pinnedKeys.add('vizId'); }
   }
   Object.entries(s.flags[s.section] || {}).forEach(([k, v]) => { if (pinnedKeys.has(k)) return; if (k === 'visibleVizs' && displayByInitialConfig(s).visibleVizs) return; if (k === 'isLiveboardMasterpiecesEnabled' && v === true) return; opt.push(`  ${k}: ${JSON.stringify(v)},`); });
+  if (hostActionsOn(s)) opt.push('  isLiveboardHeaderSticky: false, // else the sticky header draws a faded duplicate chip row once the native action row is hidden');
+  if (hostHeaderOn(s)) opt.push('  showLiveboardTitle: false, // you render the title; keeps the native filter chips (hideLiveboardHeader would drop them)', '  hideTabPanel: false, // must stay false: true makes HostEvent.SetActiveTab a silent no-op');
   const hiddenKeys = hiddenActionKeys(s);
   if (hiddenKeys.length) opt.push(`  hiddenActions: [${hiddenKeys.map(a => `Action.${a}`).join(', ')}],`);
   if (s.disabledActions.length) opt.push(`  disabledActions: [${s.disabledActions.map(a => `Action.${a}`).join(', ')}],`);
@@ -7666,6 +7845,24 @@ function generateCode() {
       L.push(`  '${esc(col)}': ${entry},`);
     });
     L.push('};');
+  }
+  if (hostHeaderOn(s)) {
+    L.push(''); L.push('// Host header — your own title + tabs (the native tab bar is hidden by the rules_UNSTABLE rule in init()):');
+    L.push("embed.on(EmbedEvent.LiveboardRendered, async () => {");
+    L.push("  const { orderedTabIds, Tabs } = await embed.trigger(HostEvent.GetTabs);");
+    L.push("  // Render one button per tab in orderedTabIds order; titleEl.textContent = your liveboard name.");
+    L.push("  const tabEl = (id) => Tabs.find((t) => t.id === id); // { id, name, containerIds, ... }");
+    L.push("  // On click:");
+    L.push("  //   embed.trigger(HostEvent.SetActiveTab, { tabId: tabEl(orderedTabIds[0]).id });");
+    L.push("});");
+    if (hostActionsOn(s)) {
+      L.push(''); L.push('// Host action buttons (there is no HostEvent for the Favorite star):');
+      L.push("aiButton.onclick = () => embed.trigger(HostEvent.AIHighlights);");
+      L.push("shareButton.onclick = () => embed.trigger(HostEvent.Share);");
+      L.push("// \"...\" menu items, one trigger each: Edit, MakeACopy, DownloadAsPdf, Present, Schedule,");
+      L.push("// SchedulesList, LiveboardInfo, ExportTML — e.g.");
+      L.push("downloadPdfItem.onclick = () => embed.trigger(HostEvent.DownloadAsPdf);");
+    }
   }
   if (cfbActiveFilters.length) {
     L.push(''); L.push('// Custom filter bar — selected values, applied live (ordered per filterValueOrder):');
