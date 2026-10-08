@@ -1027,3 +1027,12 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   favorites need admin (users/{id}/update), so the star is dropped. 1.49.0 members used: Edit, MakeACopy,
   DownloadAsPdf, Present, Schedule, SchedulesList, ExportTML, LiveboardInfo, Share, AIHighlights. App: `hostActionsOn`,
   `hostFlags`, `hostHeaderWire` (js/app.js ~556, ~830).
+
+## Display-by custom action (2026-10-08, feat/display-by-action)
+
+- 2026-10-08: `state.displayBy` (state.js default + sanitize + `mergeKnown`) drives a PRIMARY `__display_by`
+  action (`DISPLAY_BY_ACTION_ID`, app.js) scoped by `metadataIds.vizIds` (option vizzes in `vizs` mode,
+  `attachVizIds` otherwise; empty -> LIVEBOARD target). The sanitize `.slice(0,20)` runs BEFORE dropping
+  empty-value rows, so junk rows in a shared link can leave <20 options. Initial `visibleVizs` is injected in
+  `render()` by merging into the `flags` option AFTER the shared-link flags (embed.js spreads `...flags` last),
+  so it wins. No tab discovery exists in discovery.js, so tab ids are typed by hand.
