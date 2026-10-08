@@ -896,7 +896,7 @@ function render() {
 
   authFailed = false; // fresh render — clear any prior auth-failure latch
   appliedRuntimeCols = new Set(); // fresh iframe carries no runtime filters yet
-  displayByChoice = displayByActive(s) ? (s.displayBy.options[0]?.value || '') : ''; // fresh iframe = initial view
+  displayByChoice = displayByActive(s) && s.displayBy.mode === 'vizs' ? (s.displayBy.options[0]?.value || '') : ''; // fresh iframe = initial view
   currentEmbed = doRender(s.section, cfg, {
     onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); applyLiveFilters(); if (getState().section === 'liveboard-custom') cfbBuild(); maybeOpenCreatedCopyForEdit(); },
     onError(msg) {
@@ -7155,7 +7155,10 @@ function generateCode() {
   if (s.section === 'spotter-chat') return spotterMcpCode(s);
   const m = META[s.section];
   // Escape backslashes then single quotes so values with apostrophes don't break the JS snippet.
-  const esc = str => String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  // Also escapes line terminators: a shared-link string with a raw \n would otherwise break out of a
+  // '…' literal or a `// …` comment line in the generated snippet and become live code.
+  const esc = str => String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   // A standalone saved Answer renders through SearchEmbed (not LiveboardEmbed), so the
   // generated snippet must import and instantiate the class we actually use at runtime.
   const embedCls = (s.section === 'viz' && s.answerId) ? 'SearchEmbed' : m.cls;
@@ -7253,7 +7256,7 @@ function generateCode() {
     if (s.answerId) { pinnedKeys.add('answerId'); pinnedKeys.add('hideSearchBar'); }
     else { pinnedKeys.add('liveboardId'); pinnedKeys.add('vizId'); }
   }
-  Object.entries(s.flags[s.section] || {}).forEach(([k, v]) => { if (pinnedKeys.has(k)) return; if (k === 'isLiveboardMasterpiecesEnabled' && v === true) return; opt.push(`  ${k}: ${JSON.stringify(v)},`); });
+  Object.entries(s.flags[s.section] || {}).forEach(([k, v]) => { if (pinnedKeys.has(k)) return; if (k === 'visibleVizs' && displayByInitialConfig(s).visibleVizs) return; if (k === 'isLiveboardMasterpiecesEnabled' && v === true) return; opt.push(`  ${k}: ${JSON.stringify(v)},`); });
   const hiddenKeys = hiddenActionKeys(s);
   if (hiddenKeys.length) opt.push(`  hiddenActions: [${hiddenKeys.map(a => `Action.${a}`).join(', ')}],`);
   if (s.disabledActions.length) opt.push(`  disabledActions: [${s.disabledActions.map(a => `Action.${a}`).join(', ')}],`);
