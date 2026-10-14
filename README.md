@@ -1,267 +1,188 @@
+<div align="center">
+
 # ThoughtSpot Embed Playground
 
-A small, shareable tool for testing the **ThoughtSpot Visual Embed SDK**. Point it at any instance,
-pick an embed type, tweak the options, and copy the runnable SDK code. No build step, no framework.
+**Connect → pick an embed → tweak → copy the code.**
 
-> Connect → pick an embed → tweak → copy the code. Every setup is a shareable link.
+A tool-first playground for the ThoughtSpot Visual Embed SDK. Every setup is a shareable link.<br>No build step, no framework.
 
----
+[![SDK](https://img.shields.io/badge/visual--embed--sdk-1.49.0-1d4ed8)](ts-sdk-version.json) [![node](https://img.shields.io/badge/node-18%2B-1d4ed8)](package.json) [![build](https://img.shields.io/badge/build_step-none-1d4ed8)](index.html) [![license](https://img.shields.io/badge/license-MIT-1d4ed8)](LICENSE)
+
+**[Live demo](https://vantage-sales-analytics.vercel.app/)** · **[TSE best-practices guide](https://vantage-sales-analytics.vercel.app/docs/tse-best-practices.html)** · **[SDK docs](https://developers.thoughtspot.com/docs/)**
+
+</div>
 
 ## Quick start
 
-Needs **Node 18+** and a ThoughtSpot instance you can log into.
-
 ```bash
 npm install
-npm start
+npm start          # http://localhost:3000
 ```
 
-Open **http://localhost:3000**, paste your instance URL in the top bar, click **Connect**. No `.env`,
-no keys — this uses **browser-session auth**, so keep a tab logged into ThoughtSpot in the same
-browser.
+Paste your instance URL in the top bar and click **Connect**. It uses browser-session auth, so keep a
+tab logged into ThoughtSpot in the same browser. No `.env`, no keys.
 
-> **One-time CORS step:** add `http://localhost:3000` to your instance's CORS allowlist
-> (**Develop → Customizations → Security Settings → CORS**) so the object pickers can load. The
-> embed itself renders without it.
+> **One-time CORS step:** add `http://localhost:3000` under **Develop → Customizations → Security
+> Settings → CORS** so the object pickers can load. The embed itself renders without it.
 
-Then pick an embed from the left rail, choose a data object in the inspector, tweak options, and
-copy from the **SDK Code** tab at the bottom.
+Pick an embed from the rail, choose a data object, tweak options, and copy from the **SDK Code** tab.
+**Share** copies a link that reproduces the setup. Secrets are never serialized, and links are
+sanitized on load.
 
-Everything you configure is encoded into the URL hash and saved to `localStorage` — **Share** copies
-a link that reproduces your setup. Secrets are never serialized, and links are sanitized on load.
+## Why use it
 
----
+- **Runnable code, not snippets.** The SDK Code tab tracks every option you set, ready to paste.
+- **Contextual inspector.** Data object, display options, actions, runtime filters and parameters,
+  custom actions, host events and custom styles, shown only where the active embed supports them.
+- **See what the SDK does.** Event log, SDK lifecycle, and every REST call the setup depends on.
+- **Real integrations, wired up.** Drill-through, callback actions, webhooks and Spotter over MCP.
+- **Safe to share.** A fail-closed token server, and links sanitized on load.
 
 ## Embed types
 
-| Rail item | SDK class | Needs |
+| Rail item | SDK | Needs |
 |---|---|---|
-| Search Data | `SearchEmbed` | Worksheet/Model |
-| Spotter AI | `SpotterEmbed` | Worksheet/Model |
-| Spotter Chat (MCP) | Custom chat UI over the Spotter 3 MCP server — no iframe, no SDK ([docs](docs/spotter-mcp-chat.md)) | **the local server** (greyed out on a static host) |
+| Search Data | `SearchEmbed` | Model |
+| Spotter AI | `SpotterEmbed` | Model |
+| Spotter Chat (MCP) | Custom chat UI over the Spotter 3 MCP server ([docs](docs/spotter-mcp-chat.md)) | Model + the local server |
 | Liveboard | `LiveboardEmbed` | Liveboard |
-| Custom Liveboard | `LiveboardEmbed` + website-native filter bar | Liveboard |
+| Custom Liveboard | `LiveboardEmbed` + a host-native filter bar | Liveboard |
 | AI Highlights | `LiveboardEmbed` + `HostEvent.AIHighlights` | Liveboard |
-| Single Viz | `LiveboardEmbed` (+`vizId`) | Liveboard + Viz, or a standalone Answer |
-| Drill-through | `LiveboardEmbed` + a host-rendered detail grid over `searchdata` | Liveboard (+ a detail Model) |
+| Single Viz | `LiveboardEmbed` + `vizId`, or a standalone Answer | Liveboard + viz, or Answer |
+| Drill-through | `LiveboardEmbed` + a host-rendered detail list over `searchdata` | Liveboard + detail Model |
 | Full App | `AppEmbed` | — |
-| AI Insights (REST) | Spotter REST, no iframe | Worksheet/Model |
+| AI Insights (REST) | Spotter REST, no iframe | Model |
 
-The **inspector** is contextual to the active embed: Data object · Display options · Modify actions ·
-Runtime filters · Runtime parameters · Custom actions · Host events · Custom styles.
+## Integrations
 
-The **bottom panel** has four tabs: Event Log · SDK Code · SDK Lifecycle · APIs Used.
-
----
-
-## Drill-through demo
-
-Summary → detail, entirely host-side, over two Models of the same data: an aggregated one behind the
-summary Liveboard and an event-grain one for the rows. Configure it all in the **Drill-through**
-inspector panel — no GUIDs are hardcoded, so it runs on any cluster.
-
-Two independent moves:
-
-1. **Point click → filtered detail Liveboard.** `EmbedEvent.VizPointClick` gives the clicked point's
-   attributes. Those merge with the host's own filters and with whatever the user set *inside* the
-   iframe (`HostEvent.GetFilters`, which returns a promise directly), and the detail Liveboard renders
-   with them as runtime filters. Clicked attributes win on any column that appears in both.
-2. **"View detail" → your own record list.** A `CONTEXTMENU`/`VIZ` custom action scoped with
-   `dataModelIds.modelColumnNames: ['<modelGuid>::<column>']` is limited to vizzes built on that column.
-   It fetches event-grain rows with `POST /api/rest/2.0/searchdata`, pages them with `record_offset`
-   (which is how you get past the 1,000-row response cap), and renders them outside the iframe — with
-   per-row `{Column}` deep links into whatever system owns the record.
-
-   Two presentations: **Modal** (default) is a centred record list — measure name as the title, a
-   period subtitle, a summary line, skeleton while loading, one row per record with a chevron through
-   to the owning system, and an optional "View all …" footer. **Panel** is a dense grid docked under
-   the embed. Both read the same state.
-
-   > **`modelColumnNames` scopes to a visualization, not to a column.** The action shows on *every*
-   > cell of any viz that uses the named column — verified live: scoped to `Total Sales Amount`, it
-   > still appears when you right-click the neighbouring `Total Sales Amount Quota` cell. So the
-   > record list takes its measure from the configured **Measure column** wherever it sits on the
-   > clicked row, not from whichever cell was right-clicked; otherwise the modal ends up titled after
-   > a `{Null}` quota.
-
-   The action opens on **right-click** by default; "Opened by → plain left-click" is also available.
-   A native app can reveal a *View details* link on cell hover — inside a cross-origin iframe that is
-   not possible, so these two are the closest equivalents (and left-click also raises ThoughtSpot's
-   own menu alongside yours).
-
-   A detail column may carry a granularity suffix — `Order Date.daily` emits `[Order Date].daily`, so
-   you get per-day rows instead of whatever bucketing ThoughtSpot picks. Date columns come back as raw
-   epochs with no type metadata, so cells in date-named columns are formatted through the same
-   heuristic the custom filter bar uses.
-
-A badge reconciles the measure the user clicked against the detail row count and turns amber when
-they disagree — i.e. when the summary and detail models are not counting the same grain.
-
-> **Paging caveat, learned the hard way.** The REST schema calls `available_data_row_count` the
-> "Total available data row count", but on 26.8.0.cl it comes back equal to `returned_data_row_count`
-> on *every* page. A full page therefore says nothing about the total. This panel treats a **short
-> page** as the end-of-data signal, and the badge reads `N+` (neutral, no mismatch claimed) until the
-> count is actually known. Reuse that reading if you copy this code.
-
-**A 15-minute demo, in six steps:** pick the summary Liveboard → click a funnel stage and watch the
-detail Liveboard open already filtered → right-click the measure on a bar and pick "View detail" →
-read the individual rows → "Load more" past the first page → point at the badge and show the KPI and
-the row count agreeing. The SDK Code tab carries the runnable version of all of it.
-
-> Requires SDK 1.43.0+ / cluster 10.14.0.cl+ for the column scoping (this repo pins 1.49.0).
-> Runtime filters are **not** a security boundary — they are visible and editable in the URL. The
-> detail rows are safe because `searchdata` runs under the viewer's own token, so RLS applies.
-
----
-
-## Custom actions
-
-Custom actions add buttons to an embed's menus. Pick a type per action:
-
-| Type | What fires | What the host does |
+| Integration | What it shows | Write-up |
 |---|---|---|
-| **Callback** | `EmbedEvent.CustomAction` with the row payload | Runs your own code — no navigation |
-| **URL** | Opens a URL with the selected row data appended | Hands off to another app with context |
-| **Write-back** | `POST /api/writeback` (dev-proxy stub) | Round-trips a value to a system of record |
-| **Drill-down** | Re-renders at a detail Liveboard | Navigates to a focused board |
+| **Drill-through** | Point click → filtered detail Liveboard; "View detail" → event-grain rows rendered by the host | below |
+| **Download PDF** | Callback action → viz rows → paginated client-side PDF | [callback-action.md](docs/callback-action.md) |
+| **Customize Export** | Custom export flows from the embed | [customize-export.md](docs/customize-export.md) |
+| **Webhook Inbox** | One webhook per recipient, with the rendered report attached | [webhook-inbox-demo.md](docs/webhook-inbox-demo.md) |
+| **Spotter Chat (MCP)** | A chat UI over the Spotter MCP server, no iframe | [spotter-mcp-chat.md](docs/spotter-mcp-chat.md) |
 
-Four worked integrations ship wired up, each with a write-up in [`docs/`](docs/):
-[Download PDF](docs/callback-action.md) · [Customize Export](docs/customize-export.md) ·
-[Webhook Inbox](docs/webhook-inbox-demo.md) · [Spotter Chat (MCP)](docs/spotter-mcp-chat.md).
+Custom actions come in four types: **Callback** (runs host code), **URL** (opens a link with row
+context), **Write-back** (`POST /api/writeback` stub) and **Drill-down** (re-renders a detail Liveboard).
 
----
+<details>
+<summary>Drill-through: how it works and what to watch for</summary>
 
-## Trusted Auth (optional)
+Everything is configured in the **Drill-through** panel. No GUIDs are hardcoded, so it runs on any cluster.
 
-For testing trusted-auth tokens, groups, JIT, and RLS claims:
+1. **Point click → detail Liveboard.** `EmbedEvent.VizPointClick` attributes merge with host filters
+   and in-iframe filters (`HostEvent.GetFilters`); the detail Liveboard renders with them as runtime
+   filters.
+2. **"View detail" → host record list.** A context-menu custom action scoped with
+   `dataModelIds.modelColumnNames` fetches rows via `POST /api/rest/2.0/searchdata`, pages with
+   `record_offset` past the 1,000-row cap, and renders them outside the iframe as a modal or a panel.
+   **View payload** shows the raw `EmbedEvent.CustomAction` payload.
+
+Gotchas:
+
+- `modelColumnNames` scopes to a **visualization**, not a column: the action shows on every cell of
+  that viz. Turn on **Only drill from one column** to refuse clicks on other cells.
+- `available_data_row_count` equals the returned count on every page, so a **short page** is the only
+  end-of-data signal.
+- Runtime filters are not a security boundary. Detail rows are safe because `searchdata` runs under
+  the viewer's own token, so RLS applies.
+
+Requires SDK 1.43.0+ and cluster 10.14.0.cl+ for column scoping.
+
+</details>
+
+## Trusted auth (optional)
+
+For testing trusted-auth tokens, groups, JIT and RLS claims:
 
 ```bash
-# 1. In ThoughtSpot (admin): Develop → Customizations → Security Settings → Trusted authentication
-#    → enable it and copy the secret key.
-npm run setup     # 2. creates .env — set THOUGHTSPOT_HOST, TS_SECRET_KEY, TS_DEFAULT_USERNAME
-npm run doctor    # 3. verify: mints a real test token and reports the exact upstream error if not
-npm start         # 4. restart — .env is read at boot
+npm run setup      # creates .env: set THOUGHTSPOT_HOST, TS_SECRET_KEY, TS_DEFAULT_USERNAME
+npm run doctor     # mints a real test token, or reports the exact upstream error
+npm start          # .env is read at boot
 ```
 
-Switch the top-bar auth selector to **Trusted token** → **Token claims…**. The Node server holds the
-`secret_key` and mints short-lived tokens — **the secret never reaches the browser**. The inspector
-shows the redacted request, the decoded JWT, an expiry countdown, and every `getAuthToken` call.
+Enable trusted authentication in ThoughtSpot first (**Develop → Customizations → Security Settings**)
+and copy the secret key. Then switch the top bar to **Trusted token → Token claims…**. The server
+holds the secret and mints short-lived tokens; the secret never reaches the browser.
 
-Two token types, selectable per mint:
+- **full** (`auth/token/full`): `username`, `auto_create`, `org_id`, `group_identifiers[]`.
+- **custom** (`auth/token/custom`): `variable_values[]` for ABAC via `ts_var()`, optional
+  `objects[]`, and `persist_option: REPLACE` so entitlements can't accumulate.
 
-- **full** → `auth/token/full` — identity & JIT (`username`, `auto_create`, `org_id`),
-  `group_identifiers[]` for group-keyed RLS, and `user_parameters` *(deprecated in TS 10.4.0.cl+)*.
-- **custom** → `auth/token/custom` — `variable_values[]` (the modern ABAC path; referenced in RLS
-  rules via `ts_var(name)`), optional `objects[]` scoping, and a **required** `persist_option`
-  (the playground sends `REPLACE`, so entitlements can't accumulate across mints).
-
-> **Runtime filters are not a security boundary** — they become editable URL params. For per-user
-> data, enforce it server-side with RLS/ABAC (a `custom` token + `variable_values`).
-
-### `.env` settings
+<details>
+<summary><code>.env</code> settings</summary>
 
 | Key | What it is | Default |
 |---|---|---|
 | `THOUGHTSPOT_HOST` | Full instance URL | — |
 | `TS_SECRET_KEY` | Trusted-auth secret. **Never commit.** | — |
-| `TS_DEFAULT_USERNAME` | User minted for when the UI field is blank | `tsadmin` |
-| `TS_USERNAME_ALLOWLIST` | Comma-separated usernames the server may mint for | = default user |
+| `TS_DEFAULT_USERNAME` | User minted when the UI field is blank | `tsadmin` |
+| `TS_USERNAME_ALLOWLIST` | Usernames the server may mint for | default user |
 | `TS_DEFAULT_ORG_ID` | Optional Org id | — |
 | `PORT` | Server + static port | `3000` |
 | `TS_ALLOW_JIT` | Allow `auto_create` (JIT) | `false` |
 | `TS_GROUP_ALLOWLIST` | Groups the browser may request. Empty = none; `*` = any | empty |
-| `TS_ALLOW_DEV_PROXY` | Enable the `/api/writeback` stub sink | `false` |
+| `TS_ALLOW_DEV_PROXY` | Enable the `/api/writeback` stub | `false` |
 
-To exercise the full claims playground, set `TS_ALLOW_JIT=true` and `TS_GROUP_ALLOWLIST=*`.
+For the full claims playground, set `TS_ALLOW_JIT=true` and `TS_GROUP_ALLOWLIST=*`.
 
----
+</details>
+
+## Security
+
+The server is **fail-closed**, and `npm test` asserts every guard:
+
+- An empty username allowlist refuses **all** mints.
+- JIT (`auto_create`) is refused unless `TS_ALLOW_JIT=true`.
+- `group_identifiers` are refused unless allowlisted.
+- `/api/filter-values` forwards the caller's own token and never mints one.
+- Static serving is limited to frontend assets: never source, `.env`, or bundles.
+- Shared links are sanitized, and a host from a link needs an explicit Connect click.
+
+A real deployment must derive the username from a verified server-side session, never the request body.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `npm start` / `npm run dev` | Run on `http://localhost:3000` (dev = auto-restart) |
-| `npm run setup` | Create `.env` from the template |
-| `npm run doctor` | Verify Trusted Auth end-to-end (mints a test token) |
-| `npm test` | **Security gate** — asserts the server guards + static restrictions |
-| `npm run boot-check` | **Frontend gate** — headless boot, fails on any JS error |
-| `npm run test:spotter-mcp` | Unit tests for the Spotter-over-MCP customizer (`node:test`) |
-| `npm run check-ts-updates` | Report SDK/doc drift against the pinned `ts-sdk-version.json` |
+| `npm start` / `npm run dev` | Run on `http://localhost:3000` (dev auto-restarts) |
+| `npm run setup` / `npm run doctor` | Create `.env` / verify trusted auth end-to-end |
+| `npm test` | Security gate: server guards + static restrictions |
+| `npm run boot-check` | Frontend gate: headless boot, fails on any JS error |
+| `npm run test:spotter-mcp` | Unit tests for the Spotter MCP relay |
 | `npm run vendor-sdk` | Self-host the pinned SDK into `vendor/` |
-| `npm run register-webhook` / `schedule-liveboard` / `simulate-webhook` | Webhook Inbox demo ([docs](docs/webhook-inbox-demo.md)) |
+| `npm run register-webhook` / `schedule-liveboard` / `simulate-webhook` | Webhook Inbox demo |
 
----
-
-## Security model
-
-`TS_SECRET_KEY` lives only on the server, and the guards are **fail-closed**:
-
-- A username **allowlist** blocks impersonating arbitrary existing users.
-- **JIT (`auto_create`) is refused** unless `TS_ALLOW_JIT=true` — it would side-step the allowlist.
-- **`group_identifiers` are refused** unless allowlisted — the browser could otherwise mint into a
-  privileged group.
-- **`/api/filter-values` forwards the caller's own token** and never mints one.
-- **Static serving** is restricted to frontend assets (never source, `.env`, docs, or bundles).
-- **Shared links** are sanitized (unknown keys dropped, types coerced, prototype pollution blocked),
-  and a hash-supplied host requires an explicit Connect click.
-
-`npm test` asserts these stay closed. A real deployment must still derive the username from a
-verified server-side session (SSO/cookie), never from the request body.
-
----
-
-## Troubleshooting
+<details>
+<summary>Troubleshooting</summary>
 
 | Symptom | Fix |
 |---|---|
-| Status says **CORS blocked** | Add `http://localhost:3000` to the instance's CORS allowlist. Only the REST pickers need it. |
-| **Log in to ThoughtSpot first** | Browser-session auth needs an active login — sign in to your instance, then *retry*. |
-| Token mint returns **503** | `TS_SECRET_KEY` isn't set. `npm run setup`, fill `.env`, then `npm run doctor`. |
-| Trusted Auth won't mint | `npm run doctor` pinpoints a bad secret, unknown user, or unreachable host. |
-| Minting **403s** for your user | Set `TS_DEFAULT_USERNAME` to your username, leave `TS_USERNAME_ALLOWLIST` blank. |
-| JIT / group minting **403** | Fail-closed by design — set `TS_ALLOW_JIT=true` and/or `TS_GROUP_ALLOWLIST=…`. |
-| Edited `.env`, nothing changed | `.env` is read at boot — restart. |
-| `file://` doesn't work | Serve it — `npm start`. |
-| **Spotter Chat** / **Trusted token** greyed out | No Node server behind this origin. Both need `/api/*` — run `npm start` on `http://localhost:3000`. |
+| **CORS blocked** | Add `http://localhost:3000` to the instance's CORS allowlist. |
+| **Log in to ThoughtSpot first** | Sign in to your instance in the same browser, then retry. |
+| Token mint returns **503** | `TS_SECRET_KEY` isn't set: `npm run setup`, fill `.env`, `npm run doctor`. |
+| Minting **403s** for your user | Set `TS_DEFAULT_USERNAME`, leave `TS_USERNAME_ALLOWLIST` blank. |
+| JIT / group minting **403** | Fail-closed by design: set `TS_ALLOW_JIT=true` and/or `TS_GROUP_ALLOWLIST`. |
+| Edited `.env`, nothing changed | Restart; `.env` is read at boot. |
+| `file://` doesn't work | Serve it with `npm start`. |
+| **Spotter Chat** / **Trusted token** greyed out | They need the Node server's `/api/*`: run `npm start`. |
 
----
+</details>
 
 ## Layout
 
 ```
-index.html        Tool shell (top bar · rail · stage · inspector)
-config.js         Optional seed defaults
-css/styles.css    Design system + tool layout
-js/
-  state.js        Single state object → URL hash + localStorage (sanitized on load)
-  discovery.js    REST discovery: org, worksheets, liveboards, vizzes, answers
-  embed.js        Visual Embed SDK wrapper: initSDK() + doRender()
-  auth.js         Trusted-auth token-claims playground + live inspector
-  invoice-pdf.js  Callback-action handler: viz rows → client-side PDF
-  spotter-mcp.js  Spotter-over-MCP chat panel (frontend half)
-  app.js          Controller: connection, rail, render, inspector, SDK code, log
-lib/
-  multipart.js    Dependency-free multipart/form-data parser (webhook attachments)
-  spotter-mcp/    MCP router + customizer for the Spotter panel (+ node:test suites)
-server.js         Token service + filter proxy + static host. Fail-closed.
-scripts/          setup · smoke-test (npm test) · boot-check · doctor · vendor-sdk
-ts-sdk-version.json  Pinned Visual Embed SDK version (watched by check-ts-updates)
-docs/             Deep-dive guides for the shipped integrations
-  org-memory/     The agent org's shared memory: verified facts + retro log
+index.html  config.js   Tool shell + optional seed defaults
+css/                    Design system + tool layout
+js/                     state · discovery · embed · auth · invoice-pdf · spotter-mcp · app (controller)
+lib/                    multipart parser + Spotter MCP relay
+server.js               Token service, filter proxy, webhook sink, static host
+scripts/                setup · doctor · smoke-test · boot-check · vendor-sdk · webhook demo
+docs/                   TSE best-practices guide + integration write-ups
 ```
-
----
-
-## Maintenance
-
-This repo is maintained by an organization of AI agents running a continuous-improvement loop.
-Rules live in [`CLAUDE.md`](CLAUDE.md), the work queue in [`BACKLOG.md`](BACKLOG.md), and verified
-findings in [`docs/org-memory/`](docs/org-memory/). Every change ships as a branch + PR with CI
-gates (`smoke`, `esm-parse`, `guard`); protected paths require a human `human-approved` label.
-
----
 
 ## License
 
-[MIT](LICENSE) © 2026 Bibek Shrestha. The ThoughtSpot Visual Embed SDK and other
-dependencies are covered by their own licenses.
+[MIT](LICENSE) © 2026 Bibek Shrestha. The ThoughtSpot Visual Embed SDK and other dependencies are
+covered by their own licenses.
