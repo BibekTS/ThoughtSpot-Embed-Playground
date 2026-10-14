@@ -22,6 +22,7 @@ import {
   CustomActionsPosition,
   CustomActionTarget,
   startAutoMCPFrameRenderer,
+  getInitConfig,
 // TS-SDK-VERSION: 1.49.0 — must equal ts-sdk-version.json (smoke-test asserts it; ts-watch bumps
 // marker + URL + JSON together). If you switch to the self-hosted /vendor/ URL, KEEP this marker:
 // it is what the pin checks read once the version is gone from the import path.
@@ -38,7 +39,7 @@ const API_BASE = (typeof window !== 'undefined' && window.TS_API_BASE) || '';
  * iframes into real, SDK-authenticated embeds. It is a DOM observer, not an embed
  * component, so it belongs here (next to init) rather than in doRender.
  */
-export { startAutoMCPFrameRenderer };
+export { startAutoMCPFrameRenderer, getInitConfig };
 
 /**
  * getAuthToken callback for trusted auth. Calls our backend token service, which holds the

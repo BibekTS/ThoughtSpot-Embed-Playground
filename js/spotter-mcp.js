@@ -31,7 +31,7 @@
  * on each; it never assembles an HTML string. Never innerHTML.
  */
 
-import { startAutoMCPFrameRenderer } from './embed.js';
+import { startAutoMCPFrameRenderer, getInitConfig } from './embed.js';
 
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -172,7 +172,7 @@ async function readSse(response, onEvent, signal) {
  *
  * @param {HTMLElement} container
  * @param {{ apiBase?: string, tsHost?: string, dataSourceId?: string, sourceName?: string,
- *           showThinking?: boolean, frameHeight?: number|'auto', liveboardName?: string,
+ *           showThinking?: boolean, frameHeight?: number|'auto', liveboardName?: string, hideTokens?: boolean,
  *           getToken?: () => Promise<{ ok: boolean, token?: string, error?: string }>,
  *           onEvent?: (kind: string, msg: string) => void }} opts
  * @returns {{ destroy(): void }}
@@ -180,7 +180,7 @@ async function readSse(response, onEvent, signal) {
 export function renderSpotterMcpChat(container, opts = {}) {
   const {
     apiBase = '', tsHost = '', dataSourceId = '', sourceName = '',
-    showThinking = true, frameHeight = 'auto', liveboardName = '',
+    showThinking = true, frameHeight = 'auto', liveboardName = '', hideTokens = true,
     labels = null, streamChunks = true, pollIntervalMs = 600, systemContext = '',
   } = opts;
   const getToken = opts.getToken || (async () => ({ ok: false, error: 'No credential source configured.' }));
@@ -279,7 +279,17 @@ export function renderSpotterMcpChat(container, opts = {}) {
   // as plain frames rather than the panel failing to mount.
   let frameObserver = null;
   try {
-    frameObserver = startAutoMCPFrameRenderer({ frameParams: { width: '100%', height: `${baseHeight}px` } });
+    // Optionally hide the answer's search tokens ("sales", "date = last year"); the chat bubble
+    // already states the question. The SDK merges customCSS shallowly, so a per-embed rules_UNSTABLE would
+    // REPLACE the user's init() rules — spread those in first. Selector is UNSTABLE by name.
+    const initCSS = getInitConfig()?.customizations?.style?.customCSS || {};
+    frameObserver = startAutoMCPFrameRenderer({
+      frameParams: { width: '100%', height: `${baseHeight}px` },
+      ...(hideTokens && { customizations: { style: { customCSS: { ...initCSS, rules_UNSTABLE: {
+        ...initCSS.rules_UNSTABLE,
+        '[data-testid="answer-sage-tokens"]': { display: 'none !important' },
+      } } } } }),
+    });
   } catch (err) {
     log('MCP', `auto frame renderer unavailable: ${err.message || err}`);
   }

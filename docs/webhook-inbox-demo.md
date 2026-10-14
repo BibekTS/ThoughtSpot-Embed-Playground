@@ -40,8 +40,8 @@ Send now ─▶ ThoughtSpot renders per view ─▶ one multipart webhook per re
 
 **Prerequisites** (you have these): a public tunnel (ngrok), the webhook feature enabled on your instance
 (it's beta — enabled by ThoughtSpot Support), an admin token, and the **Webhooks Testing** Liveboard with
-`wmoy_test_2` / `wmoy_test_3` + groups + the RLS rule
-`ts_groups = 'wmoy_test_2_group' and PRODUCT_CATEGORY != 'music player'`.
+`demo_user_a` / `demo_user_blocked` + groups + the RLS rule
+`ts_groups = 'demo_user_group' and PRODUCT_CATEGORY != 'music player'`.
 
 1. **Arm the receiver** (pick a shared secret so deliveries verify):
    ```bash
@@ -68,20 +68,20 @@ Send now ─▶ ThoughtSpot renders per view ─▶ one multipart webhook per re
 4. **Schedule the Liveboard** for the recipient mix (or do this in the ThoughtSpot UI):
    ```bash
    npm run schedule-liveboard -- --liveboard="Webhooks Testing" \
-     --users=wmoy_test_2,wmoy_test_3 \
-     --groups=wmoy_test_2_group \
+     --users=demo_user_a,demo_user_blocked \
+     --groups=demo_user_group \
      --emails=partner-a@example.com,partner-b@example.com
    ```
-   Name `wmoy_test_3` **directly** on the schedule (not only via a group) so the "no webhook" case is unambiguous.
+   Name `demo_user_blocked` **directly** on the schedule (not only via a group) so the "no webhook" case is unambiguous.
 5. **Trigger it:** in ThoughtSpot, open the Liveboard → **Schedules** → the schedule → **Send now**.
 6. **Watch the 🔔 Webhooks tab.** Within a few seconds you'll see:
    - **one card for the two external emails** (2 chips, one report) — *built with the schedule owner's access*;
-   - **one card each for `wmoy_test_2` and each group member** — *built with their own RLS*;
-   - **no card for `wmoy_test_3`**, and the summary strip counts *"1 scheduled user received NO webhook"*;
-   - a **📄 download link** on each card — open `wmoy_test_2`'s report and confirm it shows only
+   - **one card each for `demo_user_a` and each group member** — *built with their own RLS*;
+   - **no card for `demo_user_blocked`**, and the summary strip counts *"1 scheduled user received NO webhook"*;
+   - a **📄 download link** on each card — open `demo_user_a`'s report and confirm it shows only
      `PRODUCT_CATEGORY != 'music player'`. That's exactly what that user received.
 
-**Is #4 expected or a bug?** Check whether `wmoy_test_3` gets the scheduled **email**:
+**Is #4 expected or a bug?** Check whether `demo_user_blocked` gets the scheduled **email**:
 - email also fails → the RLS block is working as designed; no webhook is expected;
 - email arrives but no webhook → likely a webhook-specific defect worth a support ticket.
 
@@ -107,7 +107,7 @@ TS_ALLOW_WEBHOOK_SINK=true TS_WEBHOOK_SECRET=demo npm start
 TS_WEBHOOK_SECRET=demo npm run simulate-webhook -- --multipart
 ```
 
-This posts the four scenarios (2 external batched, `wmoy_test_2`, two group members; none for `wmoy_test_3`)
+This posts the four scenarios (2 external batched, `demo_user_a`, two group members; none for `demo_user_blocked`)
 as signed multipart deliveries with a sample PDF each. Add `--recipients=1200` to see the large-audience case.
 Data is synthetic — it shows the *shape* and the plumbing, not real RLS.
 

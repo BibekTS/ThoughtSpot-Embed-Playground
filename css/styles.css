@@ -997,6 +997,16 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
   display: flex; justify-content: flex-end; gap: 10px;
   background: var(--surface);
 }
+/* "View payload" slide-over — wider panel + raw JSON block */
+.modal-panel--wide { width: 640px; }
+.payload-json {
+  margin: 0; padding: 12px 14px; flex: 1;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--surface-2, var(--bg)); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  user-select: text;
+}
 
 /* Auth status card */
 .auth-status {
