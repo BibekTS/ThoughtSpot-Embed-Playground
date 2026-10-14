@@ -241,6 +241,12 @@ const PDF_ACTION_ID = window.TS_PDF_ACTION_ID || 'download-invoice-pdf';
 // Id of the app-injected "Date" PRIMARY toolbar button (host-side date filter). Gated by
 // state.dateBtn.enabled; the CustomAction dispatcher routes it to openDatePicker().
 const DATE_ACTION_ID = '__date_filter';
+// Id of the app-injected "Display by" PRIMARY button on a table tile (state.displayBy). The
+// dispatcher routes it to openDisplayByPicker(), which switches the view via the configured HostEvent.
+const DISPLAY_BY_ACTION_ID = '__display_by';
+// The picker's current choice (option value). Module state, reset on every render() — a fresh iframe
+// shows the initial view again.
+let displayByChoice = '';
 // Id of the app-injected "View detail" action for the Drill-through demo. Injected only on the
 // drillthrough section and scoped via dataModelIds.modelColumnNames to ONE measure column, so it
 // appears in that column's right-click menu and nowhere else. Routed to openDetailPanel().
@@ -974,6 +980,7 @@ function render() {
 
   authFailed = false; // fresh render — clear any prior auth-failure latch
   appliedRuntimeCols = new Set(); // fresh iframe carries no runtime filters yet
+  displayByChoice = displayByActive(s) && s.displayBy.mode === 'vizs' ? (s.displayBy.options[0]?.value || '') : ''; // fresh iframe = initial view
   currentEmbed = doRender(s.section, cfg, {
     onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); applyLiveFilters(); if (getState().section === 'liveboard-custom') { cfbBuild(); hostHeaderBuild(); } maybeOpenCreatedCopyForEdit(); },
     onError(msg) {
@@ -991,11 +998,24 @@ function render() {
     disabledActionReason: s.disabledActionReason,
     customActions: buildEmbedCustomActions(s),
     runtimeParameters: s.runtimeParameters,
-    flags: { ...(s.flags[s.section] || {}), ...(hostHeaderOn(s) ? hostFlags(s) : {}) },
+    // visibleVizs goes AFTER the shared-link flags so it wins: vizs-mode "Display by" starts on the
+    // first option's table (plus the always-visible charts).
+    flags: { ...(s.flags[s.section] || {}), ...(hostHeaderOn(s) ? hostFlags(s) : {}), ...displayByInitialConfig(s) },
     spotterQuery: s.section === 'spotter' ? pendingSpotterQuery : null,
   });
   pendingSpotterQuery = null; // consumed — only auto-runs on the render triggered by the bridge
   flowStart(); // SDK is now creating the iframe & opening the postMessage bridge
+}
+
+// "Display by" is live only on the plain Liveboard sections (the same set as the Date button).
+function displayByActive(s) {
+  return ['liveboard', 'liveboard-custom', 'ai-highlights'].includes(s.section) && !!s.displayBy?.enabled;
+}
+// Init-time view config for vizs mode: only the first option's table (+ keepVisible charts) shows.
+function displayByInitialConfig(s) {
+  const d = s.displayBy;
+  if (!displayByActive(s) || d.mode !== 'vizs' || !d.options.length) return {};
+  return { visibleVizs: [...new Set([...d.keepVisible, d.options[0].value])] };
 }
 
 // Send the FULL desired runtime-filter set to the embed, plus an empty-values "clear" for any column
@@ -2904,6 +2924,11 @@ function sectionDisplay(s) {
         'Runtime = HostEvent.UpdateRuntimeFilters: an invisible layer that ANDs with the board’s own filters (never shows in the filter bar). Liveboard = HostEvent.UpdateFilters: changes the value of a date filter the board already has (moves the visible chip). Use Liveboard when you want the board’s date filter to actually update.'));
     }
   }
+  // "Display by" PRIMARY button — switches a table/tab/parameter from a host-side picker.
+  if (['liveboard', 'liveboard-custom', 'ai-highlights'].includes(s.section)) {
+    if (s.displayBy?.enabled) active++;
+    displayByUi(c, s);
+  }
   // Personal liveboards — per-user editable copies shown as a tab strip above the board.
   if (PLB_SECTIONS.includes(s.section)) {
     const plb = s.personalLb || { enabled: false, tag: 'Personal' };
@@ -3038,6 +3063,21 @@ function buildEmbedCustomActions(s) {
       target: CustomActionTarget.LIVEBOARD,
     });
   }
+  // "Display by" — a PRIMARY button scoped (metadataIds.vizIds, SDK 1.43.0+) to the table tile(s) so it
+  // sits ON the table. vizs mode: the option vizzes themselves; tabs/param: the attachVizIds. With no
+  // ids it falls back to a LIVEBOARD-level button so it still appears. Routed to openDisplayByPicker().
+  if (displayByActive(s)) {
+    const d = s.displayBy;
+    const vizIds = d.mode === 'vizs' ? d.options.map(o => o.value) : d.attachVizIds;
+    actions.push({
+      id: DISPLAY_BY_ACTION_ID,
+      name: d.label || 'Display by',
+      position: CustomActionsPosition.PRIMARY,
+      ...(vizIds.length
+        ? { target: CustomActionTarget.VIZ, metadataIds: { vizIds } }
+        : { target: CustomActionTarget.LIVEBOARD }),
+    });
+  }
   // Drill-through demo — "View detail". The scoping key is dataModelIds.modelColumnNames, whose
   // entries are '<modelGuid>::<columnName>' (SDK 1.43.0+ / 10.14.0.cl+). NOTE it scopes to a
   // VISUALIZATION, not to a cell: the action shows on every cell of any viz built on that column,
@@ -3114,6 +3154,65 @@ function sectionExport(s) {
   if (eo.truncateTable) active++;
   if (eo.hideNativeDownload) active++;
   return accordion('Export options', active, c);
+}
+// Inspector controls for the "Display by" button. Every edit re-renders: the button, its vizIds
+// scope and the initial visibleVizs are all init-time embed config.
+function displayByUi(c, s) {
+  const d = s.displayBy;
+  const set = (patch) => { setState({ displayBy: { ...getState().displayBy, ...patch } }); };
+  const redo = () => { renderInspector(); render(); };
+  c.appendChild(el('div', 'sub-lbl', 'Display-by button'));
+  c.appendChild(toggleField('Show “Display by” button', d.enabled, v => { set({ enabled: v }); redo(); },
+    'Adds a Primary button scoped to a table tile. Clicking it opens a host-side picker that switches what the Liveboard shows — one embed, no second iframe. Off by default.'));
+  if (!d.enabled) return;
+  c.appendChild(textField('Button label', d.label, v => { set({ label: v || 'Display by' }); render(); }, 'Display by'));
+  c.appendChild(enumSelect('Switch via', d.mode, [
+    { value: 'vizs', label: 'Visualizations (SetVisibleVizs)' },
+    { value: 'tabs', label: 'Tabs (SetActiveTab)' },
+    { value: 'param', label: 'Parameter (UpdateParameters)' },
+  ], v => { set({ mode: v }); redo(); },
+    'vizs = the Liveboard holds one table per grouping; HostEvent.SetVisibleVizs shows the chosen one. tabs = one tab per grouping; HostEvent.SetActiveTab. param = one parameter-driven table; HostEvent.UpdateParameters.'));
+
+  const valueLbl = d.mode === 'vizs' ? 'viz id' : d.mode === 'tabs' ? 'tab id' : 'parameter value';
+  const opts = d.options;
+  const writeOpts = (next) => { set({ options: next }); redo(); };
+  opts.forEach((o, i) => {
+    const row = el('div', 'frow');
+    const li = el('input', 'inp inp-sm'); li.placeholder = 'label'; li.value = o.label;
+    const vi = el('input', 'inp inp-sm'); vi.placeholder = valueLbl; vi.value = o.value;
+    const commit = () => {
+      const next = getState().displayBy.options.map((x, j) => j === i ? { label: li.value.trim(), value: vi.value.trim() } : x);
+      set({ options: next }); render();
+    };
+    li.addEventListener('change', commit); vi.addEventListener('change', commit);
+    const x = el('button', 'frow-go', '✕'); x.type = 'button'; x.setAttribute('aria-label', `Remove option ${o.label || o.value}`);
+    x.addEventListener('click', () => writeOpts(opts.filter((_, j) => j !== i)));
+    row.append(li, vi, x);
+    c.appendChild(row);
+  });
+  if (d.mode === 'vizs' && connected && s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
+    loadViz(s.liveboardId).then(() => renderInspector());   // connected-gated, same S10 fence as the drill picker
+  }
+  const allViz = d.mode === 'vizs' ? (vizCache[s.liveboardId] || []) : [];
+  if (d.mode === 'vizs' && allViz.length) {
+    c.appendChild(labeledSelect('Add table from this Liveboard', '', allViz.filter(v => !opts.some(o => o.value === v.id)),
+      v => { if (v && opts.length < 20) writeOpts([...opts, { label: (allViz.find(a => a.id === v) || {}).name || v, value: v }]); },
+      '', false));
+  }
+  const add = el('button', 'sec-add', '＋ Add option'); add.type = 'button';
+  add.addEventListener('click', () => { if (opts.length < 20) writeOpts([...opts, { label: '', value: '' }]); });
+  c.appendChild(add);
+  c.appendChild(el('div', 'fld-hint', 'Rows with an empty value are dropped on the next load. The first option is the initial view.'));
+
+  const idList = (label, key, hint) => {
+    c.appendChild(textField(label, d[key].join(', '), v => {
+      set({ [key]: v.split(',').map(x => x.trim()).filter(Boolean).slice(0, 50) }); redo();
+    }, 'viz GUID, viz GUID, …'));
+    c.appendChild(el('div', 'fld-hint', hint));
+  };
+  if (d.mode === 'vizs') idList('Keep visible (charts)', 'keepVisible', 'Comma-separated viz ids that stay on screen next to the chosen table (SetVisibleVizs replaces the visible set, so the charts must be listed).');
+  else idList('Attach to viz(s)', 'attachVizIds', 'Comma-separated viz ids that get the button (metadataIds.vizIds). Empty = a Liveboard-level button.');
+  if (d.mode === 'param') c.appendChild(textField('Parameter name', d.paramName, v => { set({ paramName: v }); }, 'e.g. Display By'));
 }
 function setExportOpt(key, value) {
   const s = getState();
@@ -3458,6 +3557,64 @@ function openDatePicker() {
   foot.append(clear, cancel, go);
 
   panel.append(head, body, foot);
+  modal.append(scrim, panel);
+  document.body.appendChild(modal);
+}
+
+// "Display by" picker — host-side modal listing the configured options; choosing one switches the
+// view with the mode's HostEvent. Option labels/values come from the #s= hash: textContent only.
+function applyDisplayBy(opt) {
+  const d = getState().displayBy;
+  if (!currentEmbed) { toast('Render a liveboard first.'); return; }
+  let evt, payload, evtName;
+  if (d.mode === 'tabs') { evtName = 'SetActiveTab'; evt = HostEvent.SetActiveTab; payload = { tabId: opt.value }; }
+  else if (d.mode === 'param') {
+    if (!d.paramName) { toast('Set a parameter name in Display options first.', 'error'); return; }
+    evtName = 'UpdateParameters'; evt = HostEvent.UpdateParameters; payload = [{ name: d.paramName, value: opt.value }];
+  } else { evtName = 'SetVisibleVizs'; evt = HostEvent.SetVisibleVizs; payload = [...new Set([...d.keepVisible, opt.value])]; }
+  try {
+    currentEmbed.trigger(evt, payload);
+    displayByChoice = opt.value;
+    logEvent('CustomAction', `${d.label || 'Display by'} → ${opt.label || opt.value} (HostEvent.${evtName})`);
+    toast(`${d.label || 'Display by'}: ${opt.label || opt.value}`, 'success');
+  } catch (e) {
+    logEvent('CustomAction', `✗ Display by: ${e.message}`);
+    toast(`Could not switch the view: ${e.message}`, 'error');
+  }
+}
+function openDisplayByPicker() {
+  const d = getState().displayBy;
+  if (!currentEmbed) { toast('Render a liveboard first.'); return; }
+  if (!d.options.length) { toast('Add options to the “Display by” button first.'); return; }
+  document.getElementById('displayby-modal')?.remove();
+  const modal = el('div', 'modal'); modal.id = 'displayby-modal';
+  const scrim = el('div', 'modal-scrim');
+  const panel = el('div', 'modal-panel modal-panel--center');
+  const close = () => { modal.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+  scrim.addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+
+  const head = el('div', 'modal-head');
+  const htxt = el('div');
+  const title = el('div', 'modal-title'); title.textContent = d.label || 'Display by';
+  const sub = el('div', 'modal-sub');
+  sub.textContent = ({ vizs: 'HostEvent.SetVisibleVizs', tabs: 'HostEvent.SetActiveTab', param: 'HostEvent.UpdateParameters' })[d.mode];
+  htxt.append(title, sub);
+  const xbtn = el('button', 'modal-close', '✕'); xbtn.type = 'button'; xbtn.addEventListener('click', close);
+  head.append(htxt, xbtn);
+
+  const body = el('div', 'modal-body');
+  const chips = el('div', 'dpre');
+  d.options.forEach(o => {
+    const b = el('button', 'sec-apply' + (o.value === displayByChoice ? '' : ' ghost')); b.type = 'button';
+    b.textContent = (o.value === displayByChoice ? '✓ ' : '') + (o.label || o.value);
+    b.addEventListener('click', () => { applyDisplayBy(o); close(); });
+    chips.appendChild(b);
+  });
+  body.appendChild(chips);
+
+  panel.append(head, body);
   modal.append(scrim, panel);
   document.body.appendChild(modal);
 }
@@ -5611,6 +5768,8 @@ window.__onCustomAction = async (payload) => {
   if (id === PDF_ACTION_ID) { await handleInvoicePdf(payload); return; }
   // "Date" primary button → open the host-side chooser (Today / On a specific date).
   if (id === DATE_ACTION_ID) { openDatePicker(); return; }
+  // "Display by" primary button → host-side picker that switches the table/tab/parameter.
+  if (id === DISPLAY_BY_ACTION_ID) { openDisplayByPicker(); return; }
   // Drill-through demo: the column-scoped "View detail" action → host-rendered detail rows.
   if (id === DT_ACTION_ID) { await openDetailPanel(payload); return; }
   const reg = customActionRegistry[id];
@@ -7169,7 +7328,10 @@ function generateCode() {
   if (s.section === 'spotter-chat') return spotterMcpCode(s);
   const m = META[s.section];
   // Escape backslashes then single quotes so values with apostrophes don't break the JS snippet.
-  const esc = str => String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  // Also escapes line terminators: a shared-link string with a raw \n would otherwise break out of a
+  // '…' literal or a `// …` comment line in the generated snippet and become live code.
+  const esc = str => String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   // A standalone saved Answer renders through SearchEmbed (not LiveboardEmbed), so the
   // generated snippet must import and instantiate the class we actually use at runtime.
   const embedCls = (s.section === 'viz' && s.answerId) ? 'SearchEmbed' : m.cls;
@@ -7177,6 +7339,7 @@ function generateCode() {
   const exportMenu = lbishSection && s.exportOpts?.menuAction;
   const pickerMenu = lbishSection && s.exportOpts?.pickerAction;
   const dateBtn = lbishSection && s.dateBtn?.enabled;
+  const dispBy = displayByActive(s) ? s.displayBy : null;
   const plbOn = ['liveboard', 'liveboard-custom', 'ai-highlights'].includes(s.section) && s.personalLb?.enabled;
   // The drill-through demo emits its own custom action AND its own handlers, so it must be part of
   // the import gating — without it the snippet references CustomActionsPosition / CustomActionTarget
@@ -7187,7 +7350,7 @@ function generateCode() {
   // list and a detail board is configured — mirror the runtime condition exactly.
   const dtPointDrill = dtOn && s.drill.trigger !== 'click' && !!s.drill.drillLiveboardId;
   const importNames = ['init', 'AuthType', embedCls, 'EmbedEvent'];
-  if (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction) importNames.push('CustomActionsPosition', 'CustomActionTarget');
+  if (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction || dispBy) importNames.push('CustomActionsPosition', 'CustomActionTarget');
   const cfbActiveFilters = s.section === 'liveboard-custom'
     ? Object.entries(cfbSelected).filter(([, v]) => v && v.length)
     : [];
@@ -7197,6 +7360,7 @@ function generateCode() {
   if (s.section === 'fullapp') importNames.push('Page');
   if (s.section === 'ai-highlights') importNames.push('HostEvent');
   if (plbOn) importNames.push('HostEvent');
+  if (dispBy) importNames.push('HostEvent');
   if (hostHeaderOn(s)) importNames.push('HostEvent');
 
   const L = [];
@@ -7269,19 +7433,26 @@ function generateCode() {
     if (s.answerId) { pinnedKeys.add('answerId'); pinnedKeys.add('hideSearchBar'); }
     else { pinnedKeys.add('liveboardId'); pinnedKeys.add('vizId'); }
   }
-  Object.entries(s.flags[s.section] || {}).forEach(([k, v]) => { if (pinnedKeys.has(k)) return; if (k === 'isLiveboardMasterpiecesEnabled' && v === true) return; opt.push(`  ${k}: ${JSON.stringify(v)},`); });
+  Object.entries(s.flags[s.section] || {}).forEach(([k, v]) => { if (pinnedKeys.has(k)) return; if (k === 'visibleVizs' && displayByInitialConfig(s).visibleVizs) return; if (k === 'isLiveboardMasterpiecesEnabled' && v === true) return; opt.push(`  ${k}: ${JSON.stringify(v)},`); });
   if (hostActionsOn(s)) opt.push('  isLiveboardHeaderSticky: false, // else the sticky header draws a faded duplicate chip row once the native action row is hidden');
   if (hostHeaderOn(s)) opt.push('  showLiveboardTitle: false, // you render the title; keeps the native filter chips (hideLiveboardHeader would drop them)', '  hideTabPanel: false, // must stay false: true makes HostEvent.SetActiveTab a silent no-op');
   const hiddenKeys = hiddenActionKeys(s);
   if (hiddenKeys.length) opt.push(`  hiddenActions: [${hiddenKeys.map(a => `Action.${a}`).join(', ')}],`);
   if (s.disabledActions.length) opt.push(`  disabledActions: [${s.disabledActions.map(a => `Action.${a}`).join(', ')}],`);
   if (s.disabledActions.length && s.disabledActionReason) opt.push(`  disabledActionReason: '${esc(s.disabledActionReason)}',`);
-  if (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction) {
+  const dbVisible = displayByInitialConfig(s).visibleVizs;
+  if (dbVisible) opt.push(`  visibleVizs: [${dbVisible.map(v => `'${esc(v)}'`).join(', ')}], // "Display by": start on the first option's table`);
+  if (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction || dispBy) {
     opt.push('  customActions: [');
     s.customActions.forEach(a => opt.push(`    { id: '${esc(a.id)}', name: '${esc(a.label)}', position: CustomActionsPosition.${a.pos || 'PRIMARY'}, target: CustomActionTarget.${a.target || 'LIVEBOARD'} },`));
     if (exportMenu) opt.push(`    { id: 'export', name: '${esc(s.exportOpts.actionLabel || 'Preconfigured pdf download')}', position: CustomActionsPosition.MENU, target: CustomActionTarget.LIVEBOARD },`);
     if (pickerMenu) opt.push(`    { id: 'export-customize', name: '${esc(s.exportOpts.pickerLabel || 'Customize Export')}', position: CustomActionsPosition.MENU, target: CustomActionTarget.LIVEBOARD },`);
     if (dateBtn) opt.push(`    { id: '${DATE_ACTION_ID}', name: 'Date', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.LIVEBOARD },`);
+    if (dispBy) {
+      const ids = (dispBy.mode === 'vizs' ? dispBy.options.map(o => o.value) : dispBy.attachVizIds).map(v => `'${esc(v)}'`).join(', ');
+      opt.push(`    { id: '${DISPLAY_BY_ACTION_ID}', name: '${esc(dispBy.label || 'Display by')}', position: CustomActionsPosition.PRIMARY,`);
+      opt.push(ids ? `      target: CustomActionTarget.VIZ, metadataIds: { vizIds: [${ids}] } }, // sits ON the table tile(s)` : '      target: CustomActionTarget.LIVEBOARD },');
+    }
     // Mirrors buildEmbedCustomActions(): the scoping keys are a UNION, so pinned vizIds must
     // REPLACE modelColumnNames — sending both puts the action on every viz built on the column.
     if (dtAction) {
@@ -7505,6 +7676,25 @@ function generateCode() {
       L.push(`  embed.trigger(HostEvent.UpdateRuntimeFilters, [{ columnName: '${col}', operator: RuntimeFilterOp.BW_INC, values: [lo, hi] }]);`);
       L.push('});');
     }
+  }
+  if (dispBy) {
+    const m = dispBy.mode;
+    L.push('');
+    L.push(`// "${esc(dispBy.label || 'Display by')}" PRIMARY button → your own picker (swap the prompt for a menu), then switch the view with`);
+    L.push(`// ${({ vizs: 'HostEvent.SetVisibleVizs (replaces the visible set — list the charts too)', tabs: 'HostEvent.SetActiveTab', param: 'HostEvent.UpdateParameters' })[m]}.`);
+    L.push('const displayByOptions = {');
+    dispBy.options.forEach(o => L.push(`  '${esc(o.label || o.value)}': '${esc(o.value)}',`));
+    L.push('};');
+    if (m === 'vizs') L.push(`const keepVisible = [${dispBy.keepVisible.map(v => `'${esc(v)}'`).join(', ')}]; // charts that stay on screen`);
+    L.push('embed.on(EmbedEvent.CustomAction, (payload) => {');
+    L.push(`  if (payload.id !== '${DISPLAY_BY_ACTION_ID}') return;`);
+    L.push('  const choice = prompt(`Display by: ${Object.keys(displayByOptions).join(\' / \')}`); // swap for your own UI');
+    L.push('  const value = displayByOptions[choice];');
+    L.push('  if (!value) return;');
+    if (m === 'vizs') L.push('  embed.trigger(HostEvent.SetVisibleVizs, [...keepVisible, value]);');
+    else if (m === 'tabs') L.push('  embed.trigger(HostEvent.SetActiveTab, { tabId: value });');
+    else L.push(`  embed.trigger(HostEvent.UpdateParameters, [{ name: '${esc(dispBy.paramName)}', value }]);`);
+    L.push('});');
   }
   if (['liveboard', 'liveboard-custom', 'viz', 'ai-highlights'].includes(s.section)) {
     // Q2 — no server-side save webhook exists; this client event is the host's save signal.
@@ -8259,6 +8449,10 @@ function apiCatalog(s) {
   ];
   if (s.activeFilters.length || s.section === 'liveboard-custom')
     sdk.push({ method: 'SDK', path: 'embed.trigger(HostEvent.UpdateRuntimeFilters, …)', scope: 'visual-embed-sdk', desc: 'Apply runtime filters live — no re-render.' });
+  if (displayByActive(s)) {
+    const ev = { vizs: 'SetVisibleVizs', tabs: 'SetActiveTab', param: 'UpdateParameters' }[s.displayBy.mode];
+    sdk.push({ method: 'SDK', path: `embed.trigger(HostEvent.${ev}, …)`, scope: 'visual-embed-sdk', desc: '“Display by” picker: switch the table / tab / parameter from the host.' });
+  }
   sdk.push({ method: 'SDK', path: 'embed.trigger(HostEvent.Reload | Search | Navigate | SetVisibleVizs)', scope: 'visual-embed-sdk', desc: 'Drive the live embed from the host (Host events section).' });
   if (s.section === 'ai-highlights')
     sdk.push({ method: 'SDK', path: 'embed.trigger(HostEvent.AIHighlights)', scope: 'visual-embed-sdk', desc: 'Open the AI Highlights insights panel once the Liveboard renders.' });
