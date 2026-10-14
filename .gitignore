@@ -4,11 +4,13 @@
 .LSOverride
 *.swp
 
-# Local settings & config (but track the org's shared skills/commands/agents)
+# Local settings & config (but track the org's shared skills/commands; agents stay local)
 .claude/*
 !.claude/skills/
 !.claude/commands/
-!.claude/agents/
+
+# Agent instructions — kept locally, out of the public repo
+CLAUDE.md
 .vscode/mcp.json
 node_modules/
 .env
