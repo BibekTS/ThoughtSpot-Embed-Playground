@@ -70,7 +70,7 @@ embed.on(EmbedEvent.CustomAction, (payload) => {
   // The action can't be scoped to a single column; it shows on every cell of
   // the pinned viz. `selected*` is the cell that was right-clicked and
   // `deselected*` is the rest of the row, so check selectedMeasures ONLY.
-  // (A right-click on "Jae Pak" puts every measure in deselectedMeasures.)
+  // (A right-click on "Jordan Example" puts every measure in deselectedMeasures.)
   const measure = (point?.selectedMeasures ?? []).find(m => name(m) === MEASURE);
   if (!measure || value(measure) == null || value(measure) === '{Null}') {
     showMessage(`This value has no order drill-down. Right-click a "${MEASURE}" value to view orders.`);
@@ -134,7 +134,7 @@ With this check:
 - Right-clicking an empty (`{Null}`) Total Sales Amount cell also shows the message, because there are no orders to list.
 - Right-clicking a **Total Sales Amount** value opens the order list for that row.
 
-**Don't check `deselectedMeasures` as well.** When the user right-clicks "Jae Pak", Total Sales Amount is in `deselectedMeasures`, so a check that includes it would open the order list for a name click. An earlier version of this snippet had that bug.
+**Don't check `deselectedMeasures` as well.** When the user right-clicks "Jordan Example", Total Sales Amount is in `deselectedMeasures`, so a check that includes it would open the order list for a name click. An earlier version of this snippet had that bug.
 
 Charts work the same way. A bar or point click puts the measure in `selectedMeasures`, so the check passes.
 

@@ -24,3 +24,7 @@ Plan/
 
 # Personal editor workspaces
 *.code-workspace
+
+# Docs — new docs stay local (they can hold customer material). Already-tracked docs stay
+# tracked; add a new public doc on purpose with `git add -f`.
+docs/

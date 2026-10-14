@@ -132,6 +132,8 @@ export function defaultState() {
       summaryModelId: '',             // model behind the SUMMARY liveboard — scopes the action (modelColumnNames)
       actionVizIds: [],               // metadataIds.vizIds — pin the action to specific visualizations ([] = any viz on the column)
       measureColumn: '',              // the ONE column the "View detail" action attaches to, e.g. 'Meeting count'
+      onlyColumn: false,              // opt-in: refuse drill clicks whose cell isn't onlyColumnName
+      onlyColumnName: '',             // column name AS SHOWN on the chart (may differ from the model column)
       actionLabel: 'View detail',     // label of that context-menu action
       detailModelId: '',              // event-grain model queried for the detail rows
       detailColumns: [],              // columns to request/show, in order
@@ -446,6 +448,8 @@ function sanitize(raw) {
       summaryModelId: str(d.summaryModelId, 128),
       actionVizIds: strArr(d.actionVizIds).slice(0, 50).map(v => str(v, 128)),
       measureColumn: str(d.measureColumn, 256),
+      onlyColumn: bool(d.onlyColumn),
+      onlyColumnName: str(d.onlyColumnName, 256),
       actionLabel: str(d.actionLabel, 64) || 'View detail',
       detailModelId: str(d.detailModelId, 128),
       detailColumns: strArr(d.detailColumns).slice(0, 50).map(c => str(c, 256)),

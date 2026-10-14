@@ -584,7 +584,7 @@ async function runDrillthroughProbe(browser) {
       // contextMenuPoints is an OBJECT, selectedAttributes is EMPTY, and the row's attributes are
       // in deselectedAttributes. Reading only selectedAttributes yields no scope at all, and the
       // detail query silently returns the whole model — which is what shipped before this fixture.
-      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', scopeColumn: 'Employee Name', measureColumn: 'Total Sales Amount' } });
+      st.setState({ drill: { ...st.getState().drill, presentation: 'modal', scopeColumn: 'Employee Name', measureColumn: 'Total Sales Amount', onlyColumn: true, onlyColumnName: 'total sales amount' } });
       document.getElementById('dt-modal')?.remove();
       call = 0;
       const tableQueryIdx = bodies.length; // keep the paging legs' bodies intact
@@ -596,7 +596,7 @@ async function runDrillthroughProbe(browser) {
             clickedPoint: {
               selectedAttributes: [],
               deselectedAttributes: [
-                { column: { name: 'Employee Name' }, value: 'Lynn Tsoflias' },
+                { column: { name: 'Employee Name' }, value: 'Avery Example' },
                 { column: { name: 'Territory' }, value: 'Pacific' },
               ],
               // The user right-clicked the Total Sales Amount cell: ThoughtSpot reports the clicked
@@ -629,7 +629,7 @@ async function runDrillthroughProbe(browser) {
           vizId: 'viz-TABLE',
           contextMenuPoints: {
             clickedPoint: {
-              selectedAttributes: [{ column: { name: 'Employee Name' }, value: 'Jae Pak' }],
+              selectedAttributes: [{ column: { name: 'Employee Name' }, value: 'Jordan Example' }],
               deselectedAttributes: [{ column: { name: 'Territory' }, value: 'Europe' }],
               selectedMeasures: [],
               deselectedMeasures: [
@@ -644,6 +644,19 @@ async function runDrillthroughProbe(browser) {
       });
       await new Promise((r) => setTimeout(r, 300));
       tableClick.refused = !document.getElementById('dt-modal') && bodies.length === refuseIdx;
+      // New default: with onlyColumn OFF the same non-measure click is NOT refused (it drills).
+      st.setState({ drill: { ...st.getState().drill, onlyColumn: false } });
+      call = 0;
+      await window.__onCustomAction({
+        id: '__dt_view_detail',
+        data: { vizId: 'viz-TABLE', contextMenuPoints: { clickedPoint: {
+          selectedAttributes: [{ column: { name: 'Employee Name' }, value: 'Jordan Example' }],
+          deselectedAttributes: [{ column: { name: 'Territory' }, value: 'Europe' }],
+          selectedMeasures: [], deselectedMeasures: [] }, selectedPoints: [] } },
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      tableClick.openByDefault = !!document.getElementById('dt-modal') && bodies.length > refuseIdx;
+      document.getElementById('dt-modal')?.remove();
 
       // Presets: save the current setup, wipe the slice, reapply, confirm it came back. Also that a
       // hand-edited localStorage entry cannot introduce keys the drill slice does not already have.
@@ -768,7 +781,7 @@ async function runDrillthroughProbe(browser) {
         await window.__onVizPointClick({ data: { vizId: 'viz-TABLE', clickedPoint: {
           selectedAttributes: [],
           deselectedAttributes: [
-            { column: { name: 'Employee Name' }, value: 'Lynn Tsoflias' },
+            { column: { name: 'Employee Name' }, value: 'Avery Example' },
             { column: { name: 'Day(Order Date)' }, value: '1769644800' },
           ],
           selectedMeasures: [{ column: { name: 'Total Sales Amount' }, value: '134280.9824' }],
@@ -803,10 +816,10 @@ async function runDrillthroughProbe(browser) {
       && /meetings/.test(m.summary || '') && /Meeting count: 3/.test(m.summary || '')
       && m.records === 2 && m.chevrons === 2 && m.href === 'https://example.invalid/m/m1' && m.more;
     const t = run.tableClick;
-    const tableClickOk = t.query === "[Meeting Id] [User Name] [Booked at] [Employee Name] = 'Lynn Tsoflias'"
+    const tableClickOk = t.query === "[Meeting Id] [User Name] [Booked at] [Employee Name] = 'Avery Example'"
       && t.title === 'Total Sales Amount' && /134,280\.9824/.test(t.summary || '')
-      && /Employee Name: Lynn Tsoflias/.test(t.summary || '')
-      && t.refused === true;
+      && /Employee Name: Avery Example/.test(t.summary || '')
+      && t.refused === true && t.openByDefault === true;
     const pr = run.presets || {};
     const presetOk = pr.stored && pr.restored && pr.noNewKeys && pr.noPollution && pr.folded;
     const pinOk = !!(run.pinning && run.pinning.added && run.pinning.removed);
@@ -1433,7 +1446,7 @@ try {
   console.log(`Drill-through probe (S22) — badge stays neutral ("N+") until the count is known, then reconciles: ${dtp.badgeOk}`);
   console.log(`Drill-through probe (S22) — {Column} link resolves; javascript: template refused: ${dtp.linkOk}`);
   console.log(`Drill-through probe (S22) — modal record list: title/period/summary, rows+chevrons, Esc closes: ${dtp.modalOk}`);
-  console.log(`Drill-through probe (S22) — TABLE right-click (deselectedAttributes) scopes the query + badge; non-measure cell refused: ${dtp.tableClickOk}`);
+  console.log(`Drill-through probe (S22) — TABLE right-click (deselectedAttributes) scopes the query + badge; non-measure cell refused with onlyColumn on, drills with it off: ${dtp.tableClickOk}`);
   console.log(`Drill-through probe (S22) — a click from a DIFFERENT viz does not drill away: ${dtp.drillScopeOk}`);
   console.log(`Drill-through probe (S42) — preset saves, reapplies, folds, admits no foreign keys: ${dtp.presetOk}`);
   console.log(`Drill-through probe (S43) — naming visualizations adds and removes metadataIds.vizIds: ${dtp.pinOk}`);

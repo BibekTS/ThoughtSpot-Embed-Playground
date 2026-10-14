@@ -304,7 +304,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   makes `record_offset` paging and a row-count reconciliation badge possible from one response.
 - 2026-09-24 (S22, found by the first LIVE run): **`available_data_row_count` is NOT the total.**
   The REST v2 `searchData` response schema documents it as "Total available data row count", but on
-  `ps-internal` (26.8.0.cl) it comes back **equal to `returned_data_row_count` on every page** —
+  the test instance (26.8.0.cl) it comes back **equal to `returned_data_row_count` on every page** —
   `record_size` 3/10/100/1000 all returned `available == returned == record_size`, and a request at
   `record_offset: 90` still said 100. It only drops below the page size when the result genuinely
   runs out. So: a FULL page tells you nothing about the total, and any `loaded < available` paging
@@ -322,7 +322,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   attributes in `deselectedAttributes`, not `selectedAttributes`** — and `contextMenuPoints` is an
   OBJECT (`{clickedPoint, selectedPoints}`), not the array the old extractor assumed. Verified on
   26.8.0.cl by right-clicking a `Total Sales Amount` cell on a TABLE_MODE viz: `selectedAttributes`
-  came back `[]` while `deselectedAttributes` held `Employee Name='Lynn Tsoflias'`,
+  came back `[]` while `deselectedAttributes` held `Employee Name='Avery Example'`,
   `Territory='Pacific'`, `Day(Order Date)='1769644800'`, and `selectedMeasures` held the clicked
   `Total Sales Amount`. `deselectedMeasures` held the row's OTHER measures, mostly `'{Null}'` — so
   never fall back to it for "the measure the user clicked". CHART clicks are different: there
@@ -377,7 +377,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `/api/rest/2.0/auth/orgs/switch` and `/callosum/v1/tspublic/v1/session/orgs/update` all 404, the
   `x-requested-orgid` family of headers is ignored (400), and `/callosum/v1/session/orgs/update`
   400s on every body shape tried. Objects in another org return "Logical Table not found". For
-  ps-internal content living in the `Bibek` org, verify through the playground's own
+  test-instance content living in a non-default org, verify through the playground's own
   `/api/ts-rest` relay instead — same cluster, same user, correct org.
 - 2026-09-25 (S22, precise): **ThoughtSpot reports the exact CELL, not just the row.** Captured live
   on 26.8.0.cl by right-clicking two cells of the same table row:
@@ -385,7 +385,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `selectedAttributes=[]`, `deselectedAttributes=[Employee Name, Territory, Day(Order Date)]`,
   `deselectedMeasures=[Quota, Quota %]`.
   Clicking the `Employee Name` cell on that same row → `selectedAttributes=[Employee Name
-  'Lynn Tsoflias']`, `selectedMeasures=[]`, `deselectedAttributes=[Territory, Day(Order Date)]`,
+  'Avery Example']`, `selectedMeasures=[]`, `deselectedAttributes=[Territory, Day(Order Date)]`,
   `deselectedMeasures=[all three measures]`.
   So the rule is: **`selected*` is the cell that was clicked; `deselected*` is the rest of that row;
   their union is the full row.** That is why a measure-cell click leaves selectedAttributes empty —
@@ -699,7 +699,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `iframe_url` is scheme-checked before it reaches `frame.src` — an iframe src is a navigation sink
   in THIS document's context, same class as the S13 `window.open` hole.
 - 2026-10-01 (S45): Spotter MCP `api-version` cutover, verified by `tools/list` against
-  `https://agent.thoughtspot.app/token/mcp?api-version=X` on ps-internal: **beta, 2026-05-01,
+  `https://agent.thoughtspot.app/token/mcp?api-version=X` on the test instance: **beta, 2026-05-01,
   2026-06-01, 2026-09-01** → Spotter 3 set (check_connectivity, search_objects,
   create_analysis_session, send_session_message, get_session_updates, create_dashboard);
   **2026-04-01 and earlier** (2026-01-01, 2025-10-01, 2025-01-01) → legacy set ONLY (ping,
@@ -715,7 +715,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   stay below 150 or it hides the toasts and dialogs it can itself open. `highlightJs` was fuzzed
   (200k inputs) to preserve text exactly, so `#code-view.textContent === generateCode()` holds.
 - 2026-10-01 (S45): the generated Spotter MCP snippet (`js/app.js` `spotterMcpCode`) set
-  `frameEl.src = evt.iframe_url` — the EXACT bug a customer (Guidewire) hit: iframe_url carries the
+  `frameEl.src = evt.iframe_url` — the EXACT bug a customer hit: iframe_url carries the
   `tsmcp=true` marker and renders blank/unauthenticated as a raw src. It now emits `init()` (via the
   shared `sdkInitAuthLines(s, esc)`, also used by `generateCode`) + `startAutoMCPFrameRenderer()` and
   appends a FRESH marker iframe per answer. Sharp edge: the auto-renderer REPLACES your iframe
@@ -1008,7 +1008,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   `pushed: []`, which proves nothing about the values; only "hook kept, coercion reverted" did. Also:
   macOS `sed` BRE treats `\(...\)` as a group, so a mutation can silently not land; run `git diff` to
   confirm it applied. zsh has `pipestatus`, not `PIPESTATUS`.
-- 2026-10-02 (cfb host-header layout, SDK 1.49.0, verified headless vs ps-internal): `hideLiveboardHeader: true`
+- 2026-10-02 (cfb host-header layout, SDK 1.49.0, verified headless vs the test instance): `hideLiveboardHeader: true`
   also removes the native filter chips. `showLiveboardTitle: false` hides only the title (chips + action row
   stay). **`hideTabPanel: true` makes `HostEvent.SetActiveTab` and `embed.navigateToLiveboard(id, undefined, tabId)`
   silent no-ops** (resolve, nothing switches). Workaround: keep `hideTabPanel: false` and hide the native bar with
@@ -1017,7 +1017,7 @@ entries when falsified; promote to `CLAUDE.md` when they harden into rules.
   after LiveboardRendered returns `{ orderedTabIds, numberOfTabs, Tabs: [{ id, name, containerIds, … }] }`; order by
   `orderedTabIds`. App wiring: `hostHeaderOn(s)` / `HOST_HEADER_*` (js/app.js ~553) feed `effectiveCssRules` (so
   `hasStyles` is true without other styles) and the `flags` passed to `doRender`; state key `cfbLayout`.
-- 2026-10-02 (cfb 'host-header-actions' layout, SDK 1.49.0, verified headless vs ps-internal): the native action row
+- 2026-10-02 (cfb 'host-header-actions' layout, SDK 1.49.0, verified headless vs the test instance): the native action row
   (star, AI Highlights, Share, "…") is hidden by `rules_UNSTABLE` `'[class*="pinboard-header-module__headerContainer"]'
   { display: 'none !important' }` (internal class, UNSTABLE); native filter chips stay. With it hidden the sticky header
   draws a faded DUPLICATE chip row — force `isLiveboardHeaderSticky: false` (also stops chips spilling under the row).

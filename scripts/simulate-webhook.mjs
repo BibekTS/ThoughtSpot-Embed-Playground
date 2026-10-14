@@ -36,13 +36,13 @@ const STRESS = Math.max(0, parseInt(args.recipients, 10) || 0);   // optional ex
 const MULTIPART = !!args.multipart;   // rehearse the REAL wire format: multipart + a rendered PDF attachment
 
 // ── the recipient sets (mirror docs/webhook-inbox-demo.md + the customer's setup) ─────────────────
-const T2 = 'u-wmoy-test-2', T3 = 'u-wmoy-test-3';
-const GA = 'u-group-user-a', GB = 'u-group-user-b', GRP = 'g-wmoy-test-2-group';
+const T2 = 'u-demo-user-a', T3 = 'u-demo-user-blocked';
+const GA = 'u-group-user-a', GB = 'u-group-user-b', GRP = 'g-demo-user-group';
 const ext = (email, name) => ({ type: 'EXTERNAL_EMAIL', email, name });
 const usr = (id, name) => ({ type: 'USER', id, name, email: `${name}@example.com` });
 
-// Directly-named schedule users: wmoy_test_2 AND wmoy_test_3 (the group is added via groupIds).
-// wmoy_test_3 is RLS-blocked → it never produces a delivery, so the inbox summary flags it.
+// Directly-named schedule users: demo_user_a AND demo_user_blocked (the group is added via groupIds).
+// demo_user_blocked is RLS-blocked → it never produces a delivery, so the inbox summary flags it.
 const SCHEDULE_USER_IDS = [T2, T3];
 
 // Shape matches the official LIVEBOARD_SCHEDULE payload (developers.thoughtspot.com/docs/webhooks-lb-payload).
@@ -85,8 +85,8 @@ const externalRecipients = STRESS > 0
 const scenarios = [
   { label: `external batch (${externalRecipients.length} recipients → 1 webhook)`,
     body: makeBody(externalRecipients, 'External recipients share the sender render → one batched webhook.') },
-  { label: 'internal wmoy_test_2 (1 webhook)',
-    body: makeBody([usr(T2, 'wmoy_test_2')], "Rendered in wmoy_test_2's own RLS context (sees only PRODUCT_CATEGORY != 'music player').") },
+  { label: 'internal demo_user_a (1 webhook)',
+    body: makeBody([usr(T2, 'demo_user_a')], "Rendered in demo_user_a's own RLS context (sees only PRODUCT_CATEGORY != 'music player').") },
   { label: 'group member A (1 webhook)',
     body: makeBody([usr(GA, 'group_user_a')], 'A group of N expands into N per-user webhooks, not one batched webhook.') },
   { label: 'group member B (1 webhook)',
@@ -131,7 +131,7 @@ console.log(`\nSimulate ThoughtSpot scheduled-Liveboard webhooks (SYNTHETIC — 
 ok(`Receiver : ${TARGET}`);
 ok(`Delivery : ${MULTIPART ? 'multipart/form-data with a rendered PDF attachment (mirrors the real wire format)' : 'application/json (metadata only — add --multipart to attach a report)'}`);
 ok(`Signing  : ${WEBHOOK_SECRET ? `HMAC_SHA256 via ${SIG_HEADER}` : 'none (set TS_WEBHOOK_SECRET to get ✓ verified cards)'}`);
-console.log(`  ! wmoy_test_3 is RLS-blocked (sees no data) → ThoughtSpot sends NO webhook for it, so this`);
+console.log(`  ! demo_user_blocked is RLS-blocked (sees no data) → ThoughtSpot sends NO webhook for it, so this`);
 console.log(`    script sends none either. It IS in scheduleDetails.userIds, so the inbox summary will`);
 console.log(`    show "1 scheduled user received NO webhook". That absence is the whole point of #4.\n`);
 

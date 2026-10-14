@@ -8,8 +8,8 @@
  *
  * Usage:
  *   node scripts/schedule-liveboard.mjs --liveboard="Webhooks Testing" \
- *       --users=wmoy_test_2,wmoy_test_3 --groups=wmoy_test_2_group --emails=partner-a@ex.com,partner-b@ex.com
- *   node scripts/schedule-liveboard.mjs --liveboard=<GUID> --users=wmoy_test_2 --dry-run
+ *       --users=demo_user_a,demo_user_blocked --groups=demo_user_group --emails=partner-a@ex.com,partner-b@ex.com
+ *   node scripts/schedule-liveboard.mjs --liveboard=<GUID> --users=demo_user_a --dry-run
  *
  * Recipients:
  *   --emails=a@x.com,b@y.com     external recipients (share one sender-context copy → one webhook)

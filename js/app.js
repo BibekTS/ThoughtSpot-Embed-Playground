@@ -245,6 +245,9 @@ const DATE_ACTION_ID = '__date_filter';
 // drillthrough section and scoped via dataModelIds.modelColumnNames to ONE measure column, so it
 // appears in that column's right-click menu and nowhere else. Routed to openDetailPanel().
 const DT_ACTION_ID = '__dt_view_detail';
+// Id of the companion "View payload" action: same scope as DT_ACTION_ID, but it only shows the raw
+// EmbedEvent.CustomAction payload in a side panel, so you can see exactly what ThoughtSpot sends.
+const PAYLOAD_ACTION_ID = '__dt_view_payload';
 let editingActionId = null;      // id of the custom action currently loaded into the form for editing
 let lastSaved = null;            // { name, guid, at } — most recent EmbedEvent.Save this session
 let drillParent = null;          // { liveboardId } — set while drilled into a detail board (Q4)
@@ -275,6 +278,7 @@ let aiQuery = '';   // last free-text question typed into the AI Insights panel
 const mcpPrefs = {
   showThinking: true,     // render the is_thinking lane at all
   frameHeight: 'auto',    // 'auto' grows each answer frame to its content; else px
+  hideTokens: true,       // hide the answer's search-token chips (rules_UNSTABLE)
   liveboardName: '',      // prefills the create_dashboard title
   streamChunks: true,     // token-by-token, vs holding each message until complete
   pollIntervalMs: 600,    // get_session_updates cadence
@@ -1948,9 +1952,9 @@ function updateComposerPreview(preview, send, real) {
 function buildComposer(panel) {
   // Seed with the customer's setup so it's demo-ready — every field is editable.
   composer.emails = ['partner-a@example.com', 'partner-b@example.com'];
-  composer.users = ['wmoy_test_2'];
-  composer.groups = [{ name: 'wmoy_test_2_group', n: 2 }];
-  composer.blocked = ['wmoy_test_3'];
+  composer.users = ['demo_user_a'];
+  composer.groups = [{ name: 'demo_user_group', n: 2 }];
+  composer.blocked = ['demo_user_blocked'];
   composer.message = 'Your scheduled Liveboard update from the Embed Playground demo.';
 
   panel.replaceChildren();
@@ -2005,9 +2009,9 @@ function buildComposer(panel) {
     renderComposerChips(key, chips, onEdit);
   };
   field('External emails', 'emails', { ph: 'partner@example.com', hint: 'batched into one webhook' });
-  field('Internal users', 'users', { ph: 'wmoy_test_2', hint: 'one webhook each' });
+  field('Internal users', 'users', { ph: 'demo_user_a', hint: 'one webhook each' });
   field('Groups', 'groups', { ph: 'group name', num: true, hint: 'expanded per member' });
-  field('RLS-blocked', 'blocked', { ph: 'wmoy_test_3', hint: 'named, but get no webhook' });
+  field('RLS-blocked', 'blocked', { ph: 'demo_user_blocked', hint: 'named, but get no webhook' });
 
   // Email message → the schedule's `description`, which ThoughtSpot renders as "Description: <text>"
   // in the notification email (real deliveries only). The rest of the email is ThoughtSpot's template.
@@ -2475,6 +2479,11 @@ function renderMcpInspector(s, body) {
     'AutoMCPFrameRendererViewConfig.frameParams.height. Auto starts compact and resizes each frame '
     + 'from the EMBED_HEIGHT the embedded app reports — a KPI answer settles near 200px, a chart near '
     + '600 — falling back to the starting height if the app never reports one.'));
+  frame.appendChild(toggleField('Hide search tokens', mcpPrefs.hideTokens,
+    v => { mcpPrefs.hideTokens = v; remount(); },
+    'Hides the token chips above each answer (e.g. “sales”, “date = last year”) with a per-embed '
+    + 'customizations rules_UNSTABLE rule on [data-testid="answer-sage-tokens"]. Unstable: the selector '
+    + 'may change across ThoughtSpot releases.'));
   body.appendChild(accordion('Answer frame', 'startAutoMCPFrameRenderer', frame));
 
   // ── Liveboard ──────────────────────────────────────────────────────────────
@@ -3047,17 +3056,26 @@ function buildEmbedCustomActions(s) {
   // set. The dispatcher routes it to openDetailPanel().
   const d = s.drill || {};
   if (s.section === 'drillthrough' && d.enabled && d.summaryModelId && d.measureColumn) {
+    // The scoping keys are a UNION, not an intersection (verified live on 26.8.0.cl): sending
+    // modelColumnNames alongside vizIds still put the action on every viz built on the column.
+    // So pinned vizzes REPLACE the column scope rather than narrowing it.
+    const scope = d.actionVizIds?.length
+      ? { metadataIds: { vizIds: d.actionVizIds } }
+      : { dataModelIds: { modelColumnNames: [`${d.summaryModelId}::${d.measureColumn}`] } };
     actions.push({
       id: DT_ACTION_ID,
       name: d.actionLabel || 'View detail',
       position: CustomActionsPosition.CONTEXTMENU,            // right-click menu on the data point
       target: CustomActionTarget.VIZ,                         // per-viz, so the clicked row comes through
-      // The scoping keys are a UNION, not an intersection (verified live on 26.8.0.cl): sending
-      // modelColumnNames alongside vizIds still put the action on every viz built on the column.
-      // So pinned vizzes REPLACE the column scope rather than narrowing it.
-      ...(d.actionVizIds?.length
-        ? { metadataIds: { vizIds: d.actionVizIds } }
-        : { dataModelIds: { modelColumnNames: [`${d.summaryModelId}::${d.measureColumn}`] } }),
+      ...scope,
+    });
+    // Companion action on the same cells — routed to openPayloadPanel() to show the raw payload.
+    actions.push({
+      id: PAYLOAD_ACTION_ID,
+      name: 'View payload',
+      position: CustomActionsPosition.CONTEXTMENU,
+      target: CustomActionTarget.VIZ,
+      ...scope,
     });
   }
   return actions;
@@ -5613,6 +5631,8 @@ window.__onCustomAction = async (payload) => {
   if (id === DATE_ACTION_ID) { openDatePicker(); return; }
   // Drill-through demo: the column-scoped "View detail" action → host-rendered detail rows.
   if (id === DT_ACTION_ID) { await openDetailPanel(payload); return; }
+  // Its "View payload" companion → show the full payload ThoughtSpot passed.
+  if (id === PAYLOAD_ACTION_ID) { openPayloadPanel(payload); return; }
   const reg = customActionRegistry[id];
   if (!reg) return;
   const row = extractRow(payload);
@@ -5644,6 +5664,46 @@ window.__onCustomAction = async (payload) => {
     enterDrill(reg.drillLiveboardId, merged);
   }
 };
+
+// "View payload" — show the raw EmbedEvent.CustomAction payload in a slide-over, with a Copy button.
+// The JSON comes from ThoughtSpot, so it goes into the DOM via textContent only.
+function openPayloadPanel(payload) {
+  document.getElementById('payload-modal')?.remove();
+  let json;
+  try { json = JSON.stringify(payload, null, 2); } catch (e) { json = `Could not serialize payload: ${e.message}`; }
+
+  const modal = el('div', 'modal'); modal.id = 'payload-modal';
+  const scrim = el('div', 'modal-scrim');
+  const panel = el('div', 'modal-panel modal-panel--wide');
+  const close = () => { modal.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+  scrim.addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+
+  const head = el('div', 'modal-head');
+  const htxt = el('div');
+  htxt.appendChild(el('div', 'modal-title', 'Custom action payload'));
+  htxt.appendChild(el('div', 'modal-sub', 'Everything EmbedEvent.CustomAction passed to the host when the action was clicked.'));
+  const xbtn = el('button', 'modal-close', '✕'); xbtn.type = 'button'; xbtn.addEventListener('click', close);
+  head.append(htxt, xbtn);
+
+  const body = el('div', 'modal-body');
+  const pre = el('pre', 'payload-json'); pre.textContent = json;
+  body.appendChild(pre);
+
+  const foot = el('div', 'modal-foot');
+  const copy = el('button', 'sec-apply', 'Copy JSON'); copy.type = 'button';
+  copy.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(json); toast('Payload copied.'); }
+    catch (_) { toast('Copy failed — select the text and copy it manually.'); }
+  });
+  const done = el('button', 'sec-apply ghost', 'Close'); done.type = 'button'; done.addEventListener('click', close);
+  foot.append(done, copy);
+
+  panel.append(head, body, foot);
+  modal.append(scrim, panel);
+  document.body.appendChild(modal);
+}
 
 // Invoice "Download PDF" — paginate the viz behind the action, group rows into invoices, and
 // build the multi-page PDF (one invoice per page) with the verbatim builder from invoice-pdf.js.
@@ -5779,7 +5839,7 @@ function clickedPoints(payload) {
 // Pull the clicked point's *dimensional* attributes (not measures) across SDK payload shapes.
 // On a TABLE right-click ThoughtSpot reports the clicked MEASURE in selectedMeasures and leaves
 // selectedAttributes EMPTY — the row's attribute values arrive in `deselectedAttributes`
-// (verified live on 26.8.0.cl: Employee Name='Lynn Tsoflias', Territory='Pacific'). Without that
+// (verified live on 26.8.0.cl: Employee Name='Avery Example', Territory='Pacific'). Without that
 // fallback a table action produces no scope at all and the detail query returns the whole model.
 // The fallback only applies when selectedAttributes is empty, so chart clicks are unaffected.
 let dtDroppedAttrs = [];   // attribute columns the last click carried as {Null} — see dtSummaryLine
@@ -6204,12 +6264,17 @@ async function openDetailPanel(payload) {
   // The action shows on every cell of the viz (no per-cell scoping exists), so refuse a click whose
   // CELL isn't the configured measure. `selected*` is the clicked cell, `deselected*` the rest of the
   // row (verified live) — so a right-click on "Employee Name" has the measure only in deselected.
-  if (d.measureColumn) {
-    const cell = clickedPoints(payload).flatMap(p => p.selectedMeasures || [])
-      .find(m => (m?.column?.name ?? m?.columnName) === d.measureColumn);
+  // Opt-in (Drill-through → "Only drill from one column"). The name is what the chart SHOWS, which can
+  // differ from the model column in measureColumn, so match case-insensitively on the clicked cell.
+  const only = d.onlyColumn ? String(d.onlyColumnName || '').trim().toLowerCase() : '';
+  if (only) {
+    const cols = clickedPoints(payload).flatMap(p => [...(p.selectedMeasures || []), ...(p.selectedAttributes || [])]);
+    const nm = c => String(c?.column?.name ?? c?.columnName ?? '');
+    const cell = cols.find(c => nm(c).trim().toLowerCase() === only);
     if (!cell || dtIsNull(cell.value ?? cell.dataValue)) {
-      toast(`This value has no drill-down. Right-click a "${d.measureColumn}" value instead.`);
-      logEvent('Drill', `ℹ clicked cell is not "${d.measureColumn}" — drill refused`);
+      const clicked = cols[0] ? nm(cols[0]) : '';
+      toast(`${clicked ? `You clicked "${clicked}". ` : ''}Drill-down is limited to "${d.onlyColumnName.trim()}" — change it under Drill-through → Only drill from one column.`);
+      logEvent('Drill', `ℹ clicked cell is not "${d.onlyColumnName.trim()}" — drill refused`);
       return;
     }
   }
@@ -6376,7 +6441,7 @@ function dtSplitColumns(cols) {
   return { title, dateCol, meta: cols.filter(c => c !== title && c !== dateCol) };
 }
 
-/** "12 orders · Total Sales Amount: 4,291 — Jae Pak · Europe" */
+/** "12 orders · Total Sales Amount: 4,291 — Jordan Example · Europe" */
 function dtSummaryLine() {
   const r = dtReconcile();
   const scope = dt.filters.map(f => `${f.columnName}: ${f.values.map(dtDisplayValue.bind(null, f.columnName)).join(' / ')}`).join(' · ');
@@ -6748,6 +6813,12 @@ function sectionDrillthrough(s) {
   c.appendChild(textField('Measure column', d.measureColumn, v => { set({ measureColumn: v }); render(); },
     'e.g. Meeting count'));
   c.appendChild(el('div', 'fld-hint', 'Together these scope the action as &quot;&lt;modelGuid&gt;::&lt;column&gt;&quot;. Leave either blank and no action is injected.'));
+  c.appendChild(toggleField('Only drill from one column', d.onlyColumn, v => { set({ onlyColumn: v }); renderInspector(); },
+    'Off = any cell of a viz that shows the action drills. On = only clicks on the column you name.'));
+  if (d.onlyColumn) {
+    c.appendChild(textField('Drill column', d.onlyColumnName, v => set({ onlyColumnName: v }), d.measureColumn || 'Total sales'));
+    c.appendChild(el('div', 'fld-hint', 'Use the name as it appears on the chart (axis or header label), which can differ from the model column name. Matching ignores case.'));
+  }
 
   // Column scoping alone puts the action on every viz built on that column. Naming visualizations
   // here adds metadataIds.vizIds, which is the only way to keep it off the rest of the board.
@@ -7424,6 +7495,13 @@ function generateCode() {
     L.push('  // so the cell the user clicked may be a different measure than the one this drill is about.');
     L.push('  // Take the CONFIGURED measure wherever it sits on the clicked point (selected + deselected).');
     L.push('  const point = data.clickedPoint ?? data.contextMenuPoints?.clickedPoint ?? {};');
+    if (d.onlyColumn && (d.onlyColumnName || '').trim()) {
+      L.push('  // Only drill from one column: names are matched as shown on the chart, ignoring case.');
+      L.push(`  const only = '${esc(d.onlyColumnName.trim().toLowerCase())}';`);
+      L.push('  const cell = [...(point.selectedMeasures ?? []), ...(point.selectedAttributes ?? [])]');
+      L.push('    .find(c => String(c.column?.name ?? \'\').trim().toLowerCase() === only && c.value !== \'{Null}\');');
+      L.push('  if (!cell) return;');
+    }
     L.push('  const kpi = [...(point.selectedMeasures ?? []), ...(point.deselectedMeasures ?? [])]');
     L.push(`    .find(m => m.column?.name === '${esc(d.measureColumn)}' && m.value !== '{Null}');`);
     L.push(`  const PAGE = ${Number(d.pageSize) || 100};`);
@@ -7869,7 +7947,17 @@ function spotterMcpCode(s) {
     '// An answer\'s iframe_url carries the MCP `tsmcp=true` marker — it is NOT a usable embed URL;',
     '// as a raw src it renders blank/unauthenticated. The auto-renderer watches the DOM and swaps',
     '// each NEW marker <iframe> for an authenticated embed (setting .src on an existing one won\'t).',
-    "startAutoMCPFrameRenderer({ frameParams: { width: '100%', height: '600px' } });",
+    ...(mcpPrefs.hideTokens ? [
+      "startAutoMCPFrameRenderer({",
+      "  frameParams: { width: '100%', height: '600px' },",
+      "  // Hide the answer's search-token chips. rules_UNSTABLE: the selector may change across releases.",
+      "  customizations: { style: { customCSS: { rules_UNSTABLE: {",
+      "    '[data-testid=\"answer-sage-tokens\"]': { display: 'none !important' },",
+      "  } } } },",
+      "});",
+    ] : [
+      "startAutoMCPFrameRenderer({ frameParams: { width: '100%', height: '600px' } });",
+    ]),
     '',
     "const chat = document.getElementById('chat');",
     "const bubble = chat.appendChild(document.createElement('p'));",
