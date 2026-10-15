@@ -2391,7 +2391,7 @@ function renderMcpInspector(s, body) {
     [{ id: '', name: 'Auto — let Spotter choose' }, ...(discovered.worksheets || [])],
     v => { setState({ worksheetId: v }); remount(); },
     'Pins every analysis session to one Worksheet/Model (create_analysis_session data_source_id).',
-    !connected));
+    !connected, true));
 
   // System context: standing instructions forwarded as send_session_message
   // additional_context on EVERY turn — the persona surface for a real embed
@@ -2597,10 +2597,10 @@ function accordion(title, count, contentEl, openByDefault = false) {
   return wrap;
 }
 
-function labeledSelect(label, value, options, onChange, hint, disabled = false) {
+function labeledSelect(label, value, options, onChange, hint, disabled = false, allowCustom = false) {
   const f = el('div', 'fld');
   f.appendChild(el('label', 'fld-lbl', label));
-  f.appendChild(customSelect(value, options, onChange, disabled));
+  f.appendChild(customSelect(value, options, onChange, disabled, allowCustom));
   if (hint) f.appendChild(el('div', 'fld-hint', hint));
   return f;
 }
@@ -2609,31 +2609,68 @@ function labeledSelect(label, value, options, onChange, hint, disabled = false) 
 // the selected row to the cursor, so long lists (e.g. all liveboards) overflow off the top of
 // the screen. This panel is position:fixed (so the inspector's overflow:auto can't clip it),
 // stays inside the viewport, flips up when there's no room below, and is searchable + scrollable.
-function customSelect(value, options, onChange, disabled = false) {
+// `allowCustom` opts a picker into manual GUID entry: the panel stays reachable while the object
+// lists are unavailable (CORS-blocked or not-yet-connected instance), the filter also matches ids,
+// and typed text can be committed directly as the value.
+function customSelect(value, options, onChange, disabled = false, allowCustom = false) {
   const wrap = el('div', 'sel');
   const current = options.find(o => o.id === value);
   const btn = el('button', 'sel-btn'); btn.type = 'button';
-  btn.textContent = current ? current.name : '— select —';
-  if (!current) btn.classList.add('sel-btn--placeholder');
-  if (disabled) { btn.disabled = true; wrap.appendChild(btn); return wrap; }
+  // A value that isn't in `options` (undiscovered GUID, CORS-blocked list, shared link) must show
+  // the raw id — not "— select —", which reads as "nothing is selected".
+  btn.textContent = current ? current.name : (value || '— select —');
+  if (!value) btn.classList.add('sel-btn--placeholder');
+  else if (!current) { btn.classList.add('sel-btn--rawid'); btn.title = value; }
+  // `disabled` means "no list to pick from". When manual GUID entry is allowed that is exactly when
+  // the panel is MOST useful (CORS-blocked instance), so only the non-custom pickers go inert.
+  if (disabled && !allowCustom) { btn.disabled = true; wrap.appendChild(btn); return wrap; }
+  if (disabled) btn.classList.add('sel-btn--guidonly');
 
   const panel = el('div', 'sel-panel'); panel.hidden = true;
   const search = el('input', 'sel-search'); search.type = 'text'; search.placeholder = 'Search…';
+  if (allowCustom) search.placeholder = 'Search or paste a GUID…';
   const list = el('div', 'sel-list');
-  panel.append(search, list);
+  if (disabled && allowCustom) {
+    const note = document.createElement('div');
+    note.className = 'sel-note';
+    note.textContent = 'Not connected — paste a GUID below.';
+    panel.append(note, search, list);
+  } else {
+    panel.append(search, list);
+  }
+
+  let lastMatches = [];   // options currently visible
+  let lastCustom = '';    // typed text the custom row would commit ('' = no row shown)
 
   const renderList = (q = '') => {
     list.innerHTML = '';
-    const ql = q.trim().toLowerCase();
+    const trimmed = q.trim();
+    const ql = trimmed.toLowerCase();
     const all = [{ id: '', name: '— select —' }, ...options];
-    const matches = all.filter(o => !ql || o.name.toLowerCase().includes(ql));
-    if (!matches.length) { list.appendChild(el('div', 'sel-empty', 'No matches')); return; }
+    const matches = all.filter(o => !ql || o.name.toLowerCase().includes(ql) || (o.id && o.id.toLowerCase().includes(ql)));
+    lastMatches = matches.filter(o => o.id);
+    if (!matches.length && !(allowCustom && trimmed)) list.appendChild(el('div', 'sel-empty', 'No matches'));
     matches.forEach(o => {
       const item = el('div', 'sel-item' + (o.id === value ? ' sel-item--active' : ''));
       item.textContent = o.name;
       item.addEventListener('click', () => { close(); onChange(o.id); });
       list.appendChild(item);
     });
+    lastCustom = '';
+    const exactMatch = options.some(o => o.id === trimmed);
+    if (allowCustom && trimmed && !exactMatch) {
+      lastCustom = trimmed;
+      const custom = document.createElement('div');
+      custom.className = 'sel-item sel-item--custom';
+      // textContent/createTextNode throughout — `trimmed` is user input, never HTML.
+      const icon = document.createElement('span'); icon.className = 'sel-item-custom-icon'; icon.textContent = '↵';
+      const strong = document.createElement('strong'); strong.textContent = trimmed;
+      custom.append(icon, document.createTextNode(' Use "'), strong, document.createTextNode('"'));
+      // close() BEFORE onChange — the Liveboard onChange calls renderInspector(), which tears
+      // this node down; the existing item click relies on the same ordering.
+      custom.addEventListener('click', () => { close(); onChange(trimmed); });
+      list.appendChild(custom);
+    }
   };
 
   function position() {
@@ -2681,6 +2718,13 @@ function customSelect(value, options, onChange, disabled = false) {
     window.removeEventListener('scroll', onReposition, true);
   }
   search.addEventListener('input', () => renderList(search.value));
+  // Enter commits the custom row if there is one, else the sole remaining match. Never on 0 or ≥2.
+  search.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (lastCustom) { close(); onChange(lastCustom); return; }
+    if (lastMatches.length === 1) { const only = lastMatches[0]; close(); onChange(only.id); }
+  });
   btn.addEventListener('click', () => { panel.hidden ? open() : close(); });
 
   wrap.append(btn, panel);
@@ -2691,11 +2735,15 @@ function customSelect(value, options, onChange, disabled = false) {
 function sectionObject(s) {
   const c = el('div', 'sec-body');
   const needs = META[s.section].needs;
-  if (!connected) c.appendChild(el('div', 'sec-note', 'Connect to load objects, or paste a GUID after connecting.'));
+  if (!connected) {
+    const n = el('div', 'sec-note');
+    n.textContent = 'Not connected — object lists are unavailable. Open any picker below and paste a GUID to drive the embed anyway.';
+    c.appendChild(n);
+  }
 
   if (needs === 'worksheet') {
-    c.appendChild(labeledSelect('Worksheet / Model', s.worksheetId, discovered.worksheets,
-      v => { setState({ worksheetId: v }); renderInspector(); render(); }, 'Used by Search, Spotter', !connected));
+    c.appendChild(labeledSelect('Worksheet / Model', s.worksheetId, (discovered.worksheets || []),
+      v => { setState({ worksheetId: v }); renderInspector(); render(); }, 'Used by Search, Spotter', !connected, true));
     if (s.section === 'search') {
       c.appendChild(textField('Pre-fill search query', s.searchTokenString, v => { setState({ searchTokenString: v }); render(); }, '[Sales Amount] [Region]'));
       c.appendChild(toggleField('Auto-execute search', s.executeSearch, v => { setState({ executeSearch: v }); render(); }));
@@ -2731,7 +2779,7 @@ function sectionObject(s) {
         await loadViz(v);
         await refreshPersonalCopies();
         renderInspector();
-      }, '', !connected));
+      }, '', !connected, true));
   }
   if (needs === 'viz') {
     // Lazy-load vizzes when the inspector renders with a pre-selected liveboard but a cold
@@ -2747,7 +2795,7 @@ function sectionObject(s) {
     const vizzes = vizCache[s.liveboardId] || [];
     c.appendChild(labeledSelect('Visualization', s.vizId, vizzes,
       v => { setState({ vizId: v, answerId: '' }); renderInspector(); render(); },
-      !s.liveboardId ? 'Pick a liveboard first' : isLoading ? 'Loading…' : '', !connected));
+      !s.liveboardId ? 'Pick a liveboard first' : isLoading ? 'Loading…' : '', !connected, true));
     // When discovery fails (CORS, auth, or no vizzes returned), show a GUID paste field
     // so users can still drive the embed without needing the REST call to succeed.
     if (s.liveboardId && !isLoading && vizzes.length === 0) {
@@ -2773,7 +2821,7 @@ function sectionObject(s) {
     const answers = answerList || [];
     c.appendChild(labeledSelect('Answer', s.answerId, answers,
       v => { setState({ answerId: v, vizId: '' }); renderInspector(); render(); },
-      answersLoading ? 'Loading saved Answers…' : !connected ? 'Connect to load saved Answers' : '', !connected));
+      answersLoading ? 'Loading saved Answers…' : !connected ? 'Connect to load saved Answers' : '', !connected, true));
     if (connected && !answersLoading && answers.length === 0) {
       const note = el('div', 'sec-note');
       note.textContent = answerList === null
@@ -6968,7 +7016,7 @@ function sectionDrillthrough(s) {
 
   // ── the five fields a working setup actually needs ──
   c.appendChild(labeledSelect('Summary Model', d.summaryModelId, wsOpts, v => { set({ summaryModelId: v }); renderInspector(); render(); },
-    'The Model behind the summary Liveboard.', !connected));
+    'The Model behind the summary Liveboard.', !connected, true));
   c.appendChild(textField('Measure column', d.measureColumn, v => { set({ measureColumn: v }); render(); },
     'e.g. Meeting count'));
   c.appendChild(el('div', 'fld-hint', 'Together these scope the action as &quot;&lt;modelGuid&gt;::&lt;column&gt;&quot;. Leave either blank and no action is injected.'));
@@ -7030,7 +7078,7 @@ function sectionDrillthrough(s) {
   c.appendChild(el('div', 'fld-hint', 'Hidden only where your action appears; other visualizations keep it.'));
 
   c.appendChild(labeledSelect('Detail Model', d.detailModelId, wsOpts, v => { set({ detailModelId: v }); renderInspector(); },
-    'The event-grain Model queried by POST searchdata, one row per event.', !connected));
+    'The event-grain Model queried by POST searchdata, one row per event.', !connected, true));
   c.appendChild(textField('Detail columns', (d.detailColumns || []).join(', '),
     v => set({ detailColumns: v.split(',').map(x => x.trim()).filter(Boolean) }),
     'Meeting Id, User Name, Booked at'));
@@ -7065,7 +7113,7 @@ function sectionDrillthrough(s) {
 
   const pc = subGroup('Click through to another Liveboard');
   pc.body.appendChild(labeledSelect('Detail Liveboard', d.drillLiveboardId, lbOpts, v => { set({ drillLiveboardId: v }); renderInspector(); },
-    'Opened, filtered, on a point click. Leave unset to demo the record list alone.', !connected));
+    'Opened, filtered, on a point click. Leave unset to demo the record list alone.', !connected, true));
   if (d.drillLiveboardId) {
     // Same connected-gate as the actionVizIds picker above \u2014 see its comment.
     if (connected && s.liveboardId && vizCache[s.liveboardId] === undefined && !_vizLoading.has(s.liveboardId)) {
@@ -7074,7 +7122,7 @@ function sectionDrillthrough(s) {
     const vizzes = vizCache[s.liveboardId] || [];
     const drillVizFailed = s.liveboardId && (vizCache[s.liveboardId] === null || vizCache[s.liveboardId]?.length === 0);
     pc.body.appendChild(labeledSelect('Drill only from', d.drillVizId, vizzes, v => set({ drillVizId: v }),
-      _vizLoading.has(s.liveboardId) ? 'Loading\u2026' : drillVizFailed ? 'Visualization list failed to load' : '', !connected));
+      _vizLoading.has(s.liveboardId) ? 'Loading\u2026' : drillVizFailed ? 'Visualization list failed to load' : '', !connected, true));
     if (drillVizFailed) {
       const note = el('div', 'sec-note sec-note--warn');
       note.textContent = 'Could not list this Liveboard\u2019s visualizations. ';
