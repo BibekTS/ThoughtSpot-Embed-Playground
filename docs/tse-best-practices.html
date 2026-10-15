@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ThoughtSpot Embedded · Best Practices</title>
+<title>TS Embed Guide</title>
 <meta name="description" content="Interactive, source-linked best practices for building on ThoughtSpot Embedded: auth, security, SDK lifecycle, filters, drill-through, actions, AI, exports, performance and go-live.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -30,8 +30,8 @@
 </script>
 <script type="application/json" id="guide-meta">
 {
-  "version": "3.4.0",
-  "lastUpdated": "2026-10-01",
+  "version": "3.6.0",
+  "lastUpdated": "2026-10-15",
   "verifiedAgainst": {
     "sdk": "1.52.0",
     "thoughtspot": "26.9.0.cl"
@@ -40,6 +40,16 @@
   "staleAfterDays": 90,
   "sourceOfTruth": "https://developers.thoughtspot.com/docs/",
   "changelog": [
+    {
+      "version": "3.6.0",
+      "date": "2026-10-15",
+      "summary": "Scheduled exports: how a scheduler finds the filters already saved on a Liveboard (TML export, a V2 metadata search, GetFilters, and what does not exist), what the built-in schedule and personalised views expose, options for keeping bindings fresh, and a schedule-author UI idea. Fixed a dead link in the filters section (now points at the Filters overview host-events section)."
+    },
+    {
+      "version": "3.5.0",
+      "date": "2026-10-15",
+      "summary": "New section, Scheduled and recurring report exports, in AI, exports & speed: built-in schedule versus your own scheduler, who each report is for (per user, per tenant, or everyone) with trade-offs, use cases such as statements, event-driven reports, fan-out and data feeds, how to build the export request (override_filters, runtime_filter, parameters, dates), a scheduling-model wizard, and four go-live items."
+    },
     {
       "version": "3.4.0",
       "date": "2026-10-01",
@@ -159,6 +169,9 @@
   .brand { display: flex; align-items: baseline; gap: 8px; text-decoration: none; color: var(--text); white-space: nowrap; }
   .brand b { font-weight: 700; letter-spacing: -.01em; }
   .brand span { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--text-mute); }
+  .beta-pill { padding: 2px 10px; border-radius: 999px; border: 1px solid var(--beta-border); background: var(--beta-soft); color: var(--beta); font: 600 11px "JetBrains Mono", monospace; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+  .beta-pill:hover { border-color: var(--beta); }
+  .beta-pill[aria-pressed="true"] { background: var(--beta); color: #fff; border-color: var(--beta); }
   .topbar .grow { flex: 1; }
   .search { position: relative; width: min(340px, 40vw); }
   .search input {
@@ -592,14 +605,14 @@
   <button class="icon-btn menu-btn" id="menu-btn" aria-label="Open navigation" aria-expanded="false">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
   </button>
-  <a class="brand" href="#top"><b>TS Embedded · Best Practices</b><span id="brand-ver"></span></a>
+  <a class="brand" href="#top"><b>TS Embed Guide</b><span id="brand-ver"></span></a>
+  <button class="beta-pill" id="beta-btn" aria-pressed="false" title="Highlight Beta & Early Access features" aria-label="Highlight Beta and Early Access features">Beta</button>
   <div class="grow"></div>
   <div class="search" role="search">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
     <input id="search" type="search" placeholder="Search the guide  ( / )" autocomplete="off" aria-label="Search the guide" aria-controls="search-results">
     <div class="search-results" id="search-results" role="listbox"></div>
   </div>
-  <button class="icon-btn" id="beta-btn" aria-pressed="false" title="Highlight Beta & Early Access features" aria-label="Highlight Beta and Early Access features">β</button>
   <button class="icon-btn" id="theme-btn" title="Toggle light/dark" aria-label="Toggle light or dark theme">
     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
   </button>
@@ -2459,7 +2472,7 @@ await embed.trigger(HostEvent.Pin, payload, ContextType.Answer);</code></pre>
       <tr><td><b>User's own filters</b></td><td>The filter UI inside the embed (chips, cross filters, search filters)</td><td><span class="yes">Yes</span></td><td>Depends on the object and the user's privileges; the docs do not give one rule. Search query filters are saved in the object's TML <a class="src" href="https://developers.thoughtspot.com/docs/filters-overview#_overview">docs</a>.</td><td><span class="no">Not a boundary</span></td></tr>
     </tbody>
   </table></div>
-  <div class="callout warn"><div><strong>Visible filters are a separate mechanism</strong><p>Runtime filters and Liveboard filters are different systems. <code>UpdateFilters</code> changes the chips users see and can edit. Runtime filters pre-filter the object from the host side. The docs list them as separate layers with separate host events <a class="src" href="https://developers.thoughtspot.com/docs/filters-overview#_overview">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/embed-liveboard#_updating_filters">docs</a>. Pick one on purpose, and do not expect one to clear the other.</p></div></div>
+  <div class="callout warn"><div><strong>Visible filters are a separate mechanism</strong><p>Runtime filters and Liveboard filters are different systems. <code>UpdateFilters</code> changes the chips users see and can edit. Runtime filters pre-filter the object from the host side. The docs list them as separate layers with separate host events <a class="src" href="https://developers.thoughtspot.com/docs/filters-overview#_overview">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/filters-overview#_updating_filters_using_host_events_in_visual_embed_sdk">docs</a>. Pick one on purpose, and do not expect one to clear the other.</p></div></div>
   </div></details>
 
   <details class="deeper"><summary>Go deeper: what "append" means in practice <small>about 2 min</small></summary><div class="deeper-body">
@@ -3646,7 +3659,7 @@ spotter.trigger(HostEvent.ResetSpotterConversation);</code></pre>
     <p><strong>Send now.</strong> <span class="badge new" data-feature="Send now for Liveboard schedules" data-ver="SDK 1.48.0 · TS 26.5.0.cl" data-src="https://developers.thoughtspot.com/docs/embed-sdk-changelog#_liveboard_embedding">New</span> Set <code>isSendNowLiveboardSchedulingEnabled: true</code> to add a "Send now" test email to the schedule modal. Related: <code>Action</code>, <code>HostEvent</code>, and <code>EmbedEvent.SendTestScheduleEmail</code>. The host event payload is <code>{ sendToSelf: boolean }</code>; the embed event payload is <code>{ liveboardId, sendToSelf }</code> (<code>sendToSelf: false</code> sends to all recipients) <a class="src" href="https://developers.thoughtspot.com/docs/Enumeration_HostEvent#_sendtestscheduleemail">docs</a>. The changelog marks it as a new feature in 1.48 and does not label it GA. Use it in QA so testers do not wait for the next cron tick.</p>
 <pre class="code" data-lang="js" data-title="Send a test schedule email"><code>liveboardEmbed.trigger(HostEvent.SendTestScheduleEmail, { sendToSelf: true });
 // requires isSendNowLiveboardSchedulingEnabled: true on the embed</code></pre>
-    <p><strong>Webhooks.</strong> To receive scheduled output in your own system, create a webhook with <code>POST /webhooks/create</code>. The only event today is <code>LIVEBOARD_SCHEDULE</code>. Auth options: API_KEY, BASIC_AUTH, BEARER_TOKEN, OAUTH2. Add <code>signature_verification</code> (HMAC_SHA256) and verify it. You can set <code>storage_destination</code> to AWS_S3 (26.3.0.cl) or GCP_GCS (26.7.0.cl) so files land in your bucket, plus <code>additional_headers</code> (26.4.0.cl) and <code>status</code> (ENABLED or DISABLED, 26.7.0.cl). The update endpoint (<code>/webhooks/{id}/update</code>) also takes <code>reset_options</code> (26.7.0.cl) to clear the authentication, signature, or storage config. It needs ADMINISTRATION or DEVELOPER (or <code>CAN_MANAGE_WEBHOOKS</code> under RBAC) <a class="src" href="https://developers.thoughtspot.com/docs/webhooks-lb-schedule#_request_parameters">docs</a>. Webhooks are Org-scoped, and the UI docs say only one webhook can be created per Org <a class="src" href="https://developers.thoughtspot.com/docs/webhooks-ui#_creating_a_webhook_connection">docs</a>.</p>
+    <p><strong>Webhooks.</strong> To receive scheduled output in your own system, create a webhook with <code>POST /webhooks/create</code>. The only event today is <code>LIVEBOARD_SCHEDULE</code>. Auth options: API_KEY, BASIC_AUTH, BEARER_TOKEN, OAUTH2. Add <code>signature_verification</code> (HMAC_SHA256) and verify it. You can set <code>storage_destination</code> to AWS_S3 (26.3.0.cl) or GCP_GCS (26.7.0.cl) so files land in your bucket, plus <code>additional_headers</code> (26.4.0.cl) and <code>status</code> (ENABLED or DISABLED, 26.7.0.cl). The update endpoint (<code>/webhooks/{id}/update</code>) also takes <code>reset_options</code> (26.7.0.cl) to clear the authentication, signature, or storage config. It needs ADMINISTRATION or DEVELOPER (or <code>CAN_MANAGE_WEBHOOKS</code> under RBAC) <a class="src" href="https://developers.thoughtspot.com/docs/webhooks-lb-schedule#_request_parameters">docs</a>. Webhooks are Org-scoped, and the UI docs say only one webhook can be created per Org <a class="src" href="https://developers.thoughtspot.com/docs/webhooks-ui#_creating_a_webhook_connection">docs</a>. To run the schedule yourself, see <a href="#scheduled-exports">Scheduled report exports</a>.</p>
   </div></details>
 
   <details class="deeper"><summary>Go deeper: do's and don'ts <small>about 1 min</small></summary><div class="deeper-body">
@@ -3662,6 +3675,196 @@ spotter.trigger(HostEvent.ResetSpotterConversation);</code></pre>
         <li>Do not create new minute-level schedules; the deprecation notice says they are no longer accepted.</li>
         <li>Do not assume the PNG export covers all tabs.</li>
         <li>Do not rely on hiding the download button to block exports.</li>
+      </ul></div>
+    </div>
+  </div></details>
+</section>
+
+<!-- ===== 51-scheduled-exports.html ===== -->
+<section class="sec" id="scheduled-exports" data-chapter="ch-ai" data-nav="Scheduled report exports"
+         data-verified="2026-10-15" data-scenarios="saas internal regulated">
+  <header class="sec-head">
+    <span class="num">0</span>
+    <h2>Scheduled and recurring report exports</h2>
+    <p class="sec-lede">Reports that go out on a timer or an event. Decide who runs the clock, and whose data each file may contain.</p>
+  </header>
+
+  <div class="strip">
+    <div class="strip-step b"><span class="n">1</span><b>Definition</b><span>Stored once per report: Liveboard, format, filter bindings, recipients.</span></div><div class="strip-arrow">&rarr;</div>
+    <div class="strip-step a"><span class="n">2</span><b>Trigger</b><span>A cron or an event. Your code turns variables like "latest close" into concrete values.</span></div><div class="strip-arrow">&rarr;</div>
+    <div class="strip-step c"><span class="n">3</span><b>Token</b><span>ThoughtSpot call 1: the identity the file is rendered as.</span></div><div class="strip-arrow">&rarr;</div>
+    <div class="strip-step d"><span class="n">4</span><b>Export</b><span>ThoughtSpot call 2: <code>report/liveboard</code> returns the file.</span></div><div class="strip-arrow">&rarr;</div>
+    <div class="strip-step b"><span class="n">5</span><b>Deliver</b><span>Name it, store it, send it. All yours.</span></div>
+  </div>
+  <p class="takeaway">With your own scheduler, <b>ThoughtSpot only renders the file</b>. Steps 1, 2 and 5 are yours, and so is the choice of whose identity step 3 uses. The built-in schedule is the lower-effort option when its fixed content is enough. <a class="src" href="https://developers.thoughtspot.com/docs/report-apis">docs</a></p>
+
+  <h3 id="scheduled-exports-pick">Which model fits you?</h3>
+  <div class="wizard"><div class="wz-title">Which scheduling model fits you?</div>
+  <script type="application/json">{"start":"q1","nodes":{"q1":{"q":"Does each run need values only your app knows?","options":[{"label":"Yes: per-customer dates, events, computed values","next":"q3"},{"label":"No: same content every run","next":"q2"}]},"q2":{"q":"Who receives the file?","options":[{"label":"People: ThoughtSpot users or plain emails","next":"r_builtin"},{"label":"A system: bucket, SFTP, warehouse","next":"r_hook"}]},"q3":{"q":"Who is each report for?","options":[{"label":"One user, their own data","next":"r_user"},{"label":"One tenant, shared by its users","next":"r_tenant"},{"label":"Everyone, no row-level rules","next":"r_all"}]},"r_builtin":{"result":"Best fit: ThoughtSpot's built-in Liveboard schedule","html":"<p>ThoughtSpot runs the cron and sends the email; you call <code>schedules/create</code>. <b>Alternative:</b> your own scheduler. <b>What changes the answer:</b> the create request has no filter, parameter or event-trigger field, and the docs do not say whose row-level security a recipient's copy uses. Test that before relying on it. <a class='src' href='https://developers.thoughtspot.com/docs/rest-apiv2-reference#_schedules'>docs</a></p>"},"r_hook":{"result":"Best fit: built-in schedule plus a webhook","html":"<p>The schedule fires on ThoughtSpot's clock and a webhook (or a bucket via <code>storage_destination</code>) hands the file to your pipeline. <b>Alternative:</b> your own scheduler with a direct report call. <b>What changes the answer:</b> only one webhook per Org, and still no per-run values. <a class='src' href='https://developers.thoughtspot.com/docs/webhooks-lb-schedule'>docs</a></p>"},"r_user":{"result":"Best fit: one job per user, token minted for that user","html":"<p>Each file carries exactly that user's rows. <b>Alternative:</b> a tenant-level file, if every user in the tenant has the same access. <b>What changes the answer:</b> job count (users x reports) and the load it puts on your queue. <a class='src' href='https://developers.thoughtspot.com/docs/api-authv2#_token_based_authentication'>docs</a></p>"},"r_tenant":{"result":"Best fit: one job per tenant, with a shared-access token","html":"<p>One file per tenant, fewer jobs. <b>Alternative:</b> per user. <b>What changes the answer:</b> if users in one tenant differ in row-level access, a shared file shows some of them rows they should not see. The token must reflect the access you intend the whole tenant to have. <a class='src' href='https://developers.thoughtspot.com/docs/api-authv2#_token_based_authentication'>docs</a></p>"},"r_all":{"result":"Best fit: one job for all users (only without row-level data)","html":"<p>Cheapest to run. <b>Alternative:</b> per tenant. <b>What changes the answer:</b> any row-level security rule or ABAC variable on the underlying tables makes a shared file unsafe. Runtime filters do not substitute, because they are not a security feature. <a class='src' href='https://developers.thoughtspot.com/docs/runtime-filters#_overview'>docs</a></p>"}}}</script></div>
+
+  <div class="quiz"><p class="q">The Liveboard has a saved filter on Region. Your scheduler sends <code>runtime_filter</code> with Region = East. What do you get?</p><div class="opts">
+    <button>The saved filter is replaced by East</button>
+    <button data-correct>An error; send Region through <code>override_filters</code></button>
+    <button>A file with both filters ANDed</button></div>
+    <p class="why">The docs say overriding existing filter values with runtime filters on a Liveboard export results in an error. <code>override_filters</code> is the parameter meant to replace a filter on the same column. <a class="src" href="https://developers.thoughtspot.com/docs/report-apis">docs</a></p></div>
+
+  <div class="scn" data-scenario="saas"><p><strong>Multi-tenant SaaS:</strong> a fan-out of one job per tenant or per user is an auth question first. The token you mint decides the rows, so test with two tenants before the first send.</p></div>
+  <div class="scn" data-scenario="regulated"><p><strong>Regulated:</strong> a file you store is a copy outside ThoughtSpot's controls. Decide retention, access to the link and encryption at rest before you decide the format.</p></div>
+
+  <details class="deeper"><summary>Go deeper: built-in schedule or your own scheduler <small>about 3 min</small></summary><div class="deeper-body">
+    <p>The built-in schedule is created with <code>POST /api/rest/2.0/schedules/create</code>. Its request has a cron <code>frequency</code>, a <code>time_zone</code>, <code>recipient_details</code> (ThoughtSpot <code>principals</code> plus plain <code>emails</code>), <code>file_format</code> (CSV, PDF, XLSX), optional <code>liveboard_options</code> (visualizations), <code>pdf_options</code> and a <code>personalised_view_id</code>. It has no filter, parameter or event-trigger field <a class="src" href="https://developers.thoughtspot.com/docs/rest-apiv2-reference#_schedules">docs</a>. Plain emails mean that "our users have no ThoughtSpot account" is not by itself a reason to leave it.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Option</th><th>When it fits</th><th>What it costs</th><th>Risk</th><th>What you give up</th></tr></thead>
+      <tbody>
+        <tr><td>Built-in schedule, email</td><td>Fixed content to known readers, such as an internal digest</td><td>Lowest: one API call per schedule</td><td>Files leave your custody; whose RLS a recipient's copy uses is not stated in the docs searched</td><td>Per-run values, event triggers, your own delivery</td></tr>
+        <tr><td>Built-in schedule, webhook or bucket</td><td>A pipeline must own the file (archive, SFTP push, warehouse load)</td><td>An endpoint with HMAC checks, or an S3 or GCS bucket</td><td>Your storage becomes the exposure; one webhook per Org</td><td>Per-run values; the schedule still decides content</td></tr>
+        <tr><td>Your own scheduler</td><td>Per-run filters, event triggers, per-customer bindings, your own delivery and audit</td><td>A scheduler, a worker, a queue, token minting, storage</td><td>A shared token can bypass per-user RLS; you own retries and failures</td><td>ThoughtSpot's schedule UI, its run history and its email</td></tr>
+      </tbody></table></div>
+    <ul>
+      <li><strong>Frequency.</strong> Minute-level schedules are no longer accepted from 26.8.0.cl and existing ones become hourly; sub-hourly needs Support <a class="src" href="https://developers.thoughtspot.com/docs/deprecated-features">docs</a>. Your own scheduler is not bound by that, but every run is still a REST call.</li>
+      <li><strong>Content limits.</strong> A CSV schedule on a Liveboard that mixes charts and tables fails; use PDF or XLSX <a class="src" href="https://developers.thoughtspot.com/docs/rest-apiv2-reference#_schedules">docs</a>.</li>
+      <li><strong>Run history.</strong> <code>schedules/search</code> can return recent runs with <code>include_history_runs</code> <a class="src" href="https://developers.thoughtspot.com/docs/rest-apiv2-reference#_schedules">docs</a>. With your own scheduler, run history is yours to build.</li>
+      <li><strong>Webhook payload.</strong> A multipart request with the file and a JSON payload; <code>msgUniqueId</code> can be used for deduplication <a class="src" href="https://developers.thoughtspot.com/docs/webhooks-lb-payload#_liveboardscheduledata">docs</a>. Details of webhooks and storage destinations are in <a href="#exports">Exports, scheduling, and delivery</a>.</li>
+    </ul>
+  </div></details>
+
+  <details class="deeper"><summary>Go deeper: who is the report for <small>about 3 min</small></summary><div class="deeper-body">
+    <p>With your own scheduler, the token your worker uses decides which rows end up in the file. Use <code>auth/token/custom</code> when your row-level security depends on variable values carried in the token (ABAC via RLS). If your RLS comes only from user properties and group membership, the docs list the full token for that case <a class="src" href="https://developers.thoughtspot.com/docs/api-authv2#_token_based_authentication">docs</a>. Either way the secret key stays on the server.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Audience</th><th>When it fits</th><th>What it costs</th><th>Risk</th><th>What you give up</th></tr></thead>
+      <tbody>
+        <tr><td><b>One export per user schedule</b></td><td>Each person's file must show only their rows</td><td>Jobs grow with users x reports; one token per run</td><td>Lowest data risk; highest load and the most schedules to inventory</td><td>Run volume</td></tr>
+        <tr><td><b>One export per tenant, shared by its users</b></td><td>Everyone in a tenant is entitled to the same rows</td><td>Jobs grow with tenants; a token that reflects the shared access</td><td>If users in a tenant differ in access, someone sees too much</td><td>Per-user precision</td></tr>
+        <tr><td><b>One export for all users</b></td><td>No row-level security applies to the data</td><td>Lowest</td><td>A later RLS rule on the table silently changes who should see what, and the shared file ignores it</td><td>Any per-audience difference</td></tr>
+      </tbody></table></div>
+    <div class="callout warn"><div><strong>Token values persist on the user</strong><p>With <code>variable_values</code>, the values are written to the user's profile when the token is created, and later sessions keep using them <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_create_an_abac_token_request_with_variable_attributes">docs</a>. Our reading: if parallel workers mint tokens for the same ThoughtSpot user with different tenants' values, one run can see another's values. Give each audience its own user, or serialize those runs, and test with two tenants in parallel.</p></div></div>
+    <ul>
+      <li>The export needs at least view access to the Liveboard, plus the download privilege for the format (<code>DATADOWNLOADING</code>, or <code>CAN_DOWNLOAD_DETAILED_DATA</code> for CSV and XLSX and <code>CAN_DOWNLOAD_VISUALS</code> for PDF and PNG under granular RBAC) <a class="src" href="https://developers.thoughtspot.com/docs/report-apis">docs</a>.</li>
+      <li>In a multi-Org setup the custom token takes <code>org_identifier</code> to scope the Org <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_create_an_abac_token_request_with_variable_attributes">docs</a>. Mint per Org, and see <a href="#identity">Who each person becomes</a>.</li>
+      <li>Admins bypass RLS (see <a href="#data-security">Data security</a>), so avoid running a customer-facing report with an admin identity.</li>
+    </ul>
+  </div></details>
+
+  <details class="deeper"><summary>Go deeper: use cases and the model each one tends to fit <small>about 3 min</small></summary><div class="deeper-body">
+    <p>This table is our guidance, not doc-stated. The docs describe the endpoints; the mapping to a business pattern is a judgement you can overrule.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Use case</th><th>Often fits</th><th>Format and options</th><th>Watch for</th></tr></thead>
+      <tbody>
+        <tr><td>Customer-facing statements</td><td>Your scheduler, per user or per tenant</td><td>PDF. <code>pdf_options</code> offers cover page, custom logo, page numbers, footer text, orientation; <code>regional_settings</code> sets currency and locale <a class="src" href="https://developers.thoughtspot.com/docs/report-apis">docs</a></td><td>Files leave your control once sent; link access, retention and naming are yours</td></tr>
+        <tr><td>Event-triggered (month-end close)</td><td>Your scheduler</td><td>Any. Resolve "latest close date" to a concrete value when the event fires</td><td>The built-in schedule takes a cron only, so an event needs your own trigger</td></tr>
+        <tr><td>Bulk multi-tenant fan-out</td><td>Your scheduler with a queue</td><td>Same Liveboard, one token and one set of bindings per tenant</td><td>One event hitting every tenant at once; see rate limits in <a href="#operate">Running it in production</a></td></tr>
+        <tr><td>Data feeds (CSV or XLSX to SFTP or a warehouse)</td><td>Built-in schedule plus webhook, or your scheduler</td><td>Liveboard CSV returns a ZIP of per-visualization files and XLSX one sheet each, max 255 (26.2.0.cl+). For raw rows, the Data APIs return JSON, capped at 100,000 rows per call <a class="src" href="https://developers.thoughtspot.com/docs/report-apis">docs</a></td><td>Export is for reading; large feeds need paging with an explicit <code>record_size</code>, never <code>-1</code> <a class="src" href="https://developers.thoughtspot.com/docs/fetch-data-and-report-apis">docs</a></td></tr>
+        <tr><td>Internal executive digest</td><td>Built-in schedule to a group</td><td>PDF</td><td>Check what each recipient's copy shows if RLS applies</td></tr>
+        <tr><td>Anything sub-hourly</td><td>Support request, or your scheduler</td><td>Any</td><td>Minute-level schedules were deprecated at 26.8.0.cl</td></tr>
+      </tbody></table></div>
+  </div></details>
+
+  <h3 id="scheduled-exports-saved-filters">What will this schedule run with?</h3>
+  <div class="strip">
+    <div class="strip-step b"><span class="n">1</span><b>Read</b><span>The Liveboard's saved filters, from TML or a metadata search.</span></div><div class="strip-arrow">&rarr;</div>
+    <div class="strip-step a"><span class="n">2</span><b>Match</b><span>Each saved filter column against your bindings.</span></div><div class="strip-arrow">&rarr;</div>
+    <div class="strip-step c"><span class="n">3</span><b>Route</b><span>Saved column: <code>override_filters</code>. Otherwise <code>runtime_filter</code>.</span></div><div class="strip-arrow">&rarr;</div>
+    <div class="strip-step d"><span class="n">4</span><b>Show</b><span>Tell the schedule author what the file will contain.</span></div>
+  </div>
+  <p class="takeaway">The docs searched have <b>no endpoint that simply returns a Liveboard's saved filters</b>. There are two readable sources (TML export and a Liveboard metadata search in the V2 format), so your scheduler reads one of them and decides how fresh it must be. <a class="src" href="https://developers.thoughtspot.com/docs/rest-apiv2-metadata-search#_response_format_for_liveboards">docs</a></p>
+
+  <details class="deeper"><summary>Go deeper: building the request <small>about 4 min</small></summary><div class="deeper-body">
+    <p><code>POST /api/rest/2.0/report/liveboard</code> accepts three override mechanisms. Which one a binding uses depends on whether the column already has a Liveboard filter <a class="src" href="https://developers.thoughtspot.com/docs/report-apis#_override_filters">docs</a>.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Binding</th><th>Goes into</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td>Column <b>with</b> a saved Liveboard filter</td><td><code>override_filters[]</code> <span class="badge new" data-feature="Liveboard report override_filters" data-ver="TS 10.8.0.cl" data-src="https://developers.thoughtspot.com/docs/rest-v2-changelog#_report_apis">New</span></td><td>Replaces filters on the same column</td></tr>
+        <tr><td>Column <b>without</b> a saved Liveboard filter</td><td><code>runtime_filter</code></td><td>Adds a condition</td></tr>
+        <tr><td>A Parameter</td><td><code>runtime_param_override</code></td><td>Sets the Parameter value</td></tr>
+        <tr><td>"All", column without a saved filter</td><td>Leave it out</td><td>No condition</td></tr>
+        <tr><td>"All", column with a saved filter</td><td><em>Not documented</em></td><td>See the warning below</td></tr>
+      </tbody></table></div>
+    <div class="callout warn"><div><strong>Clearing a saved filter is not documented</strong><p>We found no documented way to turn a saved Liveboard filter into "all" in an export. Test it on your instance, or remove the saved filter from the Liveboard, or export an Answer instead. Treat it as unverified until you have run it.</p></div></div>
+    <pre class="code" data-lang="text" data-title="Per-run export with a filter override"><code>POST /api/rest/2.0/report/liveboard
+Authorization: Bearer &lt;token minted for this audience&gt;
+{
+  "metadata_identifier": "&lt;liveboard-guid&gt;",
+  "file_format": "PDF",
+  "override_filters": [
+    { "column_name": "Close Date",
+      "date_filter": { "type": "EXACT_DATE", "op": "EQ", "epoch": 1759622400 } },
+    { "column_name": "Close Type",
+      "generic_filter": { "op": "IN", "values": ["Regular"] } }
+  ],
+  "runtime_filter": { "col1": "Department", "op1": "EQ", "val1": "Sales" },
+  "runtime_param_override": { "param1": "Currency", "paramVal1": "USD" }
+}</code></pre>
+    <ul>
+      <li><strong>Dates.</strong> Send one filter object per date column; two on the same date column return an error. Epoch values are numbers, not strings, and the epoch is seconds since 1 Jan 1970 UTC, so convert time zones in your code <a class="src" href="https://developers.thoughtspot.com/docs/filters-overview#_override_filters">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/runtime-filters#_overview">docs</a>. Supported types include <code>EXACT_DATE</code>, <code>EXACT_DATE_RANGE</code> (<code>BW_INC</code>), <code>TODAY</code>, <code>YESTERDAY</code> and <code>LAST_N_PERIOD</code> with <code>datePeriod</code> and <code>number</code>.</li>
+      <li><strong>Column names.</strong> Use the display name; for duplicates use <code>WORKSHEET_NAME::COLUMN_NAME</code>. GUIDs are not supported there <a class="src" href="https://developers.thoughtspot.com/docs/filters-overview#_override_filters">docs</a>.</li>
+      <li><strong>The file.</strong> The Liveboard response has no extension, so add <code>.pdf</code>, <code>.xlsx</code>, <code>.png</code> or <code>.csv</code> yourself. A multi-visualization CSV is a ZIP (26.2.0.cl+) <a class="src" href="https://developers.thoughtspot.com/docs/report-apis">docs</a>. Always pass <code>file_format</code>, because the docs disagree on the default (see <a href="#exports">Exports</a>).</li>
+      <li><strong>Where to put filters.</strong> Our guidance: keep every filter your scheduler controls at Liveboard level and test that a filter saved inside a visualization is not overridden; the docs searched do not state how that case behaves.</li>
+      <li><strong>Load.</strong> The call returns the file in the response, so a worker holds a connection for each export. Our guidance: queue the work, cap concurrency and retry with backoff, especially when one event hits many tenants. REST rate limits are covered in <a href="#operate">Running it in production</a>.</li>
+      <li><strong>Fallback.</strong> If a Liveboard fights your filters, <code>POST /api/rest/2.0/report/answer</code> exports an Answer with <code>runtime_filter</code> and <code>runtime_param_override</code>, and names the file after the Answer title <a class="src" href="https://developers.thoughtspot.com/docs/report-apis#_answer_report_api">docs</a>.</li>
+    </ul>
+    <div class="callout bad"><div><strong>Runtime filters and overrides are not security</strong><p>They narrow what is shown. Who may see which rows is decided by row-level security on the token <a class="src" href="https://developers.thoughtspot.com/docs/runtime-filters#_overview">docs</a>.</p></div></div>
+  </div></details>
+
+  <details class="deeper"><summary>Go deeper: how a scheduler finds the saved filters <small>about 5 min</small></summary><div class="deeper-body">
+    <p>Four places could tell you what is already filtered. Only the first two read the <em>saved</em> state without a browser.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Source</th><th>What you get</th><th>What it costs</th><th>Caveat</th></tr></thead>
+      <tbody>
+        <tr><td><b>TML export</b><br><code>POST /api/rest/2.0/metadata/tml/export</code> <a class="src" href="https://developers.thoughtspot.com/docs/tml#_tml_import_and_export_via_rest_api">docs</a></td><td>The Liveboard definition as JSON (default) or YAML in <code>edoc_format</code>. Request: <code>metadata: [{"type": "LIVEBOARD", "identifier": "&lt;guid&gt;"}]</code>. The 200 response is an array of objects, one per exported item <a class="src" href="https://developers.thoughtspot.com/docs/rest-apiv2-reference#_metadata">docs</a></td><td>Needs <code>DATADOWNLOADING</code> and at least view access. You parse TML.</td><td><b>Unverified:</b> the developer docs I searched do not list the Liveboard TML <code>filters</code> key names (column, operator, values, mandatory flags). Export one of your own Liveboards and read the keys before you code against them. For YAML, the API reference notes a known issue that needs manual formatting.</td></tr>
+        <tr><td><b>Metadata search, V2 format</b> <span class="badge ga" data-feature="metadata/search liveboard_response_version V2" data-ver="TS 10.11.0.cl" data-src="https://developers.thoughtspot.com/docs/rest-apiv2-metadata-search#_response_format_for_liveboards">GA</span><br><code>POST /api/rest/2.0/metadata/search</code></td><td>With <code>include_details: true</code> and <code>liveboard_response_version: "V2"</code>, the detail has a top-level <code>pinboardFilter</code> with <code>filterGroups</code>, <code>filterRows</code> and <code>logicalColumnOrder</code> <a class="src" href="https://developers.thoughtspot.com/docs/rest-apiv2-metadata-search#_v1_and_v2_liveboard_response_comparison">docs</a>. In the docs' example each row has <code>predicate[].op</code>, selected <code>value</code> entries and <code>negate</code>.</td><td>One call, no TML parsing. You map column GUIDs to display names yourself.</td><td>Filters are keyed by the column's GUID (<code>logical_column_id</code>), not its name, and <code>override_filters</code> wants names. The example also shows <code>modified</code> and <code>generationNum</code> on the header, which may help change detection (our reading, not doc-stated).</td></tr>
+        <tr><td><b>SDK <code>HostEvent.GetFilters</code></b></td><td>The filters currently applied on an embedded Liveboard: <code>column</code>, <code>operator</code>, <code>values</code>, plus <code>applicable_viz</code> (ALL or SPECIFIC) and <code>linking</code>. The docs say it covers Liveboard and runtime filters <a class="src" href="https://developers.thoughtspot.com/docs/host-events#_hostevent_getfilters">docs</a></td><td>A rendered embed, so it suits the schedule editor in your UI, not a headless worker.</td><td>It reports the live session. Our reading: it can include a user's unsaved changes, so it is not a guaranteed copy of the saved state.</td></tr>
+        <tr><td><b>SDK <code>EmbedEvent.FilterChanged</code></b></td><td>An event when a user changes a filter, with filter type and name, column name and ID, and runtime filter details <a class="src" href="https://developers.thoughtspot.com/docs/Enumeration_EmbedEvent#_filterchanged">docs</a></td><td>Low, but only in a browser session.</td><td>An event stream, not a read of saved state, and it fires on session changes, not on saves.</td></tr>
+      </tbody></table></div>
+    <p><strong>What does not exist (in the docs searched).</strong> No dedicated "get saved filters" endpoint. The Liveboard data response (<code>metadata/liveboard/data</code>) holds columns and rows, not filter definitions. <code>report/liveboard</code> returns a file. A PDF can include a page listing the applied filters (<code>pdf_options.include_filter_page</code>, default true), which a person can read but a program cannot use. We found no webhook or event that says "this Liveboard's filters changed". Treat a miss as "not found", not "proven absent", and re-check after each release.</p>
+    <div class="callout warn"><div><strong>Test the opposite case too</strong><p>The docs say <code>override_filters</code> replaces filters on the same column <a class="src" href="https://developers.thoughtspot.com/docs/filters-overview#_override_filters">docs</a>. They do not say what it does on a column with no saved filter. If a proof of concept shows it works there, one rule ("always <code>override_filters</code>") removes the need to read saved filters at all. That is a test to run on your instance, not a documented behaviour.</p></div></div>
+    <h4>The built-in schedule</h4>
+    <ul>
+      <li><strong>No filter field.</strong> <code>schedules/create</code> has no filter field, as covered above. The one handle on content is <code>personalised_view_id</code>, accepted on create and update since 10.10.0.cl <span class="badge ga" data-feature="schedules personalised_view_id" data-ver="TS 10.10.0.cl" data-src="https://developers.thoughtspot.com/docs/rest-v2-changelog#_schedule_api">GA</span> <a class="src" href="https://developers.thoughtspot.com/docs/rest-v2-changelog#_schedule_api">docs</a>.</li>
+      <li><strong>What a view is.</strong> A saved configuration of a Liveboard that includes specific filter selections <a class="src" href="https://developers.thoughtspot.com/docs/Interface_LiveboardViewConfig#_personalizedviewid">docs</a>. List a Liveboard's views with <code>metadata/search</code>, <code>include_details</code> and <code>include_personalised_views</code>. You get <code>view_guid</code>, <code>view_name</code>, author and <code>is_public</code>, but <b>not the view's filter values</b> <a class="src" href="https://developers.thoughtspot.com/docs/rest-apiv2-metadata-search#_include_personalised_views">docs</a>. The one place the docs show a view's filters is the TML for views (<code>view_filters</code> with column, oper and values), and that page marks it Early Access <a class="src" href="https://developers.thoughtspot.com/docs/tml">docs</a>.</li>
+      <li><strong>What the recipient copy contains.</strong> Not documented in what I found, including which row-level rules apply (see the open question in the model comparison above). What is documented: a schedule PDF can carry a filter page, and a webhook delivery names the view in <code>viewInfo</code> (<code>viewId</code>, <code>viewName</code>) and echoes the export request, including <code>personalised_view_id</code> and <code>include_filter_page</code> <a class="src" href="https://developers.thoughtspot.com/docs/webhooks-lb-payload#_payload_for_other_webhook_endpoints">docs</a>. It does not list filter values.</li>
+      <li><strong>Where an admin looks.</strong> The developer docs do not cover how an admin sees a schedule's effective filters in the product UI. Check the product documentation, and test with a view that has a filter.</li>
+    </ul>
+  </div></details>
+
+  <details class="deeper"><summary>Go deeper: keeping bindings fresh, and showing them to the author <small>about 4 min</small></summary><div class="deeper-body">
+    <p>A saved filter can change after a report is registered. Nobody tells your scheduler. These options are our guidance, because the docs are silent on this problem.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Option</th><th>When it fits</th><th>What it costs</th><th>Risk</th><th>What you give up</th></tr></thead>
+      <tbody>
+        <tr><td>Read once at registration</td><td>Liveboards that rarely change, few reports</td><td>Lowest: one call per report</td><td>A filter added later makes <code>runtime_filter</code> fail (the docs say overriding a saved filter that way returns an error)</td><td>Safety after the first day</td></tr>
+        <tr><td>Re-read before every run and compare</td><td>Reports that must not fail or drift silently</td><td>One extra call per run; storing the last snapshot</td><td>Low. A diff can pause the run and alert the owner</td><td>Some run time and REST budget, which matters in a fan-out</td></tr>
+        <tr><td>Re-read on a schedule (for example daily) and flag drift</td><td>Many reports on a few Liveboards</td><td>Calls grow with Liveboards, not runs</td><td>A window between a change and the next check</td><td>Immediate detection</td></tr>
+        <tr><td>Re-read when the Liveboard changes</td><td>Would be ideal</td><td>Not available in the docs searched: no change event or webhook found</td><td>Do not design around it until it is documented</td><td>Not applicable</td></tr>
+        <tr><td>Always <code>override_filters</code> (if your POC proves it)</td><td>You control all the filters in the report anyway</td><td>Lowest: no reading, no diff</td><td>Behaviour on unfiltered columns is undocumented; verify per release</td><td>Doc-backed ground</td></tr>
+      </tbody></table></div>
+    <p>A cheap guard for any option: when the export errors on a filter conflict, stop that report, alert its owner and keep the other reports running.</p>
+    <h4>A UI idea: show saved filters next to the bindings</h4>
+    <p>In the screen where someone creates a report, load the Liveboard's saved filters and put each binding beside the one it will replace. The author sees, before saving, what the file will run with. This is an invented example (dummy ids, <code>example.com</code> recipients, invented columns):</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th colspan="4">Report: Quarterly Revenue (Liveboard 00000000-0000-4000-8000-000000000001) &middot; to finance@example.com</th></tr>
+      <tr><th>Column</th><th>Saved on the Liveboard</th><th>Your binding</th><th>Sent as</th></tr></thead>
+      <tbody>
+        <tr><td>Region</td><td>IN West, East</td><td>= East</td><td><code>override_filters</code> (replaces)</td></tr>
+        <tr><td>Order Date</td><td>Last 3 months</td><td>Latest close month</td><td><code>override_filters</code> (date, one object)</td></tr>
+        <tr><td>Segment</td><td><em>none</em></td><td>= Retail</td><td><code>runtime_filter</code> (adds)</td></tr>
+        <tr><td>Channel</td><td>IN Web, Store</td><td><em>no binding</em></td><td>Saved filter stays. Show a notice: "Runs with Web, Store"</td></tr>
+      </tbody></table></div>
+    <p>Fill the "Saved on the Liveboard" column from one of the sources above, and show its read time ("read 2026-10-15 09:00"). A column that is saved on the Liveboard but missing from your bindings is the row people most often want to see.</p>
+  </div></details>
+
+  <details class="deeper"><summary>Go deeper: do's and don'ts <small>about 1 min</small></summary><div class="deeper-body">
+    <div class="rules">
+      <div class="rule do"><ul>
+        <li>Mint the token on your server, for the audience the file is for.</li>
+        <li>Resolve variables such as "today" to UTC epoch numbers before the call.</li>
+        <li>Store the definition (filters, parameters, recipients) in your own database.</li>
+        <li>Inventory your schedules, built-in and your own, and review them on a cadence.</li>
+      </ul></div>
+      <div class="rule dont"><ul>
+        <li>Do not use <code>runtime_filter</code> on a column that already has a Liveboard filter.</li>
+        <li>Do not share one file across users whose row-level access differs.</li>
+        <li>Do not run customer reports under an admin identity.</li>
+        <li>Do not create new minute-level schedules.</li>
       </ul></div>
     </div>
   </div></details>
@@ -4120,6 +4323,12 @@ await embed.render();</code></pre>
       <li data-id="prerender"><label><input type="checkbox"><span><b>If you pre-render:</b> Pre-rendered embeds use the same <code>liveboardId</code> and layout flags as the real embed, via <code>preRenderConfig</code>. <a href="#performance">Why</a></span></label></li>
       <li data-id="lazy"><label><input type="checkbox"><span><b>If you use <code>fullHeight</code>:</b> Tall pages with <code>fullHeight</code> use <code>lazyLoadingForFullHeight</code> (spelled exactly that way; on by default with <code>fullHeight</code> from SDK 1.52.0 per the changelog; the property reference still says false, so the docs conflict). <a href="#performance">Why</a></span></label></li>
       <li data-id="queue"><label><input type="checkbox"><span><b>If you embed several objects on one page:</b> Pages with several embeds set <code>queueMultiRenders</code>. <a href="#performance">Why</a></span></label></li>
+      <li class="grp">Scheduled exports</li>
+      <li data-id="sched-audience"><label><input type="checkbox"><span><b>If you run scheduled exports:</b> The audience of each report (one user, one tenant, or everyone) is decided, the token matches it, and a two-tenant test shows no cross-tenant rows. <a href="#scheduled-exports">Why</a></span></label></li>
+      <li data-id="sched-dates"><label><input type="checkbox"><span><b>If you run your own scheduler:</b> Date bindings are resolved to numeric UTC epochs, and filters on columns that already have a Liveboard filter use <code>override_filters</code>. <a href="#scheduled-exports">Why</a></span></label></li>
+      <li data-id="sched-queue"><label><input type="checkbox"><span><b>If you run your own scheduler:</b> Exports go through a queue with a concurrency limit, retries with backoff and handling for HTTP 429 (our guidance). <a href="#scheduled-exports">Why</a></span></label></li>
+      <li data-id="sched-filters"><label><input type="checkbox"><span><b>If you run your own scheduler:</b> You know how saved filters are read (TML or a V2 metadata search), how often they are refreshed, and what happens when one appears after a report was registered (our guidance). <a href="#scheduled-exports">Why</a></span></label></li>
+      <li data-id="sched-inventory"><label><input type="checkbox"><span><b>Recommended:</b> Every schedule (built-in and your own) has an owner and is reviewed on a cadence, and stored files have an access and retention rule. <a href="#scheduled-exports">Why</a></span></label></li>
       <li class="grp">Observability &amp; support</li>
       <li data-id="error-log"><label><input type="checkbox"><span><b>Recommended:</b> Embed errors, auth failures and token-mint failures go to your logging with the user and Org (our guidance; the docs do not prescribe a monitoring design). <a href="#lifecycle">Why</a></span></label></li>
       <li data-id="runbook"><label><input type="checkbox"><span><b>Recommended:</b> A runbook covers blank embed, login loop, third-party cookie block and 'Refused to frame'. <a href="#hardening">Why</a></span></label></li>
