@@ -292,14 +292,15 @@ async function runAnswerPickerProbe(browser) {
 // the run before the gate can print its verdict (see the S13 note above).
 async function runGuidEntryProbe(browser) {
   const GUID = 's4s4s4s4-1111-2222-3333-444444444444';
-  const PAYLOAD = '<img src=x onerror="window.__s4pwn=1">';
+  const PAYLOAD = '<img/src=x/onerror=window.__s4pwn=1>';   // no whitespace: must be id-shaped to get a commit row
   const hash = Buffer.from(JSON.stringify({ section: 'viz' }), 'utf8').toString('base64url');
   const probe = await browser.newPage();
   const probeErrors = [];
   probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
   const fail = (extra) => ({
     pickerReady: false, panelOpens: false, noCustomRowWhenEmpty: false, noHtmlSink: false,
-    customCommitted: false, rawIdLabelled: false, probeErrors, ...extra,
+    customCommitted: false, rawIdLabelled: false, partialNoRow: false, partialEnterInert: false,
+    probeErrors, ...extra,
   });
   try {
     await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
@@ -332,6 +333,14 @@ async function runGuidEntryProbe(browser) {
       s.value = val;
       s.dispatchEvent(new Event('input', { bubbles: true }));
     }, v);
+    // Partial-name regression (review HIGH): short free text is not id-shaped, so it must offer no
+    // commit row and Enter must not write it to state as if it were a GUID.
+    await typeIn('sales');
+    await sleep(300);
+    const partialNoRow = await probe.evaluate(() => document.querySelector('.sel-item--custom') === null);
+    await probe.keyboard.press('Enter');
+    await sleep(300);
+    const partialEnterInert = await probe.evaluate(() => window.__s4btn()?.textContent.trim() === '— select —');
     await typeIn(PAYLOAD);
     await retryUntil(() => !!document.querySelector('.sel-item--custom strong'));
     const noHtmlSink = await probe.evaluate((val) => {
@@ -345,7 +354,7 @@ async function runGuidEntryProbe(browser) {
     await typeIn(GUID);
     const rowReady = await retryUntil(
       (g) => document.querySelector('.sel-item--custom strong')?.textContent === g, GUID);
-    if (!rowReady) return fail({ pickerReady, panelOpens, noCustomRowWhenEmpty, noHtmlSink });
+    if (!rowReady) return fail({ pickerReady, panelOpens, noCustomRowWhenEmpty, noHtmlSink, partialNoRow, partialEnterInert });
     await probe.evaluate(() => document.querySelector('.sel-item--custom').click());
     const customCommitted = await retryUntil((g) => {
       const txt = document.getElementById('code-view')?.textContent || '';
@@ -356,7 +365,56 @@ async function runGuidEntryProbe(browser) {
     // A value absent from `options` must show as the raw id, not "— select —".
     const rawIdLabelled = await retryUntil(
       (g) => window.__s4btn()?.textContent.trim() === g, GUID);
-    return { pickerReady, panelOpens, noCustomRowWhenEmpty, noHtmlSink, customCommitted, rawIdLabelled, probeErrors };
+    return { pickerReady, panelOpens, noCustomRowWhenEmpty, noHtmlSink, customCommitted, rawIdLabelled, partialNoRow, partialEnterInert, probeErrors };
+  } finally {
+    await probe.close();
+  }
+}
+
+// Liveboard-picker GUID probe (S4 review fixes): committing a typed id in the Liveboard picker used
+// to call loadViz() unconditionally, so while NOT connected it fired a credentialed discovery POST
+// at an unconfirmed (#s=) host, and a typed `constructor` indexed a plain-object vizCache and broke
+// the inspector render. The hash names an unconfirmed host (pendingHostConfirm, not connected).
+//   • committing a GUID via Enter makes ZERO requests to that host, and focus returns to the trigger
+//   • committing `constructor` raises no page error and shows as the picker's raw-id label
+async function runLiveboardGuidProbe(browser) {
+  const HOST = 'https://evil.s4probe.example';
+  const GUID = 's4s4s4s4-aaaa-bbbb-cccc-555555555555';
+  const hash = Buffer.from(JSON.stringify({ section: 'viz', host: HOST }), 'utf8').toString('base64url');
+  const probe = await browser.newPage();
+  const probeErrors = [];
+  const hostHits = [];
+  probe.on('pageerror', (e) => probeErrors.push('PAGEERROR: ' + e.message));
+  await probe.setViewport({ width: 1400, height: 900 });   // desktop layout: the mobile one hides #inspector, and a hidden button cannot take focus
+  probe.on('request', (r) => { if (r.url().startsWith(HOST)) hostHits.push(`${r.method()} ${r.url()}`); });
+  const out = { ready: false, zeroContact: false, focusRestored: false, constructorOk: false, probeErrors, hostHits };
+  try {
+    await probe.goto(`${BASE}/#s=${hash}`, { waitUntil: 'networkidle2', timeout: 30_000 });
+    const btnSel = () => {
+      const fld = [...document.querySelectorAll('#insp-body .fld')]
+        .find((f) => f.querySelector('.fld-lbl')?.textContent.trim() === 'Liveboard');
+      return fld?.querySelector('.sel-btn') || null;
+    };
+    await probe.evaluate((src) => { window.__s4lb = new Function('return (' + src + ')')(); }, btnSel.toString());
+    out.ready = await probe.waitForFunction(() => { const b = window.__s4lb(); return !!b && !b.disabled; },
+      { polling: 300, timeout: 10_000 }).then(() => true, () => false);
+    if (!out.ready) return out;
+    const commit = async (text) => {
+      await probe.evaluate(() => window.__s4lb().click());
+      await probe.waitForSelector('.sel-panel:not([hidden]) .sel-search', { timeout: 5_000 });
+      await probe.type('.sel-panel:not([hidden]) .sel-search', text);
+      await sleep(200);
+      await probe.keyboard.press('Enter');
+      await sleep(800);   // let any (fenced-away) loadViz POST initiate before tallying
+    };
+    await commit(GUID);
+    out.zeroContact = hostHits.length === 0
+      && await probe.evaluate((g) => window.__s4lb()?.textContent.trim() === g, GUID);
+    out.focusRestored = await probe.evaluate(() => document.activeElement === window.__s4lb());
+    await commit('constructor');
+    out.constructorOk = probeErrors.length === 0
+      && await probe.evaluate(() => window.__s4lb()?.textContent.trim() === 'constructor');
+    return out;
   } finally {
     await probe.close();
   }
@@ -1501,10 +1559,22 @@ try {
   console.log(`Probe (S4) — typed HTML rendered inert as text: ${guid.noHtmlSink}`);
   console.log(`Probe (S4) — typed GUID commits and drives SearchEmbed code path: ${guid.customCommitted}`);
   console.log(`Probe (S4) — undiscovered value labelled with its raw id: ${guid.rawIdLabelled}`);
+  console.log(`Probe (S4) — partial name offers no commit row: ${guid.partialNoRow}`);
+  console.log(`Probe (S4) — Enter on a partial name commits nothing: ${guid.partialEnterInert}`);
   console.log(`Probe (S4) — no page errors: ${guid.probeErrors.length === 0}`);
   guid.probeErrors.forEach((e) => console.log('  - probe page:', e));
   const guidOk = guid.pickerReady && guid.panelOpens && guid.noCustomRowWhenEmpty && guid.noHtmlSink
-    && guid.customCommitted && guid.rawIdLabelled && guid.probeErrors.length === 0;
+    && guid.customCommitted && guid.rawIdLabelled && guid.partialNoRow && guid.partialEnterInert
+    && guid.probeErrors.length === 0;
+
+  const lbg = await runLiveboardGuidProbe(browser);
+  console.log(`Probe (S4) — Liveboard picker reachable while disconnected: ${lbg.ready}`);
+  console.log(`Probe (S4) — typed Liveboard GUID makes zero requests to unconfirmed host: ${lbg.zeroContact}`);
+  lbg.hostHits.forEach((u) => console.log('  - request at unconfirmed host:', u));
+  console.log(`Probe (S4) — focus returns to the rebuilt picker after Enter: ${lbg.focusRestored}`);
+  console.log(`Probe (S4) — typing "constructor" commits without error: ${lbg.constructorOk}`);
+  lbg.probeErrors.forEach((e) => console.log('  - probe page:', e));
+  const lbgOk = lbg.ready && lbg.zeroContact && lbg.focusRestored && lbg.constructorOk && lbg.probeErrors.length === 0;
 
   const urlAct = await runUrlActionSchemeProbe(browser);
   console.log(`URL-action scheme probe (S13) — dispatcher installed: ${urlAct.dispatcherReady}`);
@@ -1635,7 +1705,7 @@ try {
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk
     && s3pre.confirmShown && s3pre.noDiscoveryContact && s3pre.noAnyContact
-    && guidOk && urlActOk && dtOk && cfbOk && genOk && flagOvOk && exfilOk && pasteOk && raceOk;
+    && guidOk && lbgOk && urlActOk && dtOk && cfbOk && genOk && flagOvOk && exfilOk && pasteOk && raceOk;
   console.log(ok ? '\nBOOT CHECK: PASS' : '\nBOOT CHECK: FAIL');
 } finally {
   try { await browser?.close(); } catch { /* already gone */ }

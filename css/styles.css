@@ -859,11 +859,11 @@ select.inp { cursor: pointer; }
 .sel-empty { padding: 8px 10px; font-size: 12px; color: var(--text-muted); font-style: italic; }
 /* Manual-GUID entry (allowCustom pickers): the "Use …" commit row, the raw-id button label,
    the dashed "list unavailable, GUID only" button, and the panel's disconnected note. */
-.sel-item--custom { color: var(--accent); border-top: 1px solid var(--border); margin-top: 3px; padding-top: 8px; font-size: 12px; }
-.sel-item--custom:hover { background: var(--accent-soft); }
+.sel-item--custom { color: var(--accent-ink); border-top: 1px solid var(--border); margin-top: 3px; padding-top: 8px; font-size: 12px; }
+.sel-item--custom:hover { background: var(--accent-soft); color: var(--accent-ink); }
 .sel-item-custom-icon { font-weight: 700; margin-right: 3px; }
 .sel-btn--rawid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
-.sel-btn--guidonly { border-style: dashed; color: var(--text-muted); }
+.sel-btn--guidonly { border-style: dashed; }
 .sel-note { padding: 5px 9px 6px; font-size: 11.5px; color: var(--text-muted); }
 textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

@@ -216,7 +216,7 @@ let connected = false;
 // instance's objects. Same fence loadAnswers() uses, widened to the whole connect sequence.
 let connectSeq = 0;
 let discovered = { worksheets: [], liveboards: [] };
-let vizCache = {};      // liveboardId -> [{id,name}] | null (failed) | undefined (not loaded)
+let vizCache = Object.create(null); // null-proto: keys are user-typed ids, so 'constructor' must not hit Object.prototype. liveboardId -> [{id,name}] | null (failed) | undefined (not loaded)
 const _vizLoading = new Set(); // liveboardIds with a fetch in flight
 let answersLoading = false; // a standalone-answer discovery fetch is in flight
 let answerList;         // [{id,name}] | null (failed) | undefined (not loaded) — all saved Answers on the instance
@@ -2628,12 +2628,14 @@ function customSelect(value, options, onChange, disabled = false, allowCustom = 
 
   const panel = el('div', 'sel-panel'); panel.hidden = true;
   const search = el('input', 'sel-search'); search.type = 'text'; search.placeholder = 'Search…';
+  search.maxLength = 128;   // state.js sanitize caps ids at 128
+  search.setAttribute('aria-label', allowCustom ? 'Search or paste a GUID' : 'Search');
   if (allowCustom) search.placeholder = 'Search or paste a GUID…';
   const list = el('div', 'sel-list');
   if (disabled && allowCustom) {
     const note = document.createElement('div');
     note.className = 'sel-note';
-    note.textContent = 'Not connected — paste a GUID below.';
+    note.textContent = 'Not connected: paste a GUID below.';
     panel.append(note, search, list);
   } else {
     panel.append(search, list);
@@ -2657,13 +2659,16 @@ function customSelect(value, options, onChange, disabled = false, allowCustom = 
       list.appendChild(item);
     });
     lastCustom = '';
-    const exactMatch = options.some(o => o.id === trimmed);
-    if (allowCustom && trimmed && !exactMatch) {
+    // The commit row appears only for id-shaped text (no whitespace, 8+ chars) that matches no
+    // option name, so a partial name like "sale" or "Q3 rev" can never be committed as a GUID.
+    const exactMatch = options.some(o => o.id.toLowerCase() === ql);
+    const nameMatch = options.some(o => o.name.toLowerCase().includes(ql));
+    if (allowCustom && trimmed && !exactMatch && !nameMatch && /^\S{8,}$/.test(trimmed)) {
       lastCustom = trimmed;
       const custom = document.createElement('div');
       custom.className = 'sel-item sel-item--custom';
       // textContent/createTextNode throughout — `trimmed` is user input, never HTML.
-      const icon = document.createElement('span'); icon.className = 'sel-item-custom-icon'; icon.textContent = '↵';
+      const icon = document.createElement('span'); icon.className = 'sel-item-custom-icon'; icon.textContent = '↵'; icon.setAttribute('aria-hidden', 'true');
       const strong = document.createElement('strong'); strong.textContent = trimmed;
       custom.append(icon, document.createTextNode(' Use "'), strong, document.createTextNode('"'));
       // close() BEFORE onChange — the Liveboard onChange calls renderInspector(), which tears
@@ -2718,12 +2723,18 @@ function customSelect(value, options, onChange, disabled = false, allowCustom = 
     window.removeEventListener('scroll', onReposition, true);
   }
   search.addEventListener('input', () => renderList(search.value));
-  // Enter commits the custom row if there is one, else the sole remaining match. Never on 0 or ≥2.
+  // Enter commits the sole remaining match, else the custom row if there is one. Never on ≥2 matches.
   search.addEventListener('keydown', e => {
-    if (e.key !== 'Enter') return;
+    if (e.key !== 'Enter' || e.isComposing) return;
     e.preventDefault();
-    if (lastCustom) { close(); onChange(lastCustom); return; }
-    if (lastMatches.length === 1) { const only = lastMatches[0]; close(); onChange(only.id); }
+    const pick = lastMatches.length === 1 ? lastMatches[0].id : lastMatches.length ? '' : lastCustom;
+    if (!pick) return;
+    const label = wrap.parentNode?.querySelector('.fld-lbl')?.textContent;
+    close(); onChange(pick);
+    // onChange re-renders the inspector (some twice, across an await), dropping focus with the old
+    // trigger; refocus the rebuilt one once those microtask renders have settled.
+    if (label) setTimeout(() => [...document.querySelectorAll('#insp-body .fld')]
+      .find(f => f.querySelector('.fld-lbl')?.textContent === label)?.querySelector('.sel-btn')?.focus(), 0);
   });
   btn.addEventListener('click', () => { panel.hidden ? open() : close(); });
 
@@ -2737,7 +2748,7 @@ function sectionObject(s) {
   const needs = META[s.section].needs;
   if (!connected) {
     const n = el('div', 'sec-note');
-    n.textContent = 'Not connected — object lists are unavailable. Open any picker below and paste a GUID to drive the embed anyway.';
+    n.textContent = 'Not connected: paste a GUID into any picker.';
     c.appendChild(n);
   }
 
@@ -2776,7 +2787,7 @@ function sectionObject(s) {
         // board switch on two REST round-trips (the "board doesn't update right away" lag).
         renderInspector();
         render();
-        await loadViz(v);
+        if (connected) await loadViz(v);   // credentialed POST: never at an unconfirmed/absent host (S10)
         await refreshPersonalCopies();
         renderInspector();
       }, '', !connected, true));
@@ -2801,12 +2812,9 @@ function sectionObject(s) {
     if (s.liveboardId && !isLoading && vizzes.length === 0) {
       const note = el('div', 'sec-note');
       note.textContent = vizCache[s.liveboardId] === null
-        ? 'Viz list unavailable (CORS or auth). Paste a viz GUID directly:'
-        : 'No visualizations found. Paste a viz GUID directly:';
+        ? 'Viz list unavailable (CORS or auth). Paste a viz GUID into the picker.'
+        : 'No visualizations found. Paste a viz GUID into the picker.';
       c.appendChild(note);
-      c.appendChild(textField('Visualization GUID', s.vizId,
-        v => { setState({ vizId: v.trim(), answerId: '' }); render(); },
-        'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'));
     }
     // Standalone saved Answer — the OTHER thing the Single-Viz section can embed. A saved answer
     // cannot be embedded as a liveboard viz (SDK rule), so it renders via SearchEmbed({answerId,
@@ -2821,7 +2829,7 @@ function sectionObject(s) {
     const answers = answerList || [];
     c.appendChild(labeledSelect('Answer', s.answerId, answers,
       v => { setState({ answerId: v, vizId: '' }); renderInspector(); render(); },
-      answersLoading ? 'Loading saved Answers…' : !connected ? 'Connect to load saved Answers' : '', !connected, true));
+      answersLoading ? 'Loading saved Answers…' : !connected ? 'Paste a GUID' : '', !connected, true));
     if (connected && !answersLoading && answers.length === 0) {
       const note = el('div', 'sec-note');
       note.textContent = answerList === null
@@ -7011,8 +7019,8 @@ function sectionDrillthrough(s) {
   c.appendChild(toggleField('Enable drill-through', d.enabled, v => { set({ enabled: v }); renderInspector(); render(); },
     'Injects the column-scoped action and listens for point clicks on this section only.'));
 
-  const wsOpts = discovered.worksheets.map(w => ({ id: w.id, name: w.name }));
-  const lbOpts = discovered.liveboards.map(l => ({ id: l.id, name: l.name }));
+  const wsOpts = (discovered.worksheets || []).map(w => ({ id: w.id, name: w.name }));
+  const lbOpts = (discovered.liveboards || []).map(l => ({ id: l.id, name: l.name }));
 
   // ── the five fields a working setup actually needs ──
   c.appendChild(labeledSelect('Summary Model', d.summaryModelId, wsOpts, v => { set({ summaryModelId: v }); renderInspector(); render(); },
