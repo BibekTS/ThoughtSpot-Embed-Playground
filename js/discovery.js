@@ -359,6 +359,9 @@ async function ensureTag(host, tagName) {
  * discovery attribute a copy to its origin server-side — unlike a title prefix. See docs/personal-liveboards.md §5.
  */
 export const sourceTag = (sourceId) => `src:${sourceId}`;
+/** The Personal-copy rail option's own tag. Distinct from sourceTag on purpose: the ＋ Personalize strip adopts
+ *  `src:` copies (and Reset deletes them), so the two features must never see each other's objects. */
+export const pcopyTag = (sourceId) => `pcopy:${sourceId}`;
 
 /** Ensure each tag exists, then assign them all to a liveboard in one call. Requires edit access (the owner). */
 export async function assignTags(host, metadataId, tags) {

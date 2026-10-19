@@ -264,16 +264,22 @@ const PAYLOAD_ACTION_ID = '__dt_view_payload';
 // tiles; in the Table view (a SearchEmbed on one tile) it is an ANSWER action. Both route to the column
 // picker. Session caches (reset in connect()): the Liveboard TML + its table tiles (ccLbs), each tile read
 // once per host|liveboard|viz (ccTiles, errors included), the signed-in user per host (ccUsers).
-// ccTableView = { host, lb, vizId, name } while the Table view shows; ccSeq fences an in-flight read.
+// ccTableView = { host, lb, vizId, name } while the Table view shows. ccSeq is the SESSION epoch (bumped by
+// connect()): a read from an older session drops its writes. Concurrent reads of one key share a promise
+// (ccInflight); a click opens only if it is still the latest (ccClickSeq, last click wins).
 const COLS_ACTION_ID = '__cols_picker';
 const ccTiles = new Map();   // tileKey -> tileFromTml() result ({ ok:true, … } | { ok:false, error })
 const ccTmls = new Map();    // host|liveboard -> exportLiveboardTml() result
 const ccLbs = new Map();     // host|liveboard -> { ok:true, name, vizs:[{vizId,name}] } | { ok:false, error }
-const ccUsers = new Map();   // host -> { id, name } | null (unknown)
-const pcCopies = new Map();  // host|user|source -> { id, title, created, extra } | { error }  (Personal copy)
+const ccUsers = new Map();   // host -> { id, name } (successes only: a failed lookup is retried, never cached)
+const ccUserErrs = new Map(); // host -> why the last user lookup failed
+const pcCopies = new Map();  // host|user|source -> { id, title, created, extra } | { none:true } | { error }  (Personal copy)
+const ccInflight = new Map(); // read key -> its promise
+const pcInflight = new Map(); // host|source -> find/create promise
+let pcArmed = '';            // copy id whose "Reset to original" is armed ('' = none)
+let ccClickSeq = 0;
 let ccTableView = null;
 let ccBarOn = false;         // the Table view's back bar (#drill-bar) is up
-let ccLoadingKey = '';       // key with a read in flight
 let ccSeq = 0;
 const ccTileKey = (s, vizId) => `${s.host}|${s.liveboardId}|${vizId}`;
 const ccLbKey = (s) => `${s.host}|${s.liveboardId}`;
@@ -739,7 +745,7 @@ async function connect({ silent = false, trustHost = false } = {}) {
   answerList = undefined;
   answersLoading = false;
   // Customize Columns' tile + user caches are session caches too (the user GUID is per host/session).
-  ccTiles.clear(); ccTmls.clear(); ccLbs.clear(); ccUsers.clear(); pcCopies.clear(); ccTableView = null; ccSeq++; ccLoadingKey = '';
+  ccTiles.clear(); ccTmls.clear(); ccLbs.clear(); ccUsers.clear(); ccUserErrs.clear(); pcCopies.clear(); ccTableView = null; ccSeq++; ccInflight.clear(); pcInflight.clear();
   // Personal liveboards: repopulate the current board's copies (non-fatal — refreshPersonalCopies
   // resolves the scoping identity itself and stays empty if that or the search fails).
   if (getState().personalLb?.enabled) refreshPersonalCopies();
@@ -1003,13 +1009,19 @@ function render() {
   const ccTv = cc ? ccTableView : null;
   const ccTile = ccTv ? ccTiles.get(ccTileKey(s, ccTv.vizId)) : null;
   const ccRead = cc ? (ccTv ? ccTile : ccLbs.get(ccLbKey(s))) : null;
-  const pcCopy = pc && ccUsers.has(s.host) ? pcCopies.get(pcKey(s)) : null;
+  const pcCopy = pc ? pcCopies.get(pcKey(s)) : null;
   const holdGate = (needsTitle, needsSub, loadingSub, readState, load) => {
     if (currentEmbed) { try { currentEmbed.destroy(); } catch (_) {} currentEmbed = null; }
     document.getElementById('ai-insights-panel')?.remove();
     destroySpotterMcp();
     flowReset(s.section);
     refreshCode();
+    if (readState?.none) { // no copy yet: FIND ran, CREATE waits for a click
+      $('#pc-create-sub').textContent = connected ? 'Your copy is created only when you click below.' : 'Connect above first.';
+      $('#state-overlay [data-act="pc-create"]').disabled = !connected;
+      setOverlay('pc-create');
+      return;
+    }
     if (readState) {
       showRenderError(readState.error);
       // Re-rendering can't fix a read that failed ("Reload" in the inspector re-reads it).
@@ -1035,7 +1047,7 @@ function render() {
   }
   if (pc && !pcCopy?.id) {
     holdGate('Personal copy needs a connection', 'Connect above: your copy is found (or created) over REST as the signed-in user.',
-      'Finding your personal copy…', pcCopy, pcEnsure);
+      'Finding your personal copy…', pcCopy, () => pcEnsure());
     return;
   }
 
@@ -1230,6 +1242,7 @@ function bindStateOverlay() {
     if (act === 'retry') connect();
     if (act === 'proceed') render();
     if (act === 'open-claims') openAuthModalGuarded();
+    if (act === 'pc-create') pcCreate();
   });
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
@@ -2387,7 +2400,18 @@ function saveBlob(blob, filename) {
 }
 
 // ═══ INSPECTOR — one contextual options panel ═════════════════════════════════
+// A repaint replaces the buttons; put focus back on the same logical one (data-focus-key), else the first
+// enabled keyed button, else the Liveboard container.
 function renderInspector() {
+  const a = document.activeElement, body = $('#insp-body');
+  const fk = a && a !== document.body && body.contains(a) ? a.dataset.focusKey : '';
+  renderInspectorBody();
+  if (!fk) return;
+  const ok = (b) => b && !b.disabled && b.getClientRects().length;
+  const sel = [...body.querySelectorAll('[data-focus-key]')];
+  (sel.find(b => b.dataset.focusKey === fk && ok(b)) || sel.find(ok) || ccFocusTarget())?.focus();
+}
+function renderInspectorBody() {
   const s = getState();
   const body = $('#insp-body');
   body.innerHTML = '';
@@ -2871,6 +2895,7 @@ function sectionObject(s) {
     const lbOptions = (discovered.liveboards || [])
       .filter(lb => !lbTagFilter || (lb.tags || []).includes(lbTagFilter))
       .filter(lb => !plbTag || lb.id === s.liveboardId || !(lb.tags || []).includes(plbTag))
+      .filter(lb => lb.id === s.liveboardId || !(lb.tags || []).some(t => t.startsWith('pcopy:'))) // Personal-copy objects are not sources
       .map(lb => ({ id: lb.id, name: lb.tags?.length ? `${lb.name}  ·  ${lb.tags.join(', ')}` : lb.name }));
     c.appendChild(labeledSelect('Liveboard', s.liveboardId, lbOptions,
       async v => {
@@ -2976,78 +3001,86 @@ async function loadAnswers() {
   }
 }
 
-// Read-only + Edit Columns: the signed-in user's GUID (the prefs key and the copy's author), read once
-// per host; unknown → null. A fresh read per host is fenced by the callers' stale() checks.
+// Read-only + Edit Columns: the signed-in user's GUID (the prefs key and the copy's author), read per host.
+// Only a success is cached, so a failed lookup (no bearer yet) is retried by the next caller; null = unknown.
 async function ccEnsureUser(host) {
-  if (!ccUsers.has(host)) {
+  if (!ccUsers.get(host)) {
     const u = await Discovery.getCurrentUser(host);
     if (getState().host !== host) return null;
-    ccUsers.set(host, u.ok && GUID_RE.test(u.userId) ? { id: u.userId, name: u.displayName || u.userName } : null);
+    if (u.ok && GUID_RE.test(u.userId)) { ccUsers.set(host, { id: u.userId, name: u.displayName || u.userName }); ccUserErrs.delete(host); }
+    else ccUserErrs.set(host, u.ok ? 'the session user has no GUID' : u.error);
   }
-  return ccUsers.get(host);
+  return ccUsers.get(host) || null;
+}
+// Trusted auth gives discovery no bearer until the claims panel mints one (S58); say so next to REST errors.
+const bearerHint = () => /^TrustedAuth/.test(getState().authType)
+  ? ' No ThoughtSpot bearer yet? Use “Mint & apply to embed” in the Token claims panel, then retry.' : '';
+// One in-flight promise per key: concurrent callers (a render and a click) share the read.
+function ccDedupe(key, fn) {
+  if (!ccInflight.has(key)) ccInflight.set(key, fn().finally(() => ccInflight.delete(key)));
+  return ccInflight.get(key);
 }
 // The Liveboard TML (one export, cached) — the source of both the table-tile list and each tile's query.
 async function ccReadTml(host, liveboardId) {
   const k = `${host}|${liveboardId}`;
   if (!ccTmls.has(k)) {
     const r = await Discovery.exportLiveboardTml(host, liveboardId);
-    if (!r.ok) return { ok: false, error: `Couldn’t read the Liveboard TML (${r.error}). Check CORS (${location.origin}) and that this user can export the Liveboard.` };
+    if (!r.ok) return { ok: false, error: `Couldn’t read the Liveboard TML (${r.error}).${bearerHint() || ` Check CORS (${location.origin}) and that this user can export the Liveboard.`}` };
     ccTmls.set(k, r);
   }
   return ccTmls.get(k);
 }
 // Read the Liveboard's table tiles (display_mode TABLE_MODE) — what the "Edit Columns" action is scoped to.
-async function ccLoadLiveboard(host, liveboardId) {
+function ccLoadLiveboard(host, liveboardId) {
   const key = `${host}|${liveboardId}`;
-  if (ccLbs.has(key) || ccLoadingKey === `lb|${key}`) return;
-  ccLoadingKey = `lb|${key}`;
-  const seq = ++ccSeq;
-  const stale = () => seq !== ccSeq || getState().host !== host;
-  try {
-    await ccEnsureUser(host);
-    const r = await ccReadTml(host, liveboardId);
-    if (stale()) return;
-    ccLbs.set(key, r.ok ? { ok: true, name: String(r.liveboard?.name || ''), vizs: tableVizsFromTml(r.liveboard) } : r);
-  } catch (e) {
-    if (!stale()) ccLbs.set(key, { ok: false, error: `Couldn’t read the Liveboard: ${e.message}` });
-  } finally {
-    if (ccLoadingKey === `lb|${key}` && seq === ccSeq) ccLoadingKey = '';
-  }
-  const s = getState();
-  if (!stale() && !pendingHostConfirm && s.section === 'custom-columns' && ccLbKey(s) === key && !ccTableView) { renderInspector(); render(); }
+  if (ccLbs.has(key)) return Promise.resolve();
+  return ccDedupe(`lb|${key}`, async () => {
+    const ep = ccSeq, stale = () => ep !== ccSeq || getState().host !== host;
+    try {
+      await ccEnsureUser(host);
+      const r = await ccReadTml(host, liveboardId);
+      if (stale()) return;
+      ccLbs.set(key, r.ok ? { ok: true, name: String(r.liveboard?.name || ''), vizs: tableVizsFromTml(r.liveboard) } : r);
+    } catch (e) {
+      if (!stale()) ccLbs.set(key, { ok: false, error: `Couldn’t read the Liveboard: ${e.message}` });
+    }
+    const s = getState(), lb = ccLbs.get(key);
+    if (!stale() && !pendingHostConfirm && s.section === 'custom-columns' && ccLbKey(s) === key && !ccTableView) {
+      if (lb?.ok && !lb.vizs.length) toast('This Liveboard has no table tiles, so no Edit Columns button appears.');
+      renderInspector(); render();
+    }
+  });
 }
 // Read one tile (its query + model, then the model's column kinds) and cache the result, errors included.
-// Fenced like connect(): a newer read or a host switch drops this one's writes. Only called while
+// Fenced like connect(): a new session or a host switch drops this read's writes. Only called while
 // connected, so never at an unconfirmed host.
-async function ccLoadTile(host, liveboardId, vizId) {
+function ccLoadTile(host, liveboardId, vizId) {
   const key = `${host}|${liveboardId}|${vizId}`;
-  if (ccTiles.has(key) || ccLoadingKey === key) return;
-  ccLoadingKey = key;
-  const seq = ++ccSeq;
-  const stale = () => seq !== ccSeq || getState().host !== host;
-  try {
-    await ccEnsureUser(host);
-    if (stale()) return;
-    let tile;
-    const r = await ccReadTml(host, liveboardId);
-    if (stale()) return;
-    if (!r.ok) tile = r;
-    else {
-      const f = findTileViz(r.liveboard, vizId);
-      if (f.ok) {
-        const k = await Discovery.modelColumnKinds(host, f.modelId);
-        if (stale()) return;
-        tile = tileFromTml(r.liveboard, vizId, k.ok ? k.kinds : new Map()); // no kinds → hinted in the dialog
-      } else tile = f;
+  if (ccTiles.has(key)) return Promise.resolve();
+  return ccDedupe(key, async () => {
+    const ep = ccSeq, stale = () => ep !== ccSeq || getState().host !== host;
+    try {
+      await ccEnsureUser(host);
+      if (stale()) return;
+      let tile;
+      const r = await ccReadTml(host, liveboardId);
+      if (stale()) return;
+      if (!r.ok) tile = r;
+      else {
+        const f = findTileViz(r.liveboard, vizId);
+        if (f.ok) {
+          const k = await Discovery.modelColumnKinds(host, f.modelId);
+          if (stale()) return;
+          tile = tileFromTml(r.liveboard, vizId, k.ok ? k.kinds : new Map()); // no kinds → hinted in the dialog
+        } else tile = f;
+      }
+      ccTiles.set(key, tile);
+    } catch (e) {
+      if (!stale()) ccTiles.set(key, { ok: false, error: `Couldn’t read the tile: ${e.message}` });
     }
-    ccTiles.set(key, tile);
-  } catch (e) {
-    if (!stale()) ccTiles.set(key, { ok: false, error: `Couldn’t read the tile: ${e.message}` });
-  } finally {
-    if (ccLoadingKey === key && seq === ccSeq) ccLoadingKey = '';
-  }
-  const s = getState();
-  if (!stale() && !pendingHostConfirm && ccTableView && ccTileKey(s, ccTableView.vizId) === key) { renderInspector(); render(); }
+    const s = getState();
+    if (!stale() && !pendingHostConfirm && ccTableView && ccTileKey(s, ccTableView.vizId) === key) { renderInspector(); render(); }
+  });
 }
 // A tile for the click handlers: cached, else read now (with a busy toast). null (+ a toast) when unreadable.
 async function ccResolveTile(vizId) {
@@ -3065,14 +3098,16 @@ async function ccResolveTile(vizId) {
 }
 // The "Edit Columns" button on a Liveboard tile: a user with saved prefs for that tile goes straight to
 // the Table view; a first-timer picks columns in the dialog, Apply saves them and opens the Table view.
+// Clicks during a read queue: only the latest click opens when its read finishes (last one wins).
 async function ccFromLiveboard(payload) {
   const d = payload?.data?.embedAnswerData || {};
   const vizId = String(d.vizId || payload?.data?.vizId || '');
   if (!GUID_RE.test(vizId)) { toast('Couldn’t tell which tile was clicked.'); return; }
   if (d.displayMode && d.displayMode !== 'TABLE_MODE') { toast('Edit Columns works on table tiles only.'); return; }
   ccNoteUser(payload);
+  const tok = ++ccClickSeq;
   const tile = await ccResolveTile(vizId);
-  if (!tile) return;
+  if (!tile || tok !== ccClickSeq) return;
   const s = getState();
   if (hasColPrefs(ccPrefKey(s, vizId))) { ccEnterTable(vizId, tile); return; }
   ccOpenDialog({ vizId, tile, onApplied: () => ccEnterTable(vizId, tile) });
@@ -3082,8 +3117,9 @@ function ccEnterTable(vizId, tile) {
   ccTableView = { host: s.host, lb: s.liveboardId, vizId, name: tile.name };
   logEvent('Columns', `Table view: ${tile.name}`);
   renderInspector(); render();
+  $('#drill-bar .drill-back')?.focus(); // the opener (dialog / inspector button / tile) is gone: land on Back
 }
-function ccBack() { ccTableView = null; renderInspector(); render(); }
+function ccBack() { ccTableView = null; renderInspector(); render(); ccFocusTarget()?.focus(); }
 // The Table view's back bar: the drill bar's element and styling, but its own state (not drillParent).
 function ccShowBar(name) {
   hideDrillBar();
@@ -3111,7 +3147,9 @@ function sectionColumnPrefs(s) {
   const c = el('div', 'sec-body');
   const notes = [
     'A read-only Liveboard. Each table tile gets an “Edit Columns” button; the user hides, shows and reorders columns and the choice is stored in YOUR database (here: localStorage in this browser, keyed by host, user and tile), then loaded for that user.',
-    'The tile inside the Liveboard keeps its original columns: ThoughtSpot can’t vary a Liveboard tile per user. The personal layout shows in the Table view that Edit Columns opens.',
+    'The first Edit Columns on a tile opens the column picker. Once saved, Edit Columns opens your Table view directly, and you change columns there with its own Edit Columns button.',
+    'The tile inside the Liveboard keeps its original columns: ThoughtSpot can’t vary a Liveboard tile per user. The personal layout shows in the Table view.',
+    'The Table view re-runs the tile’s saved query on its model. Liveboard filters and the filter state you are looking at do NOT carry over, so the numbers can differ from the tile when Liveboard filters are applied. Back reloads the Liveboard.',
     'The visible-actions allowlist hides every other button in the UI. It is not a security boundary: secure the data with sharing and row-level security.',
   ];
   notes.forEach(t => { const n = el('div', 'sec-note'); n.textContent = t; c.appendChild(n); });
@@ -3120,14 +3158,13 @@ function sectionColumnPrefs(s) {
   if (!s.liveboardId) status.textContent = 'Pick a Liveboard above.';
   else if (!lb) status.textContent = connected ? 'Reading the Liveboard…' : 'Connect to read the Liveboard’s table tiles.';
   else if (!lb.ok) status.textContent = lb.error;
-  else status.textContent = lb.vizs.length ? `${lb.vizs.length} table tile${lb.vizs.length === 1 ? ' carries' : 's carry'} Edit Columns.` : 'This Liveboard has no table tiles.';
+  else status.textContent = lb.vizs.length ? `${lb.vizs.length} table tile${lb.vizs.length === 1 ? ' carries' : 's carry'} Edit Columns.` : 'This Liveboard has no table tiles, so no Edit Columns button appears.';
   c.appendChild(status);
-  if (ccUsers.has(s.host)) {
-    const who = el('div', 'sec-note');
-    const u = ccUsers.get(s.host);
-    who.textContent = u ? `Saving for: ${u.name || u.id}` : 'Saving for: unknown user (shared by everyone on this browser)';
-    c.appendChild(who);
-  }
+  const u = ccUsers.get(s.host);
+  const who = el('div', 'sec-note');
+  if (u) who.textContent = `Saving for: ${u.name || u.id}`;
+  else if (ccUserErrs.has(s.host)) who.textContent = `Saving for: unknown user (shared by everyone on this browser). Couldn’t read the signed-in user (${ccUserErrs.get(s.host)}).${bearerHint()}`;
+  if (who.textContent) c.appendChild(who);
   // This user's saved Table views for this Liveboard.
   if (lb?.ok) {
     const names = new Map(lb.vizs.map(v => [v.vizId, v.name]));
@@ -3135,15 +3172,20 @@ function sectionColumnPrefs(s) {
     const head = el('div', 'sec-note'); head.textContent = saved.length ? 'Your saved Table views:' : 'No saved Table views yet: click Edit Columns on a tile.';
     c.appendChild(head);
     for (const p of saved) {
-      const row = el('div', 'cc-actions');
-      const lbl = el('span', 'sec-note'); lbl.textContent = `${names.get(p.vizId)} · ${p.hidden} hidden`;
+      const row = el('div', 'cc-actions'), nm = names.get(p.vizId);
+      const lbl = el('span', 'sec-note'); lbl.textContent = `${nm} · ${p.hidden} hidden`;
       const open = el('button', 'sec-apply'); open.type = 'button'; open.textContent = 'Open'; open.dataset.ccOpen = '1';
-      open.addEventListener('click', async () => { const t = await ccResolveTile(p.vizId); if (t) ccEnterTable(p.vizId, t); });
+      open.dataset.focusKey = `cc-open:${p.vizId}`; open.setAttribute('aria-label', `Open Table view: ${nm}`);
+      open.addEventListener('click', async () => {
+        const tok = ++ccClickSeq, t = await ccResolveTile(p.vizId);
+        if (t && tok === ccClickSeq) ccEnterTable(p.vizId, t);
+      });
       const reset = el('button', 'sec-apply ghost'); reset.type = 'button'; reset.textContent = 'Reset';
+      reset.dataset.focusKey = `cc-reset:${p.vizId}`; reset.setAttribute('aria-label', `Reset saved columns: ${nm}`);
       reset.addEventListener('click', () => {
         const g = getState();
         writeColPrefs(ccPrefKey(g, p.vizId), null);
-        logEvent('Columns', `Reset ${names.get(p.vizId)} to the tile’s default layout`);
+        logEvent('Columns', `Reset ${nm} to the tile’s default layout`);
         renderInspector();
         if (ccTableView?.vizId === p.vizId) render();
       });
@@ -3153,10 +3195,10 @@ function sectionColumnPrefs(s) {
   }
   const row = el('div', 'cc-actions');
   const reload = el('button', 'sec-apply ghost'); reload.type = 'button'; reload.textContent = 'Reload Liveboard';
-  reload.disabled = !connected;
+  reload.disabled = !connected; reload.dataset.focusKey = 'cc-reload';
   reload.addEventListener('click', () => {
     const g = getState(), k = ccLbKey(g);
-    ccLbs.delete(k); ccTmls.delete(k);
+    ccLbs.delete(k); ccTmls.delete(k); ccUsers.delete(g.host); // also re-read the user (a failed lookup can recover)
     for (const key of [...ccTiles.keys()]) if (key.startsWith(k + '|')) ccTiles.delete(key);
     ccTableView = null; renderInspector(); render();
   });
@@ -3165,63 +3207,104 @@ function sectionColumnPrefs(s) {
   return accordion('Edit Columns', '', c, true);
 }
 
-// — Personal copy: find-or-create the user's copy (REST), then the owner, the copy and its trade-offs —
-async function pcEnsure() {
-  const s = getState(), host = s.host, sourceId = s.liveboardId;
-  const stale = () => getState().host !== host || getState().liveboardId !== sourceId || getState().section !== 'personal-copy';
-  let res;
+// — Personal copy: FIND the user's copy over REST automatically, CREATE it only on a click —
+// Resolves after the result is stored and the view repainted. `create` = the user clicked; `exclude` = ids the
+// search index may still list after a delete. One run per host|source; a create waits for a find in flight.
+function pcEnsure(create = false, exclude = []) {
+  const s = getState(), key = `${s.host}|${s.liveboardId}`, cur = pcInflight.get(key);
+  if (cur) return create ? cur.then(() => pcEnsure(true, exclude)) : cur;
+  const p = pcRun(s.host, s.liveboardId, create, exclude).finally(() => pcInflight.delete(key));
+  pcInflight.set(key, p);
+  return p;
+}
+async function pcRun(host, sourceId, create, exclude) {
+  const ep = ccSeq;
+  const stale = () => ep !== ccSeq || getState().host !== host || getState().liveboardId !== sourceId || getState().section !== 'personal-copy';
+  let res, k = pcCacheKey(host, '', sourceId);
   try {
     const u = await ccEnsureUser(host);
     if (stale()) return;
-    if (!u) res = { error: 'Couldn’t resolve the signed-in user (GET /auth/session/user), so there is no one to own the copy.' };
+    k = pcCacheKey(host, u?.id || '', sourceId);
+    if (!u) res = { error: `Couldn’t resolve the signed-in user (${ccUserErrs.get(host) || 'GET /auth/session/user'}), so there is no one to own the copy.${bearerHint()}` };
+    else if (!GUID_RE.test(sourceId)) res = { error: 'Pick a Liveboard (a valid GUID) first.' };
     else {
       const name = discovered.liveboards.find(lb => lb.id === sourceId)?.name || ccLbs.get(`${host}|${sourceId}`)?.name || 'Liveboard';
-      logEvent('Personal copy', `Looking for ${u.name || u.id}’s copy of ${sourceId}`);
-      const r = await findOrCreateCopy(host, u, sourceId, name);
+      logEvent('Personal copy', `${create ? 'Creating' : 'Looking for'} ${u.name || u.id}’s copy of ${sourceId}`);
+      const r = await findOrCreateCopy(host, u, sourceId, name, { create, exclude });
       if (stale()) return;
       res = r.ok ? r : { error: r.error };
-      if (r.ok) logEvent('Personal copy', `${r.created ? '✓ created' : 'found'} ${r.id}${r.extra ? ` (⚠ ${r.extra} duplicate${r.extra === 1 ? '' : 's'})` : ''}`);
+      if (r.none) logEvent('Personal copy', 'none found; waiting for “Create my copy”');
+      else if (r.ok) logEvent('Personal copy', `${r.created ? '✓ created' : 'found'} ${r.id}${r.extra ? ` (⚠ ${r.extra} duplicate${r.extra === 1 ? '' : 's'})` : ''}`);
       else logEvent('Personal copy', `✗ ${r.error}`);
     }
   } catch (e) { res = { error: `Personal copy failed: ${e.message}` }; }
   if (stale()) return;
-  pcCopies.set(pcKey(getState()), res);
+  pcCopies.set(k, res);
   renderInspector(); render();
 }
-let pcArmed = false, pcArmTimer = null;
+async function pcCreate() {
+  await pcEnsure(true);
+  ccFocusTarget()?.focus(); // the overlay button is gone
+}
 async function pcReset() {
-  const s = getState(), c = pcCopies.get(pcKey(s)), u = ccUsers.get(s.host);
+  const s = getState(), k = pcKey(s), c = pcCopies.get(k), u = ccUsers.get(s.host);
   if (!c?.id || !u) return;
+  if (c.id === s.liveboardId) { toast('Refusing to delete the source Liveboard.', 'error'); return; }
   const done = showBusy('Deleting your copy…');
   const r = await deleteUserCopy(s.host, u, s.liveboardId, c.id);
   if (!r.ok) { done(); toast(`Delete failed: ${r.error}`, 'error'); logEvent('Personal copy', `✗ delete: ${r.error}`); return; }
   logEvent('Personal copy', `Deleted ${c.id}; a fresh copy of the original follows`);
-  pcCopies.delete(pcKey(getState()));
+  pcCopies.delete(k); // the captured state's key, not getState(): the user may have moved on during the await
+  const g = getState();
+  const same = g.host === s.host && g.liveboardId === s.liveboardId && g.section === 'personal-copy';
+  // The Reset click is the explicit create. Started first so the render below joins it instead of finding
+  // (and, with a lagging search index, re-finding the deleted copy).
+  const again = same ? pcEnsure(true, [c.id]) : null;
   done('✓ Reset to the original', 'success');
-  renderInspector(); render(); // the gate finds-or-creates again
+  renderInspector(); render();
+  if (again) { await again; ccFocusTarget()?.focus(); }
 }
+let pcArmTimer = null;
 function sectionPersonalCopy(s) {
   const c = el('div', 'sec-body');
   const u = ccUsers.get(s.host), cp = pcCopies.get(pcKey(s));
   const line = (t) => { const n = el('div', 'sec-note'); n.textContent = t; c.appendChild(n); return n; };
-  line('Each user gets one editable copy of this Liveboard. It is embedded with only Edit and Save, so they change the table’s columns natively and Save; on their next visit their copy loads.');
+  line('Each user gets one editable copy of this Liveboard, found automatically and created only when you click “Create my copy”. It is embedded with only Edit and Save: on a tile, ⋯ → Edit, untick the columns to hide, Go, then Save. On their next visit their copy loads.');
+  line('Hiding and showing columns works. Reordering columns is not available in ThoughtSpot’s tile editor on this route (a header drag and a search-token drag were both tried; neither reorders).');
   line(u ? `Owner: ${u.name || u.id}` : (connected ? 'Owner: reading the signed-in user…' : 'Connect to find the owner.'));
   if (cp?.id) {
     line(`Copy: ${cp.title}`);
     line(`GUID: ${cp.id}${cp.created ? ' (created just now)' : ''}`);
     if (cp.extra) line(`⚠ ${cp.extra} duplicate cop${cp.extra === 1 ? 'y' : 'ies'} found for this user (a find-then-create race). This one is used; delete the others.`);
-  } else if (cp?.error) line(cp.error);
+  } else if (cp?.none) line('You don’t have a personal copy of this Liveboard yet. Nothing is created until you click “Create my copy”.');
+  else if (cp?.error) line(cp.error);
   const row = el('div', 'cc-actions');
-  const reset = el('button', 'sec-apply ghost'); reset.type = 'button'; reset.textContent = pcArmed ? 'Click again to delete and recreate' : 'Reset to original';
-  reset.disabled = !cp?.id;
+  if (cp?.none) {
+    const mk = el('button', 'sec-apply'); mk.type = 'button'; mk.textContent = 'Create my copy'; mk.disabled = !connected;
+    mk.dataset.focusKey = 'pc-create'; mk.setAttribute('aria-label', 'Create my copy of this Liveboard');
+    mk.addEventListener('click', pcCreate);
+    row.appendChild(mk);
+  }
+  const armed = !!cp?.id && pcArmed === cp.id;
+  const reset = el('button', 'sec-apply ghost'); reset.type = 'button'; reset.textContent = armed ? 'Click again to delete and recreate' : 'Reset to original';
+  reset.disabled = !cp?.id; reset.dataset.focusKey = 'pc-reset';
+  reset.setAttribute('aria-label', armed ? 'Confirm: delete my copy and create a fresh one from the original' : 'Reset to original: discards my edits and creates a fresh copy');
   reset.addEventListener('click', () => {
-    if (!pcArmed) { pcArmed = true; clearTimeout(pcArmTimer); pcArmTimer = setTimeout(() => { pcArmed = false; renderInspector(); }, 4000); renderInspector(); return; }
-    pcArmed = false; clearTimeout(pcArmTimer); pcReset();
+    const id = pcCopies.get(pcKey(getState()))?.id;
+    if (!id) return;
+    if (pcArmed !== id) { pcArmed = id; clearTimeout(pcArmTimer); pcArmTimer = setTimeout(() => { pcArmed = ''; renderInspector(); }, 4000); renderInspector(); return; }
+    pcArmed = ''; clearTimeout(pcArmTimer); pcReset();
   });
   const reload = el('button', 'sec-apply ghost'); reload.type = 'button'; reload.textContent = 'Look up again'; reload.disabled = !connected;
-  reload.addEventListener('click', () => { pcCopies.delete(pcKey(getState())); renderInspector(); render(); });
+  reload.dataset.focusKey = 'pc-lookup'; reload.setAttribute('aria-label', 'Look up my copy again');
+  reload.addEventListener('click', () => {
+    const g = getState(); // re-read the user too: a failed lookup (no bearer yet) can recover
+    pcCopies.delete(pcKey(g)); ccUsers.delete(g.host); pcCopies.delete(pcKey(g));
+    renderInspector(); render();
+  });
   row.append(reset, reload);
   c.appendChild(row);
+  line('“Reset to original” discards your edits: it deletes your copy and creates a fresh one from the source.');
   line('Trade-offs of this option (the read-only option avoids all of them):');
   for (const t of [
     'Users need create and edit rights, and sharing on the source (copyobject needs view access).',
@@ -3229,7 +3312,7 @@ function sectionPersonalCopy(s) {
     'Changes to the source Liveboard do not reach existing copies (use Reset to original).',
     'Copies are private to their author, but admins can see them.',
     'The Edit/Save allowlist is UI, not a security boundary.',
-    'Finding-then-creating is not atomic: two tabs opening at once can create two copies.',
+    'Finding-then-creating is not atomic: two tabs clicking Create at once can create two copies.',
   ]) { const li = el('div', 'sec-note'); li.textContent = '• ' + t; c.appendChild(li); }
   return accordion('Personal copy', '', c, true);
 }
@@ -7823,6 +7906,7 @@ async function refreshPersonalCopies() {
     // rename-proof). Fall back to the local cache or the title prefix only for legacy copies made before
     // the src tag existed. Preserve any locally-set nickname from the cache so a rename survives re-discovery.
     const reconciled = r.copies
+      .filter(c => !(c.tags || []).some(t => t.startsWith('pcopy:'))) // the Personal-copy option's objects are not ours
       .filter(c => (c.tags || []).includes(srcTag) || cachedById.has(c.id) || (prefix && c.title.startsWith(prefix)))
       .map(c => ({ id: c.id, title: c.title, label: cachedById.get(c.id)?.label || '' }));
     const liveIds = new Set(r.copies.map(c => c.id));
