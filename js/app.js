@@ -1017,8 +1017,10 @@ function render() {
     flowReset(s.section);
     refreshCode();
     if (readState?.none) { // no copy yet: FIND ran, CREATE waits for a click
-      $('#pc-create-sub').textContent = connected ? 'Your copy is created only when you click below.' : 'Connect above first.';
-      $('#state-overlay [data-act="pc-create"]').disabled = !connected;
+      const lbName = discovered.liveboards.find(lb => lb.id === s.liveboardId)?.name || ccLbs.get(`${s.host}|${s.liveboardId}`)?.name || 'this Liveboard';
+      $('#pc-create-title').textContent = `You don’t have a personal copy of “${lbName}” yet`; // TS-derived name: textContent
+      $('#pc-create-sub').textContent = connected ? `Clicking below makes a copy of “${lbName}” that only you edit.` : 'Connect above first.';
+      pcBusyUi();
       setOverlay('pc-create');
       return;
     }
@@ -3005,8 +3007,9 @@ async function loadAnswers() {
 // Only a success is cached, so a failed lookup (no bearer yet) is retried by the next caller; null = unknown.
 async function ccEnsureUser(host) {
   if (!ccUsers.get(host)) {
+    const ep = ccSeq;
     const u = await Discovery.getCurrentUser(host);
-    if (getState().host !== host) return null;
+    if (ep !== ccSeq || getState().host !== host) return null; // a reconnect/host switch: this answer is stale
     if (u.ok && GUID_RE.test(u.userId)) { ccUsers.set(host, { id: u.userId, name: u.displayName || u.userName }); ccUserErrs.delete(host); }
     else ccUserErrs.set(host, u.ok ? 'the session user has no GUID' : u.error);
   }
@@ -3017,7 +3020,7 @@ const bearerHint = () => /^TrustedAuth/.test(getState().authType)
   ? ' No ThoughtSpot bearer yet? Use “Mint & apply to embed” in the Token claims panel, then retry.' : '';
 // One in-flight promise per key: concurrent callers (a render and a click) share the read.
 function ccDedupe(key, fn) {
-  if (!ccInflight.has(key)) ccInflight.set(key, fn().finally(() => ccInflight.delete(key)));
+  if (!ccInflight.has(key)) { const p = fn().finally(() => { if (ccInflight.get(key) === p) ccInflight.delete(key); }); ccInflight.set(key, p); }
   return ccInflight.get(key);
 }
 // The Liveboard TML (one export, cached) — the source of both the table-tile list and each tile's query.
@@ -3112,14 +3115,20 @@ async function ccFromLiveboard(payload) {
   if (hasColPrefs(ccPrefKey(s, vizId))) { ccEnterTable(vizId, tile); return; }
   ccOpenDialog({ vizId, tile, onApplied: () => ccEnterTable(vizId, tile) });
 }
+// Refocus only when focus is lost (body/null/removed) or still on the trigger `was` (or its repainted twin, same
+// data-focus-key): never steal it from an input the user moved to while the async work ran.
+const focusIfLost = (get, was = null) => {
+  const a = document.activeElement;
+  if (!a || a === document.body || !a.isConnected || (was && (a === was || (a.dataset?.focusKey && a.dataset.focusKey === was.dataset?.focusKey)))) get()?.focus();
+};
 function ccEnterTable(vizId, tile) {
-  const s = getState();
+  const s = getState(), was = document.activeElement;
   ccTableView = { host: s.host, lb: s.liveboardId, vizId, name: tile.name };
   logEvent('Columns', `Table view: ${tile.name}`);
   renderInspector(); render();
-  $('#drill-bar .drill-back')?.focus(); // the opener (dialog / inspector button / tile) is gone: land on Back
+  focusIfLost(() => $('#drill-bar .drill-back'), was); // the opener (dialog / inspector button / tile) is gone: land on Back
 }
-function ccBack() { ccTableView = null; renderInspector(); render(); ccFocusTarget()?.focus(); }
+function ccBack() { const was = document.activeElement; ccTableView = null; renderInspector(); render(); focusIfLost(ccFocusTarget, was); }
 // The Table view's back bar: the drill bar's element and styling, but its own state (not drillParent).
 function ccShowBar(name) {
   hideDrillBar();
@@ -3139,6 +3148,7 @@ function ccNoteUser(payload) {
   if (!guid || guid === ccUsers.get(s.host)?.id) return false;
   const n = payload.data.embedAnswerData.user.userName;
   ccUsers.set(s.host, { id: guid, name: typeof n === 'string' ? n.slice(0, 256) : '' });
+  ccUserErrs.delete(s.host); // the payload user is authoritative; a retry must not discard it
   return true;
 }
 
@@ -3198,7 +3208,7 @@ function sectionColumnPrefs(s) {
   reload.disabled = !connected; reload.dataset.focusKey = 'cc-reload';
   reload.addEventListener('click', () => {
     const g = getState(), k = ccLbKey(g);
-    ccLbs.delete(k); ccTmls.delete(k); ccUsers.delete(g.host); // also re-read the user (a failed lookup can recover)
+    ccLbs.delete(k); ccTmls.delete(k); // a failed user lookup is never cached, so the next read retries; a payload user is kept
     for (const key of [...ccTiles.keys()]) if (key.startsWith(k + '|')) ccTiles.delete(key);
     ccTableView = null; renderInspector(); render();
   });
@@ -3210,12 +3220,22 @@ function sectionColumnPrefs(s) {
 // — Personal copy: FIND the user's copy over REST automatically, CREATE it only on a click —
 // Resolves after the result is stored and the view repainted. `create` = the user clicked; `exclude` = ids the
 // search index may still list after a delete. One run per host|source; a create waits for a find in flight.
+// A create JOINS an in-flight create (double-click = one copy); it waits out an in-flight find, then joins/starts one.
 function pcEnsure(create = false, exclude = []) {
   const s = getState(), key = `${s.host}|${s.liveboardId}`, cur = pcInflight.get(key);
-  if (cur) return create ? cur.then(() => pcEnsure(true, exclude)) : cur;
-  const p = pcRun(s.host, s.liveboardId, create, exclude).finally(() => pcInflight.delete(key));
-  pcInflight.set(key, p);
-  return p;
+  if (cur && (!create || cur.create)) return cur.p;
+  if (cur) return cur.p.then(() => pcEnsure(true, exclude));
+  const e = { create };
+  e.p = pcRun(s.host, s.liveboardId, create, exclude).finally(() => { if (pcInflight.get(key) === e) pcInflight.delete(key); pcBusyUi(); renderInspector(); });
+  pcInflight.set(key, e);
+  return e.p;
+}
+// Busy state: the create/reset buttons (overlay + inspector) are disabled and read "Creating…" while it runs.
+let pcResetting = false;
+const pcCreating = () => !!pcInflight.get(`${getState().host}|${getState().liveboardId}`)?.create;
+function pcBusyUi() {
+  const b = $('#state-overlay [data-act="pc-create"]');
+  if (b) { const busy = pcCreating(); b.disabled = !connected || busy; b.textContent = busy ? 'Creating…' : 'Create my copy'; }
 }
 async function pcRun(host, sourceId, create, exclude) {
   const ep = ccSeq;
@@ -3243,16 +3263,21 @@ async function pcRun(host, sourceId, create, exclude) {
   renderInspector(); render();
 }
 async function pcCreate() {
-  await pcEnsure(true);
-  ccFocusTarget()?.focus(); // the overlay button is gone
+  if (pcCreating()) return;
+  const was = document.activeElement, p = pcEnsure(true);
+  pcBusyUi(); renderInspector();
+  await p;
+  focusIfLost(ccFocusTarget, was); // the overlay button is gone
 }
 async function pcReset() {
   const s = getState(), k = pcKey(s), c = pcCopies.get(k), u = ccUsers.get(s.host);
-  if (!c?.id || !u) return;
+  if (!c?.id || !u || pcResetting) return;
   if (c.id === s.liveboardId) { toast('Refusing to delete the source Liveboard.', 'error'); return; }
+  const was = document.activeElement;
+  pcResetting = true; renderInspector();
   const done = showBusy('Deleting your copy…');
   const r = await deleteUserCopy(s.host, u, s.liveboardId, c.id);
-  if (!r.ok) { done(); toast(`Delete failed: ${r.error}`, 'error'); logEvent('Personal copy', `✗ delete: ${r.error}`); return; }
+  if (!r.ok) { pcResetting = false; renderInspector(); done(); toast(`Delete failed: ${r.error}`, 'error'); logEvent('Personal copy', `✗ delete: ${r.error}`); return; }
   logEvent('Personal copy', `Deleted ${c.id}; a fresh copy of the original follows`);
   pcCopies.delete(k); // the captured state's key, not getState(): the user may have moved on during the await
   const g = getState();
@@ -3261,8 +3286,9 @@ async function pcReset() {
   // (and, with a lagging search index, re-finding the deleted copy).
   const again = same ? pcEnsure(true, [c.id]) : null;
   done('✓ Reset to the original', 'success');
+  pcResetting = false;
   renderInspector(); render();
-  if (again) { await again; ccFocusTarget()?.focus(); }
+  if (again) { await again; focusIfLost(ccFocusTarget, was); }
 }
 let pcArmTimer = null;
 function sectionPersonalCopy(s) {
@@ -3280,14 +3306,14 @@ function sectionPersonalCopy(s) {
   else if (cp?.error) line(cp.error);
   const row = el('div', 'cc-actions');
   if (cp?.none) {
-    const mk = el('button', 'sec-apply'); mk.type = 'button'; mk.textContent = 'Create my copy'; mk.disabled = !connected;
+    const mk = el('button', 'sec-apply'); mk.type = 'button'; const busy = pcCreating(); mk.textContent = busy ? 'Creating…' : 'Create my copy'; mk.disabled = !connected || busy;
     mk.dataset.focusKey = 'pc-create'; mk.setAttribute('aria-label', 'Create my copy of this Liveboard');
     mk.addEventListener('click', pcCreate);
     row.appendChild(mk);
   }
   const armed = !!cp?.id && pcArmed === cp.id;
   const reset = el('button', 'sec-apply ghost'); reset.type = 'button'; reset.textContent = armed ? 'Click again to delete and recreate' : 'Reset to original';
-  reset.disabled = !cp?.id; reset.dataset.focusKey = 'pc-reset';
+  reset.disabled = !cp?.id || pcResetting || pcCreating(); reset.dataset.focusKey = 'pc-reset';
   reset.setAttribute('aria-label', armed ? 'Confirm: delete my copy and create a fresh one from the original' : 'Reset to original: discards my edits and creates a fresh copy');
   reset.addEventListener('click', () => {
     const id = pcCopies.get(pcKey(getState()))?.id;
@@ -3299,7 +3325,7 @@ function sectionPersonalCopy(s) {
   reload.dataset.focusKey = 'pc-lookup'; reload.setAttribute('aria-label', 'Look up my copy again');
   reload.addEventListener('click', () => {
     const g = getState(); // re-read the user too: a failed lookup (no bearer yet) can recover
-    pcCopies.delete(pcKey(g)); ccUsers.delete(g.host); pcCopies.delete(pcKey(g));
+    pcCopies.delete(pcKey(g)); // a failed user lookup is retried by pcRun; a payload user is kept
     renderInspector(); render();
   });
   row.append(reset, reload);

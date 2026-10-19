@@ -33,9 +33,9 @@ const inflight = new Map(); // one find-or-create per key at a time within this 
  */
 export function findOrCreateCopy(host, user, sourceId, sourceName, { create = false, exclude = [] } = {}) {
   if (!GUID_RE.test(sourceId)) return Promise.resolve({ ok: false, error: 'Pick a Liveboard (a valid GUID) first.' });
-  const key = pcCacheKey(host, user.id, sourceId) + (create ? '|c' : '');
-  if (!inflight.has(key)) inflight.set(key, run().finally(() => inflight.delete(key)));
-  return inflight.get(key);
+  const key = pcCacheKey(host, user.id, sourceId), ikey = key + (create ? '|c' : ''); // the cache key is shared by find and create
+  if (!inflight.has(ikey)) { const p = run().finally(() => { if (inflight.get(ikey) === p) inflight.delete(ikey); }); inflight.set(ikey, p); }
+  return inflight.get(ikey);
 
   async function run() {
     const tag = Discovery.pcopyTag(sourceId);
