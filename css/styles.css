@@ -1038,11 +1038,12 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
 }
 .cc-grip, .cc-lock { color: var(--text-muted); width: 14px; display: inline-flex; justify-content: center; flex: 0 0 auto; }
 .cc-remove {
-  width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto; display: inline-grid; place-items: center;
+  width: 24px; height: 24px; border-radius: 50%; flex: 0 0 auto; display: inline-grid; place-items: center;
   font-size: 14px; line-height: 1; color: var(--text-muted);
   background: var(--surface); border: 1px solid var(--border-light); cursor: pointer;
 }
 .cc-remove:hover { color: var(--danger-ink); border-color: var(--danger-border); }
+.cc-tag { margin-left: auto; flex: 0 0 auto; font-size: 11px; color: var(--text-muted); }
 .cc-link { background: none; border: 0; padding: 0; font-size: 12px; font-weight: 600; color: var(--accent-ink); cursor: pointer; }
 .cc-hint, .cc-empty { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .cc-hint { margin-top: 8px; }
@@ -1498,6 +1499,7 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
   #rail { flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border); }
   .rail-group, .rail-spacer, .rail-foot { display: none; }
   #embed-list { flex-direction: row; }
+  .embed-item--sub { margin-left: 0; padding-left: 12px; border-left: 0; border-radius: 8px; }
   .tb-name, .tb-brand { display: none; }
 
   /* O2 — the topbar was one non-wrapping, non-scrolling row, so #connect-btn landed

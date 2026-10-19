@@ -14,7 +14,7 @@ import * as Discovery from './discovery.js';
 import { openAuthModal, buildTrustedAuthConfig, seedAuthHooks } from './auth.js';
 import { fetchAllRows, groupStatements, downloadStatementsPdf } from './invoice-pdf.js';
 import { renderSpotterMcpChat } from './spotter-mcp.js';
-import { splitTileQuery, orderColumns, tileTokenString, tileFromTml, findTileViz, readColPrefs, writeColPrefs, openColumnsDialog } from './custom-columns.js';
+import { splitTileQuery, orderColumns, tileTokenString, tileFromTml, findTileViz, readColPrefs, writeColPrefs, openColumnsDialog, GUID_RE, userGuidFromPayload } from './custom-columns.js';
 
 // ── Embed catalogue ──────────────────────────────────────────────────────────
 const EMBEDS = [
@@ -262,7 +262,6 @@ const PAYLOAD_ACTION_ID = '__dt_view_payload';
 // cached here, errors included; the signed-in user's GUID (the prefs key) once per host. Both are
 // session caches reset in connect(); ccSeq fences an in-flight read against a newer one.
 const COLS_ACTION_ID = '__cols_picker';
-const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ccTiles = new Map();   // tileKey -> tileFromTml() result ({ ok:true, … } | { ok:false, error })
 const ccUsers = new Map();   // host -> { id, name } | null (unknown)
 let ccLoadingKey = '';       // tileKey with a read in flight
@@ -3003,7 +3002,7 @@ function sectionColumnPrefs(s) {
   else {
     const p = readColPrefs(ccPrefKey(s));
     const order = orderColumns(t.split, t.measures, []);
-    const hiddenN = new Set(p.hidden.filter(k => k !== order[0] && order.includes(k))).size;
+    const hiddenN = new Set(p.hidden.filter(k => k !== order[0] && order.includes(k) && !t.split.sortKeys.has(k))).size;
     const reordered = JSON.stringify(orderColumns(t.split, t.measures, p.order)) !== JSON.stringify(order);
     const layout = [hiddenN ? `${hiddenN} hidden` : '', reordered ? 'custom order' : ''].filter(Boolean).join(', ') || 'default';
     status.textContent = `${t.split.columns.length} columns · ${t.split.remainder.length} clauses kept as-is · Layout: ${layout}`;
@@ -3850,12 +3849,18 @@ function openDisplayByPicker() {
 }
 
 // Customize Columns: open the column picker for the current tile (from the table's "Show/Hide
-// columns" button or the inspector). Prefs are keyed by the user GUID from auth/session/user — the
-// CustomAction payload's user fields are not relied on (unverified for SearchEmbed).
-function ccOpenDialog() {
+// columns" button or the inspector). Prefs are keyed by the user GUID from auth/session/user; when
+// opened from the table, the CustomAction payload's user (embedAnswerData.user, verified live for
+// SearchEmbed) is the user actually signed into the iframe, so it wins when it differs.
+function ccOpenDialog(payload) {
   const s = getState();
   const tile = s.section === 'custom-columns' ? ccTiles.get(ccTileKey(s)) : null;
   if (!tile?.ok) { toast('The tile hasn’t been read yet.'); return; }
+  const guid = userGuidFromPayload(payload);
+  if (guid && guid !== ccUsers.get(s.host)?.id) {
+    const n = payload.data.embedAnswerData.user.userName;
+    ccUsers.set(s.host, { id: guid, name: typeof n === 'string' ? n.slice(0, 256) : '' });
+  }
   openColumnsDialog({
     tile,
     prefs: readColPrefs(ccPrefKey(s)),
@@ -3863,10 +3868,21 @@ function ccOpenDialog() {
     onApply: next => {
       if (!writeColPrefs(ccPrefKey(getState()), next)) return false;
       logEvent('Columns', `Saved: ${next.hidden.length} hidden`);
-      renderInspector(); render();
       return true;
     },
+    // The dialog has closed (focus restored) before this re-render; the render replaces the opener
+    // (inspector button or table iframe), so land focus on the new picker button.
+    onApplied: () => {
+      renderInspector(); render();
+      if (!document.activeElement || document.activeElement === document.body) ccFocusTarget()?.focus();
+    },
+    fallbackFocus: ccFocusTarget,
   });
+}
+// Where focus goes when the picker's opener is gone: the inspector's picker button, else the table.
+function ccFocusTarget() {
+  return [...document.querySelectorAll('#insp-body button')].find(b => b.textContent === 'Open column picker' && !b.disabled)
+    || $('#ts-embed-container');
 }
 
 // — Runtime filters (live, HostEvent) —
@@ -6021,7 +6037,7 @@ window.__onCustomAction = async (payload) => {
   // "Display by" primary button → host-side picker that switches the table/tab/parameter.
   if (id === DISPLAY_BY_ACTION_ID) { openDisplayByPicker(); return; }
   // Customize Columns' "Show/Hide columns" button → the per-user column picker.
-  if (id === COLS_ACTION_ID) { ccOpenDialog(); return; }
+  if (id === COLS_ACTION_ID) { ccOpenDialog(payload); return; }
   // Drill-through demo: the column-scoped "View detail" action → host-rendered detail rows.
   if (id === DT_ACTION_ID) { await openDetailPanel(payload); return; }
   // Its "View payload" companion → show the full payload ThoughtSpot passed.

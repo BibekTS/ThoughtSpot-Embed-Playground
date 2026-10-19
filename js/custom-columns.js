@@ -17,7 +17,7 @@
 // @emit-start
 export function splitTileQuery(q) {
   const src = String(q ?? '');
-  const fail = { ok: false, query: src, columns: [], remainder: src.trim() ? [src.trim()] : [] };
+  const fail = { ok: false, query: src, columns: [], remainder: src.trim() ? [src.trim()] : [], sortKeys: new Set() };
   if (src.length > 10000) return fail;
   const BUCKETS = new Set(['hourly', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly', 'detailed', 'hour of day', 'day of week',
     'day of month', 'day of quarter', 'day of year', 'week of month', 'week of quarter', 'week of year', 'month of quarter', 'month of year', 'quarter of year']);
@@ -26,6 +26,10 @@ export function splitTileQuery(q) {
   const FILTER_WORDS = new Set(['in', 'not', 'contains', 'begins', 'ends', 'with', 'between', 'and', 'after', 'before', 'like', 'is', 'null']);
   const LINK = new Set(['of', 'by', 'for', 'each', 'vs', 'versus', 'per', 'than']);
   const DIRS = new Set(['ascending', 'descending', 'asc', 'desc']);
+  // Prefix keywords that bind to the column or aggregate after them ("cumulative sum [x]"). Moving
+  // columns around would strand them, so a query using one outside a filter/sort/top clause is
+  // treated as unreadable (shown unchanged) whenever it has columns to customize.
+  const MODS = new Set(['cumulative', 'moving', 'growth']);
   const re = /\s+|(\[[^\[\]]+\](?:\.(?:'[^']*'|[A-Za-z_][\w-]*))?)|('[^']*'|"[^"]*")|(>=|<=|!=|<>|=|<|>)|(-?\d+(?:\.\d+)?)(?![\w.])|([A-Za-z_][\w-]*)|([(),])/y;
   const L = [];
   for (re.lastIndex = 0; re.lastIndex < src.length;) {
@@ -38,8 +42,10 @@ export function splitTileQuery(q) {
     else if (m[5]) { x.t = 'word'; x.lv = m[5].toLowerCase(); } else x.t = 'punct';
     L.push(x);
   }
-  const groups = new Map(), remainder = [];
-  const keep = (a, b) => remainder.push(src.slice(L[a].s, L[b].e));
+  const groups = new Map(), remainder = [], safe = new Set(), sortBases = new Set();
+  let risky = false;
+  // `clause` marks a filter/sort/top clause: its words are known not to modify a neighbouring column.
+  const keep = (a, b, clause) => { remainder.push(src.slice(L[a].s, L[b].e)); if (clause) for (let k = a; k <= b; k++) safe.add(k); };
   const w = (k) => (L[k] && L[k].t === 'word' ? L[k].lv : '');
   const isColTok = (k) => !!L[k] && L[k].t === 'col' && (!L[k].suf || BUCKETS.has(L[k].suf));
   const freeAfter = (k) => !L[k + 1] || L[k + 1].t === 'col' || STARTS.has(w(k + 1));
@@ -67,9 +73,12 @@ export function splitTileQuery(q) {
     return j;
   };
   const add = (a, b, col, agg) => {
+    // A free word right before a column/aggregate may modify it; moving the column would detach it.
+    const p = L[a - 1];
+    if (p && p.t === 'word' && !STARTS.has(p.lv) && !DIRS.has(p.lv) && !safe.has(a - 1)) risky = true;
     const key = (agg ? agg + ' ' : '') + col.base.toLowerCase();
     let g = groups.get(key);
-    if (!g) { g = { key, label: (agg ? agg + ' ' : '') + col.base, tokens: [], agg: !!agg }; groups.set(key, g); }
+    if (!g) { g = { key, base: col.base.toLowerCase(), label: (agg ? agg + ' ' : '') + col.base, tokens: [], agg: !!agg }; groups.set(key, g); }
     g.tokens.push(src.slice(L[a].s, L[b].e));
     if (col.suf && !agg) g.label = col.base + ' (' + col.suf + ')';
   };
@@ -77,22 +86,25 @@ export function splitTileQuery(q) {
     const x = L[i];
     if (x.t === 'col') {
       const nx = L[i + 1];
-      if (nx && (nx.t === 'op' || FILTER_WORDS.has(w(i + 1)))) { const j = filterEnd(i + 1); keep(i, j); i = j + 1; continue; }
+      if (nx && (nx.t === 'op' || FILTER_WORDS.has(w(i + 1)))) { const j = filterEnd(i + 1); keep(i, j, true); i = j + 1; continue; }
       if (isColTok(i) && freeAfter(i)) { add(i, i, x, ''); i++; continue; }
       const j = runEnd(i); keep(i, j); i = j + 1; continue;
     }
     if (x.t === 'word') {
       const agg = AGGS.find((p) => p.every((pw, n) => w(i + n) === pw));
       if (agg && isColTok(i + agg.length) && freeAfter(i + agg.length)) { add(i, i + agg.length, L[i + agg.length], agg.join(' ')); i += agg.length + 1; continue; }
-      if (x.lv === 'sort' && w(i + 1) === 'by' && L[i + 2] && L[i + 2].t === 'col') { let j = i + 2; if (DIRS.has(w(j + 1))) j++; keep(i, j); i = j + 1; continue; }
-      if ((x.lv === 'top' || x.lv === 'bottom') && L[i + 1] && L[i + 1].t === 'num') { keep(i, i + 1); i += 2; continue; }
+      if (x.lv === 'sort' && w(i + 1) === 'by' && L[i + 2] && L[i + 2].t === 'col') { let j = i + 2; if (DIRS.has(w(j + 1))) j++; sortBases.add(L[i + 2].base.toLowerCase()); keep(i, j, true); i = j + 1; continue; }
+      if ((x.lv === 'top' || x.lv === 'bottom') && L[i + 1] && L[i + 1].t === 'num') { keep(i, i + 1, true); i += 2; continue; }
       const j = runEnd(i); keep(i, j); i = j + 1; continue;
     }
     if (x.v === '(') { const j = parenEnd(i); keep(i, j); i = j + 1; continue; }
     keep(i, i); i++;
   }
   const columns = [...groups.values()];
-  return columns.length > 200 ? fail : { ok: true, query: src, columns, remainder };
+  if (L.some((x, k) => x.t === 'word' && MODS.has(x.lv) && !safe.has(k))) risky = true;
+  if (columns.length > 200 || (risky && columns.length)) return fail;
+  // Columns a kept sort clause refers to can't be hidden (the sort would fail or bring them back).
+  return { ok: true, query: src, columns, remainder, sortKeys: new Set(columns.filter((c) => sortBases.has(c.base)).map((c) => c.key)) };
 }
 // Attributes first, then measures (that is how the table lays them out anyway); the first default
 // column is pinned. A saved order only reorders inside those groups; unknown keys are dropped.
@@ -111,7 +123,7 @@ export function tileTokenString(split, measures, prefs) {
   const p = prefs || {};
   if (!split.ok || !split.columns.length) return split.query;
   const order = orderColumns(split, measures, p.order);
-  const hidden = new Set((Array.isArray(p.hidden) ? p.hidden : []).filter((k) => k !== order[0]));
+  const hidden = new Set((Array.isArray(p.hidden) ? p.hidden : []).filter((k) => k !== order[0] && !split.sortKeys.has(k)));
   if (!order.some((k) => hidden.has(k)) && JSON.stringify(order) === JSON.stringify(orderColumns(split, measures, []))) return split.query;
   const byKey = new Map(split.columns.map((c) => [c.key, c]));
   return [...order.filter((k) => !hidden.has(k)).flatMap((k) => byKey.get(k).tokens), ...split.remainder].join(' ');
@@ -119,7 +131,13 @@ export function tileTokenString(split, measures, prefs) {
 // @emit-end
 
 // ── Tile builder: Liveboard TML → the tile's query, model and column kinds ───────────────────────
-const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The user GUID a SearchEmbed CustomAction payload carries (verified live), or '' when absent/invalid. */
+export function userGuidFromPayload(payload) {
+  const g = payload?.data?.embedAnswerData?.user?.userGUID;
+  return typeof g === 'string' && GUID_RE.test(g) ? g : '';
+}
 
 /** Find the tile in the exported Liveboard TML. → { ok, modelId, answer } | { ok:false, error } */
 export function findTileViz(lb, vizId) {
@@ -200,9 +218,10 @@ const LOCK = '<svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"
 /**
  * Open the dialog. Every ThoughtSpot-derived string (column labels, tile name) goes in via
  * textContent / setAttribute. `onApply({hidden, order})` returns false when saving failed, which
- * keeps the dialog open with an error.
+ * keeps the dialog open with an error; on success the dialog closes, then `onApplied()` runs (the
+ * caller re-renders there). Closing refocuses the opener, else `fallbackFocus()`'s element.
  */
-export function openColumnsDialog({ tile, prefs, userLabel, onApply }) {
+export function openColumnsDialog({ tile, prefs, userLabel, onApply, onApplied, fallbackFocus }) {
   document.getElementById('cc-modal')?.remove();
   const h = (tag, cls) => { const n = document.createElement(tag); if (cls) n.className = cls; return n; };
   const txt = (tag, cls, t) => { const n = h(tag, cls); n.textContent = t; return n; };
@@ -213,9 +232,11 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply }) {
   const isM = (k) => measures.has(k);
   const defOrder = () => orderColumns(split, measures, []);
   const locked = defOrder()[0];
+  const sortKeys = split.sortKeys || new Set();
+  const hideable = (k) => k !== locked && !sortKeys.has(k);
   const usable = split.ok && split.columns.length > 0;
   let draft = {
-    hidden: new Set(((prefs && prefs.hidden) || []).filter((k) => byKey.has(k) && k !== locked)),
+    hidden: new Set(((prefs && prefs.hidden) || []).filter((k) => byKey.has(k) && hideable(k))),
     order: orderColumns(split, measures, prefs && prefs.order),
   };
   let dragKey = null;
@@ -227,6 +248,7 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply }) {
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-modal', 'true');
   panel.setAttribute('aria-labelledby', 'cc-title');
+  panel.tabIndex = -1; // a click on a non-control keeps focus inside the dialog (Escape/Tab still work)
 
   const head = h('div', 'modal-head');
   const htxt = h('div');
@@ -273,11 +295,14 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply }) {
   panel.append(head, tools, body, foot, live);
   modal.append(scrim, panel);
 
-  const announce = (msg) => { live.textContent = msg; };
+  // A trailing zero-width space toggles so a repeated identical message is announced again.
+  const announce = (msg) => { live.textContent = live.textContent === msg ? msg + '\u200b' : msg; };
+  const SORT_NOTE = 'Used by the tile’s sort, so it can’t be hidden';
+  const sortTag = () => txt('span', 'cc-tag', 'used for sort');
   const label = (k) => byKey.get(k).label;
 
   function syncToggle() {
-    const anyShown = split.columns.some((c) => c.key !== locked && !draft.hidden.has(c.key));
+    const anyShown = split.columns.some((c) => hideable(c.key) && !draft.hidden.has(c.key));
     toggle.textContent = anyShown ? 'Deselect all' : 'Select all';
   }
   function paintChecks() {
@@ -290,11 +315,13 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply }) {
       const lab = h('label');
       const cb = h('input'); cb.type = 'checkbox'; cb.checked = !draft.hidden.has(k);
       if (k === locked) { cb.disabled = true; lab.title = 'Always shown first'; }
+      else if (sortKeys.has(k)) { cb.disabled = true; lab.title = SORT_NOTE; }
       cb.addEventListener('change', () => {
         if (cb.checked) draft.hidden.delete(k); else draft.hidden.add(k);
         paintOrder(); syncToggle();
       });
       lab.append(cb, document.createTextNode(label(k)));
+      if (k !== locked && sortKeys.has(k)) lab.append(sortTag());
       li.append(lab);
       checks.append(li);
     }
@@ -305,7 +332,10 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply }) {
     order.replaceChildren();
     let inMeasures = false;
     for (const k of draft.order.filter((x) => !draft.hidden.has(x))) {
-      if (k !== locked && isM(k) && !inMeasures) { order.append(txt('li', 'cc-group', 'Measures')); inMeasures = true; }
+      if (k !== locked && isM(k) && !inMeasures) {
+        const g = txt('li', 'cc-group', 'Measures'); g.setAttribute('role', 'presentation');
+        order.append(g); inMeasures = true;
+      }
       const li = h('li', 'cc-row');
       li.dataset.key = k;
       const icon = h('span', k === locked ? 'cc-lock' : 'cc-grip');
@@ -318,11 +348,22 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply }) {
       } else {
         li.draggable = true; li.tabIndex = 0;
         li.setAttribute('aria-label', `${label(k)}. Alt plus arrow keys to move.`);
-        const rm = btn('cc-remove', '−');
-        rm.setAttribute('aria-label', `Hide ${label(k)}`);
-        rm.setAttribute('title', 'Hide');
-        rm.addEventListener('click', () => { draft.hidden.add(k); paint(); announce(`${label(k)} hidden.`); });
-        li.append(icon, name, rm);
+        li.append(icon, name);
+        if (sortKeys.has(k)) { li.title = SORT_NOTE; li.append(sortTag()); }
+        else {
+          const rm = btn('cc-remove', '−');
+          rm.setAttribute('aria-label', `Hide ${label(k)}`);
+          rm.setAttribute('title', 'Hide');
+          rm.addEventListener('click', () => {
+            // The row (and this button) is about to be re-rendered away: move focus to the next
+            // row's (−), else the previous one's, else the search box — never let it fall to <body>.
+            const ks = [...order.querySelectorAll('li.cc-row')].filter((n) => n.querySelector('.cc-remove')).map((n) => n.dataset.key);
+            const i = ks.indexOf(k), to = ks[i + 1] ?? ks[i - 1];
+            draft.hidden.add(k); paint(); announce(`${label(k)} hidden.`);
+            ((to && order.querySelector(`li[data-key="${CSS.escape(to)}"] .cc-remove`)) || search).focus();
+          });
+          li.append(rm);
+        }
         li.addEventListener('dragstart', (e) => { dragKey = k; li.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', k); });
         li.addEventListener('dragend', () => { dragKey = null; li.classList.remove('dragging'); clearDrop(); });
         li.addEventListener('dragover', (e) => { if (canDrop(k)) { e.preventDefault(); clearDrop(); li.classList.add('drop-before'); } });
@@ -361,12 +402,13 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply }) {
 
   function close() {
     modal.remove();
-    if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+    const to = opener && opener.isConnected && opener !== document.body ? opener : fallbackFocus?.();
+    if (to && typeof to.focus === 'function') to.focus();
   }
   search.addEventListener('input', paintChecks);
   toggle.addEventListener('click', () => {
-    const anyShown = split.columns.some((c) => c.key !== locked && !draft.hidden.has(c.key));
-    draft.hidden = new Set(anyShown ? split.columns.map((c) => c.key).filter((k) => k !== locked) : []);
+    const anyShown = split.columns.some((c) => hideable(c.key) && !draft.hidden.has(c.key));
+    draft.hidden = new Set(anyShown ? split.columns.map((c) => c.key).filter(hideable) : []);
     paint();
   });
   reset.addEventListener('click', () => {
@@ -383,6 +425,7 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply }) {
     const next = { hidden: [...draft.hidden], order: orderColumns(split, measures, draft.order) };
     if (onApply(next) === false) { err.textContent = 'Couldn’t save your columns (browser storage blocked or full).'; return; }
     close();
+    onApplied?.();
   });
   // Escape closes; Tab / Shift+Tab stay inside the dialog. Listeners live on the modal, not document.
   modal.addEventListener('keydown', (e) => {
@@ -391,7 +434,9 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply }) {
     const f = [...panel.querySelectorAll('button, input, [tabindex="0"]')].filter((n) => !n.disabled && n.getClientRects().length);
     if (!f.length) return;
     const first = f[0], last = f[f.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    // Focus on the panel itself (after a click on a non-control): Tab → first, Shift+Tab → last.
+    if (!f.includes(document.activeElement)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   });
 
