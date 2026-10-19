@@ -19,7 +19,7 @@
 
 const STORAGE_KEY = 'tsp_state_v1';
 
-const SECTIONS = new Set(['search', 'spotter', 'liveboard', 'liveboard-custom', 'ai-highlights', 'viz', 'fullapp', 'ai-insights', 'spotter-chat', 'drillthrough', 'custom-columns']);
+const SECTIONS = new Set(['search', 'spotter', 'liveboard', 'liveboard-custom', 'ai-highlights', 'viz', 'fullapp', 'ai-insights', 'spotter-chat', 'drillthrough', 'custom-columns', 'personal-copy']);
 const AUTH_TYPES = new Set(['None', 'TrustedAuthTokenCookieless', 'TrustedAuthToken']);
 const MAX_STR = 4000;
 const MAX_ARR = 500;

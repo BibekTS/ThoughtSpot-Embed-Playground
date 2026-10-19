@@ -224,7 +224,7 @@ export async function discoverViz(host, liveboardId) {
 }
 
 /**
- * Export a Liveboard's TML as JSON (Customize Columns reads one tile's saved search query from it).
+ * Export a Liveboard's TML as JSON (Edit Columns reads one tile's saved search query from it).
  * Direct call, like discoverViz: tml/export is not on the server's relay allowlist, so this needs the
  * origin on ThoughtSpot's CORS allowlist and a user who can export the Liveboard.
  * → { ok:true, liveboard } | { ok:false, status?, error }

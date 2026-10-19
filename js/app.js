@@ -14,7 +14,8 @@ import * as Discovery from './discovery.js';
 import { openAuthModal, buildTrustedAuthConfig, seedAuthHooks } from './auth.js';
 import { fetchAllRows, groupStatements, downloadStatementsPdf } from './invoice-pdf.js';
 import { renderSpotterMcpChat } from './spotter-mcp.js';
-import { splitTileQuery, orderColumns, tileTokenString, tileFromTml, findTileViz, readColPrefs, writeColPrefs, openColumnsDialog, GUID_RE, userGuidFromPayload } from './custom-columns.js';
+import { splitTileQuery, orderColumns, tileTokenString, tileFromTml, findTileViz, tableVizsFromTml, readColPrefs, writeColPrefs, hasColPrefs, listColPrefs, openColumnsDialog, CC_TITLE_RULES, GUID_RE, userGuidFromPayload } from './custom-columns.js';
+import { pcCacheKey, findOrCreateCopy, deleteCopy as deleteUserCopy } from './personal-copy.js';
 
 // ── Embed catalogue ──────────────────────────────────────────────────────────
 const EMBEDS = [
@@ -22,7 +23,8 @@ const EMBEDS = [
   { id: 'spotter',          name: 'Spotter AI',        cls: 'SpotterEmbed',   needs: 'worksheet' },
   { id: 'liveboard',        name: 'Liveboard',         cls: 'LiveboardEmbed', needs: 'liveboard' },
   { id: 'liveboard-custom', name: 'Custom Liveboard',  cls: 'LiveboardEmbed', needs: 'liveboard' },
-  { id: 'custom-columns',   name: 'Customize Columns', cls: 'SearchEmbed',    needs: 'tile', parent: 'liveboard-custom' },
+  { id: 'custom-columns',   name: 'Read-only + Edit Columns', cls: 'LiveboardEmbed', needs: 'liveboard', parent: 'liveboard-custom' },
+  { id: 'personal-copy',    name: 'Personal copy',     cls: 'LiveboardEmbed', needs: 'liveboard', parent: 'liveboard-custom' },
   { id: 'ai-highlights',    name: 'AI Highlights',     cls: 'LiveboardEmbed', needs: 'liveboard' },
   { id: 'viz',              name: 'Single Viz',        cls: 'LiveboardEmbed', needs: 'viz' },
   { id: 'drillthrough',     name: 'Drill-through',     cls: 'LiveboardEmbed', needs: 'liveboard' },
@@ -36,7 +38,7 @@ const META = Object.fromEntries(EMBEDS.map(e => [e.id, e]));
 // embeds, the four LiveboardEmbed flavours, and the two whole-app / no-iframe options.
 const RAIL_GROUPS = [
   { label: 'Search & AI',  ids: ['search', 'spotter', 'spotter-chat'] },
-  { label: 'Liveboards',   ids: ['liveboard', 'liveboard-custom', 'custom-columns', 'ai-highlights', 'viz', 'drillthrough'] },
+  { label: 'Liveboards',   ids: ['liveboard', 'liveboard-custom', 'custom-columns', 'personal-copy', 'ai-highlights', 'viz', 'drillthrough'] },
   { label: 'App & REST',   ids: ['fullapp', 'ai-insights'] },
 ];
 
@@ -46,7 +48,8 @@ const EMBED_BLURBS = {
   spotter:          'Conversational AI analyst — ask a question, then keep asking follow-ups in a chat-style session.',
   liveboard:        'Embed a full interactive Liveboard (dashboard) with all its tiles, filters, and tabs.',
   'liveboard-custom':'A Liveboard driven by your own website-native filter bar, from outside the iframe.',
-  'custom-columns': 'Part of Custom Liveboard: one tile as a native table with a “Show/Hide columns” button, so each user picks and orders columns (saved per user).',
+  'custom-columns': 'Part of Custom Liveboard: the full Liveboard, read-only. Table tiles get an “Edit Columns” button; each user hides and reorders columns, saved per user in your database and shown in a native Table view.',
+  'personal-copy':  'Part of Custom Liveboard: each user gets their own copy of the Liveboard, editable with only Edit and Save, so they change the table’s columns natively. Their copy loads on return.',
   'ai-highlights':  'Render a Liveboard, then surface AI-generated “Key Highlights” narratives over it.',
   viz:              'Embed a single visualization from a Liveboard — or one standalone Answer — on its own.',
   fullapp:          'Embed the entire ThoughtSpot app — nav bar, search, Liveboards, the works.',
@@ -257,17 +260,25 @@ const DT_ACTION_ID = '__dt_view_detail';
 // Id of the companion "View payload" action: same scope as DT_ACTION_ID, but it only shows the raw
 // EmbedEvent.CustomAction payload in a side panel, so you can see exactly what ThoughtSpot sends.
 const PAYLOAD_ACTION_ID = '__dt_view_payload';
-// Customize Columns: the only custom action on that section's table ("Show/Hide columns"), routed to
-// ccOpenDialog(). The tile (query → columns, model, kinds) is read once per host|liveboard|viz and
-// cached here, errors included; the signed-in user's GUID (the prefs key) once per host. Both are
-// session caches reset in connect(); ccSeq fences an in-flight read against a newer one.
+// Read-only + Edit Columns: the one custom action. On the Liveboard it is a VIZ action scoped to the table
+// tiles; in the Table view (a SearchEmbed on one tile) it is an ANSWER action. Both route to the column
+// picker. Session caches (reset in connect()): the Liveboard TML + its table tiles (ccLbs), each tile read
+// once per host|liveboard|viz (ccTiles, errors included), the signed-in user per host (ccUsers).
+// ccTableView = { host, lb, vizId, name } while the Table view shows; ccSeq fences an in-flight read.
 const COLS_ACTION_ID = '__cols_picker';
 const ccTiles = new Map();   // tileKey -> tileFromTml() result ({ ok:true, … } | { ok:false, error })
+const ccTmls = new Map();    // host|liveboard -> exportLiveboardTml() result
+const ccLbs = new Map();     // host|liveboard -> { ok:true, name, vizs:[{vizId,name}] } | { ok:false, error }
 const ccUsers = new Map();   // host -> { id, name } | null (unknown)
-let ccLoadingKey = '';       // tileKey with a read in flight
+const pcCopies = new Map();  // host|user|source -> { id, title, created, extra } | { error }  (Personal copy)
+let ccTableView = null;
+let ccBarOn = false;         // the Table view's back bar (#drill-bar) is up
+let ccLoadingKey = '';       // key with a read in flight
 let ccSeq = 0;
-const ccTileKey = (s) => `${s.host}|${s.liveboardId}|${s.vizId}`;
-const ccPrefKey = (s) => `${s.host}|${ccUsers.get(s.host)?.id || 'anon'}|${s.vizId}`;
+const ccTileKey = (s, vizId) => `${s.host}|${s.liveboardId}|${vizId}`;
+const ccLbKey = (s) => `${s.host}|${s.liveboardId}`;
+const ccPrefKey = (s, vizId) => `${s.host}|${ccUsers.get(s.host)?.id || 'anon'}|${vizId}`;
+const pcKey = (s) => pcCacheKey(s.host, ccUsers.get(s.host)?.id || '', s.liveboardId);
 let editingActionId = null;      // id of the custom action currently loaded into the form for editing
 let lastSaved = null;            // { name, guid, at } — most recent EmbedEvent.Save this session
 let drillParent = null;          // { liveboardId } — set while drilled into a detail board (Q4)
@@ -728,7 +739,7 @@ async function connect({ silent = false, trustHost = false } = {}) {
   answerList = undefined;
   answersLoading = false;
   // Customize Columns' tile + user caches are session caches too (the user GUID is per host/session).
-  ccTiles.clear(); ccUsers.clear(); ccSeq++; ccLoadingKey = '';
+  ccTiles.clear(); ccTmls.clear(); ccLbs.clear(); ccUsers.clear(); pcCopies.clear(); ccTableView = null; ccSeq++; ccLoadingKey = '';
   // Personal liveboards: repopulate the current board's copies (non-fatal — refreshPersonalCopies
   // resolves the scoping identity itself and stays empty if that or the search fails).
   if (getState().personalLb?.enabled) refreshPersonalCopies();
@@ -929,8 +940,6 @@ function needsMissing(s) {
   if (m.needs === 'liveboard' && !s.liveboardId) return 'Pick a Liveboard in the Object section.';
   if (m.needs === 'viz' && !(s.answerId || (s.liveboardId && s.vizId)))
     return 'Pick a Liveboard + Visualization (or a standalone Answer) in the Object section.';
-  if (m.needs === 'tile' && !(s.liveboardId && s.vizId))
-    return 'Pick a Liveboard + a Visualization (table tile) in the Object section.';
   return null;
 }
 
@@ -942,6 +951,9 @@ function render() {
   dtClosePanel(); // the detail rows belong to a specific clicked point — never survive a re-render
   document.getElementById('cc-modal')?.remove(); // the column picker belongs to the table being replaced
   const s = getState();
+  // The Table view only lives on its own Liveboard in its own section; anything else (and Back) drops it.
+  if (ccTableView && !(s.section === 'custom-columns' && ccTableView.host === s.host && ccTableView.lb === s.liveboardId)) ccTableView = null;
+  if (ccBarOn && !ccTableView) { ccBarOn = false; hideDrillBar(); }
   renderPersonalStrip(); // paint/refresh the Personal-liveboards tab strip on every render path
   // fullHeight makes the SDK grow the iframe to the Liveboard's content height; the stage must then
   // scroll and stop pinning the iframe to 100% (see the .full-height rules in styles.css). Drive
@@ -983,32 +995,47 @@ function render() {
     return;
   }
 
-  // Customize Columns renders only once its tile has been read (Liveboard TML + the model's column
-  // kinds). Until then: the read's error, a "connect first" note, or a loading state while it runs.
+  // Read-only + Edit Columns needs the Liveboard's table tiles first (Liveboard TML), or in its Table view
+  // the one tile (+ the model's column kinds); Personal copy needs the user's copy. Until then: the read's
+  // error, a "connect first" note, or a loading state while it runs.
   const cc = s.section === 'custom-columns';
-  const ccTile = cc ? ccTiles.get(ccTileKey(s)) : null;
-  if (cc && !ccTile?.ok) {
+  const pc = s.section === 'personal-copy';
+  const ccTv = cc ? ccTableView : null;
+  const ccTile = ccTv ? ccTiles.get(ccTileKey(s, ccTv.vizId)) : null;
+  const ccRead = cc ? (ccTv ? ccTile : ccLbs.get(ccLbKey(s))) : null;
+  const pcCopy = pc && ccUsers.has(s.host) ? pcCopies.get(pcKey(s)) : null;
+  const holdGate = (needsTitle, needsSub, loadingSub, readState, load) => {
     if (currentEmbed) { try { currentEmbed.destroy(); } catch (_) {} currentEmbed = null; }
     document.getElementById('ai-insights-panel')?.remove();
     destroySpotterMcp();
     flowReset(s.section);
     refreshCode();
-    if (ccTile) {
-      showRenderError(ccTile.error);
-      // Re-rendering can't fix a tile that can't be read ("Reload tile" in the inspector re-reads it).
+    if (readState) {
+      showRenderError(readState.error);
+      // Re-rendering can't fix a read that failed ("Reload" in the inspector re-reads it).
       const proceedBtn = $('#state-overlay .st-error [data-act="proceed"]');
       if (proceedBtn) proceedBtn.hidden = true;
       return;
     }
     if (!connected) {
-      $('#needs-title').textContent = 'Customize Columns needs a connection';
-      $('#needs-sub').textContent = 'Connect above: the tile’s columns are read from the Liveboard over REST.';
+      $('#needs-title').textContent = needsTitle;
+      $('#needs-sub').textContent = needsSub;
       setOverlay('needs');
       return;
     }
-    $('#loading-sub').textContent = 'Reading the tile’s columns from the Liveboard…';
+    $('#loading-sub').textContent = loadingSub;
     setOverlay('loading');
-    ccLoadTile(s.host, s.liveboardId, s.vizId);
+    load();
+  };
+  if (cc && !ccRead?.ok) {
+    holdGate('Edit Columns needs a connection', 'Connect above: the table tiles and their columns are read from the Liveboard over REST.',
+      ccTv ? 'Reading the tile’s columns from the Liveboard…' : 'Reading the Liveboard’s table tiles…',
+      ccRead, () => (ccTv ? ccLoadTile(s.host, s.liveboardId, ccTv.vizId) : ccLoadLiveboard(s.host, s.liveboardId)));
+    return;
+  }
+  if (pc && !pcCopy?.id) {
+    holdGate('Personal copy needs a connection', 'Connect above: your copy is found (or created) over REST as the signed-in user.',
+      'Finding your personal copy…', pcCopy, pcEnsure);
     return;
   }
 
@@ -1029,18 +1056,21 @@ function render() {
   // Standard/source board so it stays tab #1 and copy discovery stays keyed to the source). Same
   // clone-the-config pattern enterDrill() uses.
   const cfg = buildConfig();
-  cfg.liveboardId = effectiveLiveboardId(s);
-  if (cc) {
-    const tokens = tileTokenString(ccTile.split, ccTile.measures, readColPrefs(ccPrefKey(s)));
-    cfg._colsTile = { modelId: ccTile.modelId, tokens };
+  cfg.liveboardId = pc ? pcCopy.id : cc ? s.liveboardId : effectiveLiveboardId(s);
+  if (ccTv) {
+    const tokens = tileTokenString(ccTile.split, ccTile.measures, readColPrefs(ccPrefKey(s, ccTv.vizId)));
+    cfg._colsTile = { modelId: ccTile.modelId, tokens, actionId: COLS_ACTION_ID, titleRules: CC_TITLE_RULES };
     if (window.__TS_PLAYGROUND_PROBE) window.__lastColsTokens = tokens;
-  }
+    ccShowBar(ccTv.name);
+  } else if (cc) cfg._visibleActions = [COLS_ACTION_ID];                 // the allowlist: only the Edit Columns button
+  else if (pc) cfg._visibleActions = [Action.Edit, Action.Save];         // the allowlist: only Edit and Save
+  const lock = cc || pc; // these sections expose none of the action / parameter knobs in their inspectors
 
   authFailed = false; // fresh render — clear any prior auth-failure latch
   appliedRuntimeCols = new Set(); // fresh iframe carries no runtime filters yet
   displayByChoice = displayByActive(s) && s.displayBy.mode === 'vizs' ? (s.displayBy.options[0]?.value || '') : ''; // fresh iframe = initial view
   currentEmbed = doRender(s.section, cfg, {
-    onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); if (!cc) applyLiveFilters(); if (getState().section === 'liveboard-custom') { cfbBuild(); hostHeaderBuild(); } maybeOpenCreatedCopyForEdit(); },
+    onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); if (!lock) applyLiveFilters(); if (getState().section === 'liveboard-custom') { cfbBuild(); hostHeaderBuild(); } maybeOpenCreatedCopyForEdit(); },
     onError(msg) {
       clearTimeout(fallback);
       const str = typeof msg === 'string' ? msg : JSON.stringify(msg);
@@ -1051,12 +1081,11 @@ function render() {
     },
     onEvent: logEvent,
   }, {
-    // Customize Columns exposes none of these knobs in its inspector, so it carries none of them.
-    hiddenActions: cc ? [] : hiddenActionKeys(s).map(k => Action[k]).filter(Boolean),
-    disabledActions: cc ? [] : s.disabledActions.map(k => Action[k]).filter(Boolean),
-    disabledActionReason: cc ? '' : s.disabledActionReason,
+    hiddenActions: lock ? [] : hiddenActionKeys(s).map(k => Action[k]).filter(Boolean),
+    disabledActions: lock ? [] : s.disabledActions.map(k => Action[k]).filter(Boolean),
+    disabledActionReason: lock ? '' : s.disabledActionReason,
     customActions: buildEmbedCustomActions(s),
-    runtimeParameters: cc ? [] : s.runtimeParameters,
+    runtimeParameters: lock ? [] : s.runtimeParameters,
     // visibleVizs goes AFTER the shared-link flags so it wins: vizs-mode "Display by" starts on the
     // first option's table (plus the always-visible charts).
     flags: { ...(s.flags[s.section] || {}), ...(hostHeaderOn(s) ? hostFlags(s) : {}), ...displayByInitialConfig(s) },
@@ -2381,12 +2410,12 @@ function renderInspector() {
     renderMcpInspector(s, body);
     return;
   }
-  // Customize Columns: the tile picker + the per-user column preferences, plus styles. The table is a
-  // fixed SearchEmbed, so the filter / action / host-event knobs of the Liveboard sections don't apply.
-  if (s.section === 'custom-columns') {
+  // Read-only + Edit Columns / Personal copy: the Liveboard picker, the section's own panel, plus styles.
+  // Their action sets are pinned allowlists, so the filter / action / host-event knobs don't apply.
+  if (s.section === 'custom-columns' || s.section === 'personal-copy') {
     body.appendChild(groupLbl('Data'));
     body.appendChild(sectionObject(s));
-    body.appendChild(sectionColumnPrefs(s));
+    body.appendChild(s.section === 'custom-columns' ? sectionColumnPrefs(s) : sectionPersonalCopy(s));
     body.appendChild(groupLbl('Appearance'));
     body.appendChild(sectionStyles(s));
     $('#insp-reset').onclick = () => { setState({ flags: { ...s.flags, [s.section]: {} } }); renderInspector(); render(); };
@@ -2826,7 +2855,7 @@ function sectionObject(s) {
       c.appendChild(toggleField('Auto-execute search', s.executeSearch, v => { setState({ executeSearch: v }); render(); }));
     }
   }
-  if (needs === 'liveboard' || needs === 'viz' || needs === 'tile') {
+  if (needs === 'liveboard' || needs === 'viz') {
     // Q3 — tag-based categorization. Tags come from metadata/search (metadata_header.tags);
     // pick one to narrow the liveboard list the way a host app's section navigation would.
     const allTags = [...new Set((discovered.liveboards || []).flatMap(lb => lb.tags || []))].sort();
@@ -2858,7 +2887,7 @@ function sectionObject(s) {
         renderInspector();
       }, '', !connected, true));
   }
-  if (needs === 'viz' || needs === 'tile') {
+  if (needs === 'viz') {
     // Lazy-load vizzes when the inspector renders with a pre-selected liveboard but a cold
     // cache — happens on page reload or when arriving via a shared link. Auto-load ONLY when
     // connected (same fence as the standalone-Answer auto-load below): discoverViz issues a
@@ -2882,7 +2911,7 @@ function sectionObject(s) {
         : 'No visualizations found. Paste a viz GUID into the picker.';
       c.appendChild(note);
     }
-    // Customize Columns reads a Liveboard tile, so it gets no Answer picker.
+    // Edit Columns and Personal copy take a whole Liveboard, so they get no Answer picker.
     if (needs === 'viz') {
       // Standalone saved Answer — the OTHER thing the Single-Viz section can embed. A saved answer
       // cannot be embedded as a liveboard viz (SDK rule), so it renders via SearchEmbed({answerId,
@@ -2947,10 +2976,49 @@ async function loadAnswers() {
   }
 }
 
-// Customize Columns: read one tile (Liveboard TML → its search query + model → the model's column
-// kinds) and cache the result, errors included, under host|liveboard|viz. The signed-in user's GUID
-// (the prefs key) is read once per host. Fenced like connect(): a newer read or a host switch drops
-// this one's writes. Only called from render() while connected, so never at an unconfirmed host.
+// Read-only + Edit Columns: the signed-in user's GUID (the prefs key and the copy's author), read once
+// per host; unknown → null. A fresh read per host is fenced by the callers' stale() checks.
+async function ccEnsureUser(host) {
+  if (!ccUsers.has(host)) {
+    const u = await Discovery.getCurrentUser(host);
+    if (getState().host !== host) return null;
+    ccUsers.set(host, u.ok && GUID_RE.test(u.userId) ? { id: u.userId, name: u.displayName || u.userName } : null);
+  }
+  return ccUsers.get(host);
+}
+// The Liveboard TML (one export, cached) — the source of both the table-tile list and each tile's query.
+async function ccReadTml(host, liveboardId) {
+  const k = `${host}|${liveboardId}`;
+  if (!ccTmls.has(k)) {
+    const r = await Discovery.exportLiveboardTml(host, liveboardId);
+    if (!r.ok) return { ok: false, error: `Couldn’t read the Liveboard TML (${r.error}). Check CORS (${location.origin}) and that this user can export the Liveboard.` };
+    ccTmls.set(k, r);
+  }
+  return ccTmls.get(k);
+}
+// Read the Liveboard's table tiles (display_mode TABLE_MODE) — what the "Edit Columns" action is scoped to.
+async function ccLoadLiveboard(host, liveboardId) {
+  const key = `${host}|${liveboardId}`;
+  if (ccLbs.has(key) || ccLoadingKey === `lb|${key}`) return;
+  ccLoadingKey = `lb|${key}`;
+  const seq = ++ccSeq;
+  const stale = () => seq !== ccSeq || getState().host !== host;
+  try {
+    await ccEnsureUser(host);
+    const r = await ccReadTml(host, liveboardId);
+    if (stale()) return;
+    ccLbs.set(key, r.ok ? { ok: true, name: String(r.liveboard?.name || ''), vizs: tableVizsFromTml(r.liveboard) } : r);
+  } catch (e) {
+    if (!stale()) ccLbs.set(key, { ok: false, error: `Couldn’t read the Liveboard: ${e.message}` });
+  } finally {
+    if (ccLoadingKey === `lb|${key}` && seq === ccSeq) ccLoadingKey = '';
+  }
+  const s = getState();
+  if (!stale() && !pendingHostConfirm && s.section === 'custom-columns' && ccLbKey(s) === key && !ccTableView) { renderInspector(); render(); }
+}
+// Read one tile (its query + model, then the model's column kinds) and cache the result, errors included.
+// Fenced like connect(): a newer read or a host switch drops this one's writes. Only called while
+// connected, so never at an unconfirmed host.
 async function ccLoadTile(host, liveboardId, vizId) {
   const key = `${host}|${liveboardId}|${vizId}`;
   if (ccTiles.has(key) || ccLoadingKey === key) return;
@@ -2958,17 +3026,13 @@ async function ccLoadTile(host, liveboardId, vizId) {
   const seq = ++ccSeq;
   const stale = () => seq !== ccSeq || getState().host !== host;
   try {
-    if (!ccUsers.has(host)) {
-      const u = await Discovery.getCurrentUser(host);
-      if (stale()) return;
-      ccUsers.set(host, u.ok && GUID_RE.test(u.userId) ? { id: u.userId, name: u.displayName || u.userName } : null);
-    }
-    let tile;
-    const r = await Discovery.exportLiveboardTml(host, liveboardId);
+    await ccEnsureUser(host);
     if (stale()) return;
-    if (!r.ok) {
-      tile = { ok: false, error: `Couldn’t read the Liveboard TML (${r.error}). Check CORS (${location.origin}) and that this user can export the Liveboard.` };
-    } else {
+    let tile;
+    const r = await ccReadTml(host, liveboardId);
+    if (stale()) return;
+    if (!r.ok) tile = r;
+    else {
       const f = findTileViz(r.liveboard, vizId);
       if (f.ok) {
         const k = await Discovery.modelColumnKinds(host, f.modelId);
@@ -2983,30 +3047,80 @@ async function ccLoadTile(host, liveboardId, vizId) {
     if (ccLoadingKey === key && seq === ccSeq) ccLoadingKey = '';
   }
   const s = getState();
-  if (!stale() && !pendingHostConfirm && s.section === 'custom-columns' && ccTileKey(s) === key) { renderInspector(); render(); }
+  if (!stale() && !pendingHostConfirm && ccTableView && ccTileKey(s, ccTableView.vizId) === key) { renderInspector(); render(); }
+}
+// A tile for the click handlers: cached, else read now (with a busy toast). null (+ a toast) when unreadable.
+async function ccResolveTile(vizId) {
+  const s = getState(), key = ccTileKey(s, vizId);
+  if (!ccTiles.has(key)) {
+    const done = showBusy('Reading the tile…');
+    await ccLoadTile(s.host, s.liveboardId, vizId);
+    done();
+  }
+  const g = getState();
+  if (g.host !== s.host || g.section !== 'custom-columns' || g.liveboardId !== s.liveboardId) return null; // navigated away mid-read
+  const t = ccTiles.get(key);
+  if (!t?.ok) { toast(t?.error || 'The tile hasn’t been read yet.'); return null; }
+  return t;
+}
+// The "Edit Columns" button on a Liveboard tile: a user with saved prefs for that tile goes straight to
+// the Table view; a first-timer picks columns in the dialog, Apply saves them and opens the Table view.
+async function ccFromLiveboard(payload) {
+  const d = payload?.data?.embedAnswerData || {};
+  const vizId = String(d.vizId || payload?.data?.vizId || '');
+  if (!GUID_RE.test(vizId)) { toast('Couldn’t tell which tile was clicked.'); return; }
+  if (d.displayMode && d.displayMode !== 'TABLE_MODE') { toast('Edit Columns works on table tiles only.'); return; }
+  ccNoteUser(payload);
+  const tile = await ccResolveTile(vizId);
+  if (!tile) return;
+  const s = getState();
+  if (hasColPrefs(ccPrefKey(s, vizId))) { ccEnterTable(vizId, tile); return; }
+  ccOpenDialog({ vizId, tile, onApplied: () => ccEnterTable(vizId, tile) });
+}
+function ccEnterTable(vizId, tile) {
+  const s = getState();
+  ccTableView = { host: s.host, lb: s.liveboardId, vizId, name: tile.name };
+  logEvent('Columns', `Table view: ${tile.name}`);
+  renderInspector(); render();
+}
+function ccBack() { ccTableView = null; renderInspector(); render(); }
+// The Table view's back bar: the drill bar's element and styling, but its own state (not drillParent).
+function ccShowBar(name) {
+  hideDrillBar();
+  const bar = el('div', 'drill-bar'); bar.id = 'drill-bar';
+  $('#stage').insertBefore(bar, $('#embed-area'));
+  const back = el('button', 'drill-back'); back.type = 'button'; back.textContent = '← Back to Liveboard';
+  back.addEventListener('click', ccBack);
+  const label = el('span', 'drill-label');
+  const strong = el('strong'); strong.textContent = 'Table view';
+  label.append(strong, document.createTextNode(` · ${name}`)); // tile name is TS-derived: text node only
+  bar.append(back, label);
+  ccBarOn = true;
+}
+// The payload's user is the one actually signed into the iframe, so it wins over the REST lookup.
+function ccNoteUser(payload) {
+  const s = getState(), guid = userGuidFromPayload(payload);
+  if (!guid || guid === ccUsers.get(s.host)?.id) return false;
+  const n = payload.data.embedAnswerData.user.userName;
+  ccUsers.set(s.host, { id: guid, name: typeof n === 'string' ? n.slice(0, 256) : '' });
+  return true;
 }
 
-// — Customize Columns: the tile's status + this user's saved layout (all TS text via textContent) —
+// — Read-only + Edit Columns: the table tiles, this user's saved Table views (all TS text via textContent) —
 function sectionColumnPrefs(s) {
   const c = el('div', 'sec-body');
-  const note = el('div', 'sec-note');
-  note.textContent = 'Each user’s hidden and reordered columns are saved per user in this browser (localStorage). In your app, save them to your backend, keyed by the signed-in ThoughtSpot user.';
-  c.appendChild(note);
-  const key = ccTileKey(s);
-  const t = ccTiles.get(key);
+  const notes = [
+    'A read-only Liveboard. Each table tile gets an “Edit Columns” button; the user hides, shows and reorders columns and the choice is stored in YOUR database (here: localStorage in this browser, keyed by host, user and tile), then loaded for that user.',
+    'The tile inside the Liveboard keeps its original columns: ThoughtSpot can’t vary a Liveboard tile per user. The personal layout shows in the Table view that Edit Columns opens.',
+    'The visible-actions allowlist hides every other button in the UI. It is not a security boundary: secure the data with sharing and row-level security.',
+  ];
+  notes.forEach(t => { const n = el('div', 'sec-note'); n.textContent = t; c.appendChild(n); });
+  const lb = ccLbs.get(ccLbKey(s));
   const status = el('div', 'sec-note');
-  if (!(s.liveboardId && s.vizId)) status.textContent = 'Pick a Liveboard and a table tile above.';
-  else if (!t) status.textContent = connected ? 'Reading tile…' : 'Connect to read the tile.';
-  else if (!t.ok) status.textContent = t.error;
-  else if (!t.split.ok) status.textContent = 'This tile’s query couldn’t be read safely, so it’s shown unchanged.';
-  else {
-    const p = readColPrefs(ccPrefKey(s));
-    const order = orderColumns(t.split, t.measures, []);
-    const hiddenN = new Set(p.hidden.filter(k => k !== order[0] && order.includes(k) && !t.split.sortKeys.has(k))).size;
-    const reordered = JSON.stringify(orderColumns(t.split, t.measures, p.order)) !== JSON.stringify(order);
-    const layout = [hiddenN ? `${hiddenN} hidden` : '', reordered ? 'custom order' : ''].filter(Boolean).join(', ') || 'default';
-    status.textContent = `${t.split.columns.length} columns · ${t.split.remainder.length} clauses kept as-is · Layout: ${layout}`;
-  }
+  if (!s.liveboardId) status.textContent = 'Pick a Liveboard above.';
+  else if (!lb) status.textContent = connected ? 'Reading the Liveboard…' : 'Connect to read the Liveboard’s table tiles.';
+  else if (!lb.ok) status.textContent = lb.error;
+  else status.textContent = lb.vizs.length ? `${lb.vizs.length} table tile${lb.vizs.length === 1 ? ' carries' : 's carry'} Edit Columns.` : 'This Liveboard has no table tiles.';
   c.appendChild(status);
   if (ccUsers.has(s.host)) {
     const who = el('div', 'sec-note');
@@ -3014,19 +3128,110 @@ function sectionColumnPrefs(s) {
     who.textContent = u ? `Saving for: ${u.name || u.id}` : 'Saving for: unknown user (shared by everyone on this browser)';
     c.appendChild(who);
   }
+  // This user's saved Table views for this Liveboard.
+  if (lb?.ok) {
+    const names = new Map(lb.vizs.map(v => [v.vizId, v.name]));
+    const saved = listColPrefs(`${s.host}|${ccUsers.get(s.host)?.id || 'anon'}|`).filter(p => names.has(p.vizId));
+    const head = el('div', 'sec-note'); head.textContent = saved.length ? 'Your saved Table views:' : 'No saved Table views yet: click Edit Columns on a tile.';
+    c.appendChild(head);
+    for (const p of saved) {
+      const row = el('div', 'cc-actions');
+      const lbl = el('span', 'sec-note'); lbl.textContent = `${names.get(p.vizId)} · ${p.hidden} hidden`;
+      const open = el('button', 'sec-apply'); open.type = 'button'; open.textContent = 'Open'; open.dataset.ccOpen = '1';
+      open.addEventListener('click', async () => { const t = await ccResolveTile(p.vizId); if (t) ccEnterTable(p.vizId, t); });
+      const reset = el('button', 'sec-apply ghost'); reset.type = 'button'; reset.textContent = 'Reset';
+      reset.addEventListener('click', () => {
+        const g = getState();
+        writeColPrefs(ccPrefKey(g, p.vizId), null);
+        logEvent('Columns', `Reset ${names.get(p.vizId)} to the tile’s default layout`);
+        renderInspector();
+        if (ccTableView?.vizId === p.vizId) render();
+      });
+      row.append(lbl, open, reset);
+      c.appendChild(row);
+    }
+  }
   const row = el('div', 'cc-actions');
-  const open = el('button', 'sec-apply'); open.type = 'button'; open.textContent = 'Open column picker';
-  open.disabled = !t?.ok;
-  open.addEventListener('click', () => ccOpenDialog());
-  const reset = el('button', 'sec-apply ghost'); reset.type = 'button'; reset.textContent = 'Reset my columns';
-  reset.disabled = !t?.ok;
-  reset.addEventListener('click', () => { writeColPrefs(ccPrefKey(getState()), null); logEvent('Columns', 'Reset to the tile’s default layout'); renderInspector(); render(); });
-  const reload = el('button', 'sec-apply ghost'); reload.type = 'button'; reload.textContent = 'Reload tile';
-  reload.disabled = !connected || !t;
-  reload.addEventListener('click', () => { ccTiles.delete(ccTileKey(getState())); renderInspector(); render(); });
-  row.append(open, reset, reload);
+  const reload = el('button', 'sec-apply ghost'); reload.type = 'button'; reload.textContent = 'Reload Liveboard';
+  reload.disabled = !connected;
+  reload.addEventListener('click', () => {
+    const g = getState(), k = ccLbKey(g);
+    ccLbs.delete(k); ccTmls.delete(k);
+    for (const key of [...ccTiles.keys()]) if (key.startsWith(k + '|')) ccTiles.delete(key);
+    ccTableView = null; renderInspector(); render();
+  });
+  row.appendChild(reload);
   c.appendChild(row);
-  return accordion('Column preferences', '', c, true);
+  return accordion('Edit Columns', '', c, true);
+}
+
+// — Personal copy: find-or-create the user's copy (REST), then the owner, the copy and its trade-offs —
+async function pcEnsure() {
+  const s = getState(), host = s.host, sourceId = s.liveboardId;
+  const stale = () => getState().host !== host || getState().liveboardId !== sourceId || getState().section !== 'personal-copy';
+  let res;
+  try {
+    const u = await ccEnsureUser(host);
+    if (stale()) return;
+    if (!u) res = { error: 'Couldn’t resolve the signed-in user (GET /auth/session/user), so there is no one to own the copy.' };
+    else {
+      const name = discovered.liveboards.find(lb => lb.id === sourceId)?.name || ccLbs.get(`${host}|${sourceId}`)?.name || 'Liveboard';
+      logEvent('Personal copy', `Looking for ${u.name || u.id}’s copy of ${sourceId}`);
+      const r = await findOrCreateCopy(host, u, sourceId, name);
+      if (stale()) return;
+      res = r.ok ? r : { error: r.error };
+      if (r.ok) logEvent('Personal copy', `${r.created ? '✓ created' : 'found'} ${r.id}${r.extra ? ` (⚠ ${r.extra} duplicate${r.extra === 1 ? '' : 's'})` : ''}`);
+      else logEvent('Personal copy', `✗ ${r.error}`);
+    }
+  } catch (e) { res = { error: `Personal copy failed: ${e.message}` }; }
+  if (stale()) return;
+  pcCopies.set(pcKey(getState()), res);
+  renderInspector(); render();
+}
+let pcArmed = false, pcArmTimer = null;
+async function pcReset() {
+  const s = getState(), c = pcCopies.get(pcKey(s)), u = ccUsers.get(s.host);
+  if (!c?.id || !u) return;
+  const done = showBusy('Deleting your copy…');
+  const r = await deleteUserCopy(s.host, u, s.liveboardId, c.id);
+  if (!r.ok) { done(); toast(`Delete failed: ${r.error}`, 'error'); logEvent('Personal copy', `✗ delete: ${r.error}`); return; }
+  logEvent('Personal copy', `Deleted ${c.id}; a fresh copy of the original follows`);
+  pcCopies.delete(pcKey(getState()));
+  done('✓ Reset to the original', 'success');
+  renderInspector(); render(); // the gate finds-or-creates again
+}
+function sectionPersonalCopy(s) {
+  const c = el('div', 'sec-body');
+  const u = ccUsers.get(s.host), cp = pcCopies.get(pcKey(s));
+  const line = (t) => { const n = el('div', 'sec-note'); n.textContent = t; c.appendChild(n); return n; };
+  line('Each user gets one editable copy of this Liveboard. It is embedded with only Edit and Save, so they change the table’s columns natively and Save; on their next visit their copy loads.');
+  line(u ? `Owner: ${u.name || u.id}` : (connected ? 'Owner: reading the signed-in user…' : 'Connect to find the owner.'));
+  if (cp?.id) {
+    line(`Copy: ${cp.title}`);
+    line(`GUID: ${cp.id}${cp.created ? ' (created just now)' : ''}`);
+    if (cp.extra) line(`⚠ ${cp.extra} duplicate cop${cp.extra === 1 ? 'y' : 'ies'} found for this user (a find-then-create race). This one is used; delete the others.`);
+  } else if (cp?.error) line(cp.error);
+  const row = el('div', 'cc-actions');
+  const reset = el('button', 'sec-apply ghost'); reset.type = 'button'; reset.textContent = pcArmed ? 'Click again to delete and recreate' : 'Reset to original';
+  reset.disabled = !cp?.id;
+  reset.addEventListener('click', () => {
+    if (!pcArmed) { pcArmed = true; clearTimeout(pcArmTimer); pcArmTimer = setTimeout(() => { pcArmed = false; renderInspector(); }, 4000); renderInspector(); return; }
+    pcArmed = false; clearTimeout(pcArmTimer); pcReset();
+  });
+  const reload = el('button', 'sec-apply ghost'); reload.type = 'button'; reload.textContent = 'Look up again'; reload.disabled = !connected;
+  reload.addEventListener('click', () => { pcCopies.delete(pcKey(getState())); renderInspector(); render(); });
+  row.append(reset, reload);
+  c.appendChild(row);
+  line('Trade-offs of this option (the read-only option avoids all of them):');
+  for (const t of [
+    'Users need create and edit rights, and sharing on the source (copyobject needs view access).',
+    'One ThoughtSpot object per user: the objects pile up.',
+    'Changes to the source Liveboard do not reach existing copies (use Reset to original).',
+    'Copies are private to their author, but admins can see them.',
+    'The Edit/Save allowlist is UI, not a security boundary.',
+    'Finding-then-creating is not atomic: two tabs opening at once can create two copies.',
+  ]) { const li = el('div', 'sec-note'); li.textContent = '• ' + t; c.appendChild(li); }
+  return accordion('Personal copy', '', c, true);
 }
 
 function textField(label, value, onChange, placeholder) {
@@ -3228,9 +3433,14 @@ function hiddenActionKeys(s) {
 // The custom actions passed to the embed: the user's, plus a synthetic "Export" menu action
 // (id '__export') when enabled, which the EmbedEvent.CustomAction dispatcher routes to runExport().
 function buildEmbedCustomActions(s) {
-  // Customize Columns carries exactly one action: the "Show/Hide columns" button on the table.
+  if (s.section === 'personal-copy') return [];
+  // Edit Columns carries exactly one action. In the Table view it is an ANSWER button; on the Liveboard it
+  // is a VIZ action scoped (metadataIds.vizIds) to the table tiles, so only they show it.
   if (s.section === 'custom-columns') {
-    return [{ id: COLS_ACTION_ID, name: 'Show/Hide columns', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.ANSWER }];
+    const action = { id: COLS_ACTION_ID, name: 'Edit Columns', position: CustomActionsPosition.PRIMARY };
+    if (ccTableView) return [{ ...action, target: CustomActionTarget.ANSWER }];
+    const vizIds = (ccLbs.get(ccLbKey(s))?.vizs || []).map(v => v.vizId);
+    return vizIds.length ? [{ ...action, target: CustomActionTarget.VIZ, metadataIds: { vizIds } }] : [];
   }
   const actions = s.customActions.map(a => ({
     id: a.id,
@@ -3848,44 +4058,36 @@ function openDisplayByPicker() {
   document.body.appendChild(modal);
 }
 
-// Customize Columns: open the column picker for the current tile (from the table's "Show/Hide
-// columns" button or the inspector). Prefs are keyed by the user GUID from auth/session/user; when
-// opened from the table, the CustomAction payload's user (embedAnswerData.user, verified live for
-// SearchEmbed) is the user actually signed into the iframe, so it wins when it differs.
-function ccOpenDialog(payload) {
+// Edit Columns: open the column picker for a tile ({vizId, tile} default to the Table view's). From the Table
+// view's own button the payload's user (embedAnswerData.user, verified live) is the one signed into the
+// iframe, so a different one re-renders first (render() removes #cc-modal, so the dialog opens after).
+function ccOpenDialog({ payload, vizId = ccTableView?.vizId, tile, onApplied } = {}) {
   const s = getState();
-  const tile = s.section === 'custom-columns' ? ccTiles.get(ccTileKey(s)) : null;
+  tile = tile || (vizId ? ccTiles.get(ccTileKey(s, vizId)) : null);
   if (!tile?.ok) { toast('The tile hasn’t been read yet.'); return; }
-  const guid = userGuidFromPayload(payload);
-  if (guid && guid !== ccUsers.get(s.host)?.id) {
-    const n = payload.data.embedAnswerData.user.userName;
-    ccUsers.set(s.host, { id: guid, name: typeof n === 'string' ? n.slice(0, 256) : '' });
-    // Re-render first so the table and the inspector's "Saving for" show this user's saved layout
-    // even if the dialog is cancelled (render() removes #cc-modal, so the dialog opens after it).
-    renderInspector(); render();
-  }
+  if (payload && ccNoteUser(payload)) { renderInspector(); if (ccTableView) render(); }
   openColumnsDialog({
     tile,
-    prefs: readColPrefs(ccPrefKey(s)),
+    prefs: readColPrefs(ccPrefKey(s, vizId)),
     userLabel: ccUsers.get(s.host)?.name || 'an unknown user',
     onApply: next => {
-      if (!writeColPrefs(ccPrefKey(getState()), next)) return false;
+      if (!writeColPrefs(ccPrefKey(getState(), vizId), next)) return false;
       logEvent('Columns', `Saved: ${next.hidden.length} hidden`);
       return true;
     },
-    // The dialog has closed (focus restored) before this re-render; the render replaces the opener
-    // (inspector button or table iframe), so land focus on the new picker button.
-    onApplied: () => {
+    // The dialog has closed (focus restored) before this runs; the default re-render replaces the opener
+    // (inspector button or table iframe), so land focus on the inspector button / table container.
+    onApplied: onApplied || (() => {
       renderInspector(); render();
       if (!document.activeElement || document.activeElement === document.body) ccFocusTarget()?.focus();
-    },
+    }),
     fallbackFocus: ccFocusTarget,
   });
 }
-// Where focus goes when the picker's opener is gone: the inspector's picker button if it's visible
-// (the inspector is display:none at ≤860px), else the table container (made focusable on demand).
+// Where focus goes when the picker's opener is gone: an inspector "Open" button if one is visible (the
+// inspector is display:none at ≤860px), else the embed container (made focusable on demand).
 function ccFocusTarget() {
-  const btn = [...document.querySelectorAll('#insp-body button')].find(b => b.textContent === 'Open column picker' && !b.disabled && b.getClientRects().length);
+  const btn = [...document.querySelectorAll('#insp-body button[data-cc-open]')].find(b => !b.disabled && b.getClientRects().length);
   if (btn) return btn;
   const box = $('#ts-embed-container');
   if (box && !box.hasAttribute('tabindex')) box.tabIndex = -1;
@@ -6043,8 +6245,8 @@ window.__onCustomAction = async (payload) => {
   if (id === DATE_ACTION_ID) { openDatePicker(); return; }
   // "Display by" primary button → host-side picker that switches the table/tab/parameter.
   if (id === DISPLAY_BY_ACTION_ID) { openDisplayByPicker(); return; }
-  // Customize Columns' "Show/Hide columns" button → the per-user column picker.
-  if (id === COLS_ACTION_ID) { ccOpenDialog(payload); return; }
+  // Edit Columns: the Table view's own button reopens the picker; on the Liveboard it opens the Table view.
+  if (id === COLS_ACTION_ID) { if (ccTableView) ccOpenDialog({ payload }); else await ccFromLiveboard(payload); return; }
   // Drill-through demo: the column-scoped "View detail" action → host-rendered detail rows.
   if (id === DT_ACTION_ID) { await openDetailPanel(payload); return; }
   // Its "View payload" companion → show the full payload ThoughtSpot passed.
@@ -7677,16 +7879,20 @@ function generateCode() {
   // The VizPointClick drill leg only exists when a left-click is NOT already claimed by the record
   // list and a detail board is configured — mirror the runtime condition exactly.
   const dtPointDrill = dtOn && s.drill.trigger !== 'click' && !!s.drill.drillLiveboardId;
-  // Customize Columns emits its own self-contained snippet (customColumnsLines) after init().
+  // Edit Columns / Personal copy emit their own self-contained snippets after init().
   const ccOn = s.section === 'custom-columns';
+  const pcOn = s.section === 'personal-copy';
+  const lockOn = ccOn || pcOn;
   const importNames = ['init', 'AuthType', embedCls, 'EmbedEvent'];
-  if (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction || dispBy || ccOn) importNames.push('CustomActionsPosition', 'CustomActionTarget');
+  if (!pcOn && (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction || dispBy || ccOn)) importNames.push('CustomActionsPosition', 'CustomActionTarget');
+  if (ccOn) importNames.push('SearchEmbed');
+  if (pcOn) importNames.push('Action');
   const cfbActiveFilters = s.section === 'liveboard-custom'
     ? Object.entries(cfbSelected).filter(([, v]) => v && v.length)
     : [];
   const drillAction = s.customActions.find(a => a.type === 'drill');
-  if (!ccOn && (s.activeFilters.length || cfbActiveFilters.length || drillAction || dateBtn || dtPointDrill)) importNames.push('HostEvent', 'RuntimeFilterOp');
-  if (!ccOn && (hiddenActionKeys(s).length || s.disabledActions.length)) importNames.push('Action');
+  if (!lockOn && (s.activeFilters.length || cfbActiveFilters.length || drillAction || dateBtn || dtPointDrill)) importNames.push('HostEvent', 'RuntimeFilterOp');
+  if (!lockOn && (hiddenActionKeys(s).length || s.disabledActions.length)) importNames.push('Action');
   if (s.section === 'fullapp') importNames.push('Page');
   if (s.section === 'ai-highlights') importNames.push('HostEvent');
   if (plbOn) importNames.push('HostEvent');
@@ -7733,7 +7939,7 @@ function generateCode() {
   }
   L.push(`init({\n${initLines.join('\n')}\n});`);
   L.push('');
-  if (ccOn) { L.push(...customColumnsLines(s, esc)); return L.join('\n'); }
+  if (lockOn) { L.push(...(ccOn ? customColumnsLines(s, esc) : personalCopyLines(s, esc))); return L.join('\n'); }
   // embed
   const opt = [];
   opt.push('  frameParams: {},');
@@ -8452,73 +8658,166 @@ function spotterMcpCode(s) {
   ].join('\n');
 }
 
-// Customize Columns snippet body (after init()). The query split + token builder are emitted from
+// Read-only + Edit Columns snippet body (after init()). The query split + token builder are emitted from
 // their LIVE source (Function.prototype.toString, the S46 pattern), so the snippet runs exactly what
-// the playground runs. Host-free: with no tile read yet it emits placeholders and still parses.
+// the playground runs. Host-free: with nothing read yet it emits placeholders and still parses.
 function customColumnsLines(s, esc) {
-  const t = ccTiles.get(ccTileKey(s));
-  const tile = t?.ok ? t : null;
-  const measures = tile ? [...tile.measures].map(k => `'${esc(k)}'`).join(', ') : "'measure'";
+  const lb = ccLbs.get(ccLbKey(s));
+  const vizIds = (lb?.ok ? lb.vizs.map(v => `'${esc(v.vizId)}'`) : ["'<table-viz-guid>'"]).join(', ');
   return [
-    '// Customize Columns: one Liveboard tile as a native table whose columns each user hides and reorders.',
-    '// Read the tile once (server-side, or at build time) from the Liveboard TML:',
+    '// Read-only + Edit Columns: the FULL Liveboard, read-only. Each table tile gets an "Edit Columns" button;',
+    '// the user hides / shows / reorders columns and the choice is stored in YOUR database, then loaded for',
+    '// that user and shown in a native "Table view". The tile inside the Liveboard keeps its original columns',
+    '// (ThoughtSpot cannot vary a Liveboard tile per user). The allowlist is UI, not a security boundary.',
+    '// Read the Liveboard TML once (server-side, or at build time):',
     `//   POST /api/rest/2.0/metadata/tml/export { metadata: [{ identifier: '${esc(s.liveboardId || '<liveboard-guid>')}', type: 'LIVEBOARD' }], export_fqn: true, edoc_format: 'JSON' }`,
-    `//   viz = JSON.parse(edoc).liveboard.visualizations.find(v => v.viz_guid === '${esc(s.vizId || '<viz-guid>')}')`,
-    '//   TILE_QUERY = viz.answer.search_query, MODEL_ID = viz.answer.tables[0].fqn',
-    '// Column kinds: POST /api/rest/2.0/metadata/search { metadata: [{ identifier: MODEL_ID, type: \'LOGICAL_TABLE\' }], include_details: true }',
-    '//   MEASURES = lower-cased names of metadata_detail.columns with type MEASURE (aggregated tokens count too)',
-    `const MODEL_ID = '${tile ? esc(tile.modelId) : '<model-guid>'}';`,
-    `const VIZ_ID = '${esc(s.vizId || '<viz-guid>')}';`,
-    `const TILE_QUERY = '${tile ? esc(tile.split.query) : '[Column A] [Column B] [Measure]'}';`,
-    `const MEASURES = new Set([${measures}]);`,
+    "//   TABLE_VIZ_IDS = visualizations whose answer.display_mode === 'TABLE_MODE' → viz_guid",
+    '//   per tile: query = answer.search_query, modelId = answer.tables[0].fqn, name = answer.name',
+    '// Column kinds: POST /api/rest/2.0/metadata/search { metadata: [{ identifier: modelId, type: \'LOGICAL_TABLE\' }], include_details: true }',
+    '//   measures = lower-cased names of metadata_detail.columns with type MEASURE (aggregated tokens count too)',
+    `const LIVEBOARD_ID = '${esc(s.liveboardId || '<liveboard-guid>')}';`,
+    `const TABLE_VIZ_IDS = [${vizIds}];`,
+    `const COLS_ACTION = '${COLS_ACTION_ID}';`,
     '',
-    '// Split the query into columns (hide/reorder) and clauses kept verbatim (filters, sort, top-N).',
+    '// Split a tile query into columns (hide/reorder) and clauses kept verbatim (filters, sort, top-N).',
     String(splitTileQuery),
     String(orderColumns),
     String(tileTokenString),
-    'const TILE = splitTileQuery(TILE_QUERY);',
     '',
-    '// Per-user preferences: replace with your backend, keyed by the signed-in ThoughtSpot user.',
-    'async function loadPrefs(userId) {',
-    "  try { return JSON.parse(localStorage.getItem('colprefs:' + userId + ':' + VIZ_ID)) || { hidden: [], order: [] }; }",
-    '  catch { return { hidden: [], order: [] }; }',
+    '// Your backend, keyed by the signed-in ThoughtSpot user. GET returns null when the user never chose.',
+    'const prefsUrl = (userId, vizId) => `/api/column-prefs?user=${encodeURIComponent(userId)}&viz=${encodeURIComponent(vizId)}`;',
+    'async function loadPrefs(userId, vizId) {',
+    '  const r = await fetch(prefsUrl(userId, vizId));',
+    '  return r.ok ? r.json() : null;',
     '}',
-    'async function savePrefs(userId, prefs) {',
-    "  localStorage.setItem('colprefs:' + userId + ':' + VIZ_ID, JSON.stringify(prefs));",
+    'async function savePrefs(userId, vizId, prefs) {',
+    "  await fetch(prefsUrl(userId, vizId), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prefs) });",
     '}',
-    '// Build your own dialog: list TILE.columns ({ key, label }) as checkboxes plus an ordered list,',
+    '// Your backend or the TML read above → { name, modelId, query, measures: Set<string> } for one tile.',
+    'async function loadTile(vizId) { throw new Error("implement: read the tile from the Liveboard TML"); }',
+    '// Build your own dialog: list split.columns ({ key, label }) as checkboxes plus an ordered list,',
     '// and resolve with { hidden: [keys], order: [keys] } (or null on Cancel).',
     'async function openColumnsDialog(columns, prefs) { return null; }',
     '',
     'let embed = null;',
-    "let userId = 'anonymous'; // the signed-in user's GUID (GET /api/rest/2.0/auth/session/user, field id)",
-    'let prefs = { hidden: [], order: [] };',
     '',
-    'function renderTable() {',
+    'function renderLiveboard() {',
     '  if (embed) embed.destroy(); // always destroy before re-render',
-    "  embed = new SearchEmbed('#ts-embed-container', {",
+    "  embed = new LiveboardEmbed('#ts-embed-container', {",
     '    frameParams: {},',
-    '    dataSources: [MODEL_ID],',
-    '    searchOptions: { searchTokenString: tileTokenString(TILE, MEASURES, prefs), executeSearch: true },',
-    '    hideSearchBar: true,',
-    '    hideDataSources: true,',
-    '    forceTable: true,',
+    '    liveboardV2: true,',
+    '    liveboardId: LIVEBOARD_ID,',
+    '    visibleActions: [COLS_ACTION], // allowlist: only the Edit Columns button shows',
     '    customActions: [',
-    `      { id: '${COLS_ACTION_ID}', name: 'Show/Hide columns', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.ANSWER },`,
+    '      { id: COLS_ACTION, name: \'Edit Columns\', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.VIZ, metadataIds: { vizIds: TABLE_VIZ_IDS } },',
     '    ],',
     '  });',
     '  embed.on(EmbedEvent.CustomAction, async (e) => {',
-    `    if ((e.data?.id ?? e.id) !== '${COLS_ACTION_ID}') return;`,
-    '    const next = await openColumnsDialog(TILE.columns, prefs);',
-    '    if (!next) return;',
-    '    prefs = next;',
-    '    await savePrefs(userId, prefs);',
-    '    renderTable();',
+    '    if ((e.data?.id ?? e.id) !== COLS_ACTION) return;',
+    '    const a = e.data.embedAnswerData; // { vizId, displayMode, user: { userGUID, userName }, … }',
+    "    if (a.displayMode !== 'TABLE_MODE') return;",
+    '    const tile = await loadTile(a.vizId);',
+    '    const split = splitTileQuery(tile.query);',
+    '    let prefs = await loadPrefs(a.user.userGUID, a.vizId);',
+    '    if (!prefs) { // first visit: pick columns, save, then show the Table view',
+    '      prefs = await openColumnsDialog(split.columns, { hidden: [], order: [] });',
+    '      if (!prefs) return;',
+    '      await savePrefs(a.user.userGUID, a.vizId, prefs);',
+    '    }',
+    '    renderTable(a.user.userGUID, a.vizId, tile, split, prefs);',
     '  });',
     '  embed.render();',
     '}',
     '',
-    'loadPrefs(userId).then((p) => { prefs = p; renderTable(); });',
+    '// The Table view: one tile as a native table, columns per this user. Show your own',
+    '// "← Back to Liveboard" control that calls renderLiveboard().',
+    'function renderTable(userId, vizId, tile, split, prefs) {',
+    '  if (embed) embed.destroy();',
+    "  embed = new SearchEmbed('#ts-embed-container', {",
+    '    frameParams: {},',
+    '    dataSources: [tile.modelId],',
+    '    searchOptions: { searchTokenString: tileTokenString(split, tile.measures, prefs), executeSearch: true },',
+    '    hideSearchBar: true,',
+    '    hideDataSources: true,',
+    '    forceTable: true,',
+    '    visibleActions: [COLS_ACTION],',
+    '    customActions: [',
+    '      { id: COLS_ACTION, name: \'Edit Columns\', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.ANSWER },',
+    '    ],',
+    '  });',
+    '  embed.on(EmbedEvent.CustomAction, async (e) => {',
+    '    if ((e.data?.id ?? e.id) !== COLS_ACTION) return;',
+    '    const next = await openColumnsDialog(split.columns, prefs);',
+    '    if (!next) return;',
+    '    await savePrefs(userId, vizId, next);',
+    '    renderTable(userId, vizId, tile, split, next);',
+    '  });',
+    '  embed.render();',
+    '}',
+    '',
+    'renderLiveboard();',
+  ];
+}
+
+// Personal copy snippet body (after init()): find-or-create one copy per user, then embed it restrictively.
+function personalCopyLines(s, esc) {
+  const src = esc(s.liveboardId || '<liveboard-guid>');
+  return [
+    '// Personal copy: each user gets their own copy of the source Liveboard, embedded with ONLY Edit and Save,',
+    '// so they change the table\'s columns natively. Needs create/edit rights; one object per user; source',
+    '// changes do not reach existing copies; copies are private to the author (admins can see them). The',
+    '// allowlist is UI, not a security boundary. Prefer the read-only Edit Columns option when you can.',
+    `const SOURCE_ID = '${src}';`,
+    "const SRC_TAG = 'src:' + SOURCE_ID; // marks which Liveboard a copy came from",
+    '',
+    '// REST with the signed-in session (add an Authorization bearer header for cookieless trusted auth).',
+    'async function rest(path, body) {',
+    `  const r = await fetch('${esc(s.host) || 'https://your-instance.thoughtspot.cloud'}/api/rest/2.0' + path, {`,
+    "    method: body ? 'POST' : 'GET', credentials: 'include',",
+    "    headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body),",
+    '  });',
+    '  if (!r.ok) throw new Error(path + \' → HTTP \' + r.status);',
+    '  return r.status === 204 ? null : r.json();',
+    '}',
+    '',
+    '// The search (tag + author) is the source of truth; never trust a cached GUID on its own.',
+    'async function findCopy(user) {',
+    "  const found = await rest('/metadata/search', {",
+    "    metadata: [{ type: 'LIVEBOARD' }], tag_identifiers: [SRC_TAG],",
+    '    created_by_user_identifiers: [user.id], record_size: -1, // tags are tenant-wide: ALWAYS filter by author',
+    '  });',
+    '  return found.map((m) => m.metadata_id).sort()[0] || null; // lowest GUID wins if a race made two',
+    '}',
+    'async function createCopy(user, sourceName) {',
+    "  const { metadata_id } = await rest('/metadata/copyobject', {",
+    "    identifier: SOURCE_ID, type: 'LIVEBOARD', title: sourceName + ' — ' + user.name + ' (personal copy)',",
+    '  });',
+    "  await rest('/tags/create', { name: SRC_TAG }).catch(() => {}); // already exists is fine",
+    "  await rest('/tags/assign', { metadata: [{ identifier: metadata_id, type: 'LIVEBOARD' }], tag_identifiers: [SRC_TAG] });",
+    '  return metadata_id;',
+    '}',
+    '// Reset to original: delete, then find-or-create again.',
+    'async function resetCopy(copyId) {',
+    "  await rest('/metadata/delete', { metadata: [{ identifier: copyId, type: 'LIVEBOARD' }] });",
+    '}',
+    '',
+    'let embed = null;',
+    'async function showMyCopy(sourceName) {',
+    "  const user = await rest('/auth/session/user'); // { id, name, … }",
+    '  const copyId = (await findCopy(user)) || (await createCopy(user, sourceName));',
+    '  if (embed) embed.destroy(); // always destroy before re-render',
+    "  embed = new LiveboardEmbed('#ts-embed-container', {",
+    '    frameParams: {},',
+    '    liveboardV2: true,',
+    '    liveboardId: copyId,',
+    '    hideLiveboardHeader: true,',
+    '    visibleActions: [Action.Edit, Action.Save], // allowlist: nothing else shows',
+    '  });',
+    '  embed.on(EmbedEvent.Alert, (e) => console.log(\'Alert\', e.data)); // "Changes saved" arrives here',
+    '  embed.render();',
+    '}',
+    '',
+    "showMyCopy('Your Liveboard');",
   ];
 }
 
@@ -8853,8 +9152,14 @@ function apiCatalog(s) {
   ];
   if (['liveboard', 'liveboard-custom', 'viz', 'ai-highlights'].includes(s.section))
     disc.push({ method: 'POST', path: '/api/rest/2.0/metadata/liveboard/data', scope: 'TS REST', desc: "List a liveboard's visualizations and derive custom-filter values." });
+  if (s.section === 'personal-copy') disc.push(
+    { method: 'GET', path: '/api/rest/2.0/auth/session/user', scope: 'TS REST', desc: "The signed-in user: the copy's owner." },
+    { method: 'POST', path: '/api/rest/2.0/metadata/copyobject', scope: 'TS REST', desc: "Make the user's copy of the source Liveboard (once)." },
+    { method: 'POST', path: '/api/rest/2.0/tags/assign', scope: 'TS REST', desc: 'Tag the copy src:<source GUID>; with its author, the tag finds it again.' },
+    { method: 'POST', path: '/api/rest/2.0/metadata/delete', scope: 'TS REST', desc: 'Reset to original: delete the copy, then make a new one.' },
+  );
   if (s.section === 'custom-columns') disc.push(
-    { method: 'POST', path: '/api/rest/2.0/metadata/tml/export', scope: 'TS REST', desc: "Read the Liveboard TML: the tile's saved search query and its model (direct call; needs CORS + export access)." },
+    { method: 'POST', path: '/api/rest/2.0/metadata/tml/export', scope: 'TS REST', desc: "Read the Liveboard TML: which tiles are tables, and each tile's saved search query and model (direct call; needs CORS + export access)." },
     { method: 'POST', path: '/api/rest/2.0/metadata/search', scope: 'TS REST', desc: "include_details on the tile's model: which columns are measures (they always sit after attributes)." },
     { method: 'GET', path: '/api/rest/2.0/auth/session/user', scope: 'TS REST', desc: "The signed-in user's GUID, which keys the saved column preferences." },
   );
@@ -8870,7 +9175,7 @@ function apiCatalog(s) {
     { method: 'SDK', path: 'embed.on(EmbedEvent.*)', scope: 'visual-embed-sdk', desc: 'Subscribe to lifecycle / data / error / custom-action / save events.' },
     { method: 'SDK', path: 'embed.destroy()', scope: 'visual-embed-sdk', desc: 'Tear down before every re-render.' },
   ];
-  if ((s.activeFilters.length || s.section === 'liveboard-custom') && s.section !== 'custom-columns')
+  if ((s.activeFilters.length || s.section === 'liveboard-custom') && s.section !== 'custom-columns' && s.section !== 'personal-copy')
     sdk.push({ method: 'SDK', path: 'embed.trigger(HostEvent.UpdateRuntimeFilters, …)', scope: 'visual-embed-sdk', desc: 'Apply runtime filters live — no re-render.' });
   if (displayByActive(s)) {
     const ev = { vizs: 'SetVisibleVizs', tabs: 'SetActiveTab', param: 'UpdateParameters' }[s.displayBy.mode];

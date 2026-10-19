@@ -130,6 +130,18 @@ export function tileTokenString(split, measures, prefs) {
 }
 // @emit-end
 
+// ── The table's title ───────────────────────────────────────────────────────────────────────────
+// An unsaved search is titled with its query, and the SDK has no option to rename it. This custom-CSS
+// pair hides the generated title text and paints CC_TABLE_TITLE in its place (verified live,
+// 26.11.0.cl / SDK 1.49.0). UNSTABLE: if a TS release renames these classes the selector stops
+// matching and the generated title simply shows again — nothing breaks.
+export const CC_TABLE_TITLE = 'Table view';
+const CC_TITLE_SEL = '[data-testid="dynamic-title-box"] [class*="answer-title-module__titleText"]';
+export const CC_TITLE_RULES = Object.freeze({
+  [CC_TITLE_SEL]: { 'font-size': '0' },
+  [CC_TITLE_SEL + '::after']: { content: `"${CC_TABLE_TITLE}"`, 'font-size': '20px' },
+});
+
 // ── Tile builder: Liveboard TML → the tile's query, model and column kinds ───────────────────────
 export const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -150,6 +162,13 @@ export function findTileViz(lb, vizId) {
   const fqn = answer.tables?.[0]?.fqn;
   if (typeof fqn !== 'string' || !GUID_RE.test(fqn)) return { ok: false, error: 'Couldn’t resolve the tile’s data source' };
   return { ok: true, modelId: fqn, answer };
+}
+
+/** The table-mode tiles of a Liveboard TML → [{ vizId, name }] (what the "Edit Columns" action is scoped to). */
+export function tableVizsFromTml(lb) {
+  return (Array.isArray(lb?.visualizations) ? lb.visualizations : [])
+    .filter((v) => v?.answer?.display_mode === 'TABLE_MODE' && typeof v.viz_guid === 'string' && GUID_RE.test(v.viz_guid))
+    .map((v) => ({ vizId: v.viz_guid, name: String(v.answer.name || 'Table').slice(0, 200) }));
 }
 
 /** Build the tile model. `kinds` = Map(lower-cased column name → 'ATTRIBUTE' | 'MEASURE'). */
@@ -175,8 +194,9 @@ export function tileFromTml(lb, vizId, kinds) {
 }
 
 // ── Per-user preferences (this browser) ───────────────────────────────────────────────────────────
-// A convenience store, like the drill-through presets: NOT shareable state, so it never goes through
-// state.js or the #s= hash. Keyed `${host}|${userGuid}|${vizId}`. A real app saves this server-side.
+// This is the "host database" ADAPTER: readColPrefs/writeColPrefs/hasColPrefs are the only touch points, so a
+// real app swaps them for its backend. NOT shareable state, so it never goes through state.js or the #s= hash.
+// Keyed `${host}|${userGuid}|${vizId}`.
 export const COL_PREFS_KEY = 'tsp_colprefs_v1';
 const MAX_PREF_ENTRIES = 200;
 const strList = (v) => (Array.isArray(v) && v.length <= 200 && v.every((x) => typeof x === 'string' && x.length <= 256) ? v : []);
@@ -194,6 +214,15 @@ export function readColPrefs(prefKey) {
   const p = Object.prototype.hasOwnProperty.call(all, prefKey) ? all[prefKey] : null;
   if (!p || typeof p !== 'object') return { hidden: [], order: [] };
   return { hidden: [...strList(p.hidden)], order: [...strList(p.order)] };
+}
+
+/** True when this key has a saved entry (even a default-layout one) — the user has chosen a layout. */
+export function hasColPrefs(prefKey) { return Object.prototype.hasOwnProperty.call(readAll(), prefKey); }
+
+/** → [{ vizId, hidden: n }] for every saved entry under `${host}|${userGuid}|` (the inspector's list). */
+export function listColPrefs(prefix) {
+  const all = readAll();
+  return Object.keys(all).filter((k) => k.startsWith(prefix)).map((k) => ({ vizId: k.slice(prefix.length), hidden: strList(all[k]?.hidden).length }));
 }
 
 /** Save (or with `null`, delete) one tile's prefs. → false when storage is blocked/full. */
