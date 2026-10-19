@@ -30,8 +30,8 @@
 </script>
 <script type="application/json" id="guide-meta">
 {
-  "version": "3.7.0",
-  "lastUpdated": "2026-10-15",
+  "version": "3.7.1",
+  "lastUpdated": "2026-10-19",
   "verifiedAgainst": {
     "sdk": "1.53.0",
     "thoughtspot": "26.10.0.cl"
@@ -40,6 +40,11 @@
   "staleAfterDays": 90,
   "sourceOfTruth": "https://developers.thoughtspot.com/docs/",
   "changelog": [
+    {
+      "version": "3.7.1",
+      "date": "2026-10-19",
+      "summary": "Re-verification, no newer SDK or Cloud release than 1.53.0 and 26.10.0.cl. Re-checked Start here and How embedding works claim by claim (component choices, saved Answer versus vizId, four-visualization advice, SearchBarEmbed data panel, AppEmbed mixing, Spotter 3 Early Access, cookieless trusted auth, mobile SDK limits). Corrected: the SageEmbed card now says Sage was removed in December 2025, as the live deprecation page states."
+    },
     {
       "version": "3.7.0",
       "date": "2026-10-15",
@@ -642,7 +647,7 @@
     <span class="chip">Guide <b data-meta="version"></b></span>
   </div>
 </section>
-<section class="sec" id="start" data-chapter="ch-big-picture" data-nav="Start here" data-verified="2026-10-01" style="border-top:0;padding-top:28px" data-scenarios="">
+<section class="sec" id="start" data-chapter="ch-big-picture" data-nav="Start here" data-verified="2026-10-19" style="border-top:0;padding-top:28px" data-scenarios="">
   <header class="sec-head">
     <span class="num">0</span>
     <h2>Start here: the big picture</h2>
@@ -770,7 +775,7 @@
 
 <!-- ===== 11-architecture.html ===== -->
 <section class="sec" id="architecture" data-chapter="ch-big-picture" data-nav="How embedding works"
-         data-verified="2026-10-01" data-scenarios="saas internal ai mobile">
+         data-verified="2026-10-19" data-scenarios="saas internal ai mobile">
   <header class="sec-head">
     <span class="num">1</span>
     <h2>How embedding works</h2>
@@ -908,7 +913,7 @@
   <div class="cards">
     <div class="card c"><h4><code>ConversationEmbed</code> <span class="badge deprecated" data-feature="ConversationEmbed and Bodyless* classes" data-ver="SDK 1.39.0" data-src="https://developers.thoughtspot.com/docs/embed-sdk-changelog#_version_1_39_0_july_2025">Deprecated</span></h4><p>Replaced by <code>SpotterEmbed</code> and <code>SpotterEmbedViewConfig</code>. The old names keep working &ldquo;until further notice&rdquo;; migrate anyway. <a class="src" href="https://developers.thoughtspot.com/docs/embed-sdk-changelog#_version_1_39_0_july_2025">docs</a></p></div>
     <div class="card c"><h4><code>BodylessConversation</code> <span class="badge deprecated">Deprecated</span></h4><p>Replaced by <code>SpotterAgentEmbed</code> and <code>SpotterAgentEmbedViewConfig</code>, also in SDK 1.39.0. <a class="src" href="https://developers.thoughtspot.com/docs/embed-sdk-changelog#_version_1_39_0_july_2025">docs</a></p></div>
-    <div class="card c"><h4><code>SageEmbed</code> <span class="badge deprecated">Deprecated</span></h4><p>Sage search (the legacy natural language search) was deprecated from 10.11.0.cl and scheduled for removal from the product in December 2025; <code>SageEmbed</code> is deprecated with it. Use Spotter. <a class="src" href="https://developers.thoughtspot.com/docs/deprecated-features">docs</a> The deprecation table lists the removal date as December 2025 and does not confirm completion, so check your cluster. <a class="src" href="https://developers.thoughtspot.com/docs/deprecated-features#_deprecated_features">docs</a></p></div>
+    <div class="card c"><h4><code>SageEmbed</code> <span class="badge deprecated">Deprecated</span></h4><p>Sage search (the legacy natural language search) was deprecated from 10.11.0.cl and removed from the product in December 2025 (the live deprecation page now says removed); <code>SageEmbed</code> is deprecated with it. Use Spotter. <a class="src" href="https://developers.thoughtspot.com/docs/deprecated-features">docs</a> Treat any remaining <code>SageEmbed</code> code as dead and migrate it. <a class="src" href="https://developers.thoughtspot.com/docs/deprecated-features#_deprecated_features">docs</a></p></div>
   </div>
 
   
