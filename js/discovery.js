@@ -224,6 +224,53 @@ export async function discoverViz(host, liveboardId) {
 }
 
 /**
+ * Export a Liveboard's TML as JSON (Customize Columns reads one tile's saved search query from it).
+ * Direct call, like discoverViz: tml/export is not on the server's relay allowlist, so this needs the
+ * origin on ThoughtSpot's CORS allowlist and a user who can export the Liveboard.
+ * → { ok:true, liveboard } | { ok:false, status?, error }
+ */
+export async function exportLiveboardTml(host, liveboardId) {
+  try {
+    const resp = await api(host, '/api/rest/2.0/metadata/tml/export', {
+      method: 'POST',
+      body: JSON.stringify({ metadata: [{ identifier: liveboardId, type: 'LIVEBOARD' }], export_fqn: true, edoc_format: 'JSON' }),
+    });
+    if (!resp.ok) return { ok: false, status: resp.status, error: await restError(resp) };
+    const arr = await resp.json();
+    if (typeof arr?.[0]?.edoc !== 'string') return { ok: false, error: String(arr?.[0]?.info?.status?.error_message || 'No TML returned').slice(0, 500) };
+    const liveboard = JSON.parse(arr[0].edoc)?.liveboard;
+    if (!liveboard || typeof liveboard !== 'object') return { ok: false, error: 'The export is not a Liveboard' };
+    return { ok: true, liveboard };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * A model's column kinds: Map(lower-cased column name → 'ATTRIBUTE' | 'MEASURE'). Read from
+ * metadata/search include_details (view access is enough; the model's TML export needs edit access).
+ */
+export async function modelColumnKinds(host, modelId) {
+  try {
+    const resp = await apiRest(host, '/api/rest/2.0/metadata/search', {
+      method: 'POST',
+      body: { metadata: [{ identifier: modelId, type: 'LOGICAL_TABLE' }], include_details: true, record_size: 1 },
+    });
+    if (!resp.ok) return { ok: false, status: resp.status, error: await restError(resp) };
+    const d = await resp.json();
+    const cols = Array.isArray(d) ? d[0]?.metadata_detail?.columns : null;
+    const kinds = new Map();
+    for (const c of Array.isArray(cols) ? cols : []) {
+      const name = c?.header?.name;
+      if (typeof name === 'string' && (c.type === 'ATTRIBUTE' || c.type === 'MEASURE')) kinds.set(name.toLowerCase(), c.type);
+    }
+    return { ok: true, kinds };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
  * List all standalone saved Answers on the instance. Answers are top-level ANSWER metadata
  * objects (like Liveboards), so we search that type directly and read the top-level results —
  * NOT a worksheet's `dependent_objects` (that field is an opaque map, not keyed by type, so the

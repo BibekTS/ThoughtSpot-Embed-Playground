@@ -246,6 +246,9 @@ a.tb-icon-btn { display: inline-flex; align-items: center; text-decoration: none
 .embed-item.unavailable:hover { background: none; }
 .embed-item.active .ei-name { color: var(--navy); }
 .embed-item.active .ei-cls { color: var(--accent-ink); }
+/* A section that is part of the one above it (Customize Columns under Custom Liveboard). */
+.embed-item--sub { margin-left: 12px; padding-left: 10px; border-left: 2px solid var(--border-light); border-radius: 0 8px 8px 0; }
+.embed-item--sub.active { border-left-color: var(--accent); }
 .rail-spacer { flex: 1; }
 .rail-foot { padding: 8px; border-top: 1px solid var(--border); margin-top: 8px; }
 .rail-credit { font-size: 10.5px; line-height: 1.45; color: var(--text-muted); }
@@ -1007,6 +1010,48 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
 }
 /* "View payload" slide-over — wider panel + raw JSON block */
 .modal-panel--wide { width: 640px; }
+
+/* Customize Columns dialog (js/custom-columns.js) — centered panel, two panes */
+.cc-panel { width: 640px; max-width: calc(100vw - 32px); }
+.cc-tools { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 12px 18px 0; }
+.cc-search { flex: 0 1 240px; }
+.cc-panel .sec-apply, .cc-actions .sec-apply { margin-top: 0; }
+.cc-panel .sec-apply:disabled, .cc-actions .sec-apply:disabled { opacity: .5; cursor: not-allowed; }
+.cc-body { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 12px 18px; flex: 1; min-height: 0; overflow: hidden; }
+.cc-pane { display: flex; flex-direction: column; min-height: 0; }
+.cc-pane-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.cc-pane-head h3 { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+.cc-list { list-style: none; margin: 0; padding: 0; overflow: auto; max-height: 52vh; }
+.cc-check label { display: flex; gap: 10px; align-items: center; padding: 4px 2px; font-size: 13px; color: var(--text-primary); cursor: pointer; }
+.cc-check.locked label { color: var(--text-muted); cursor: default; }
+.cc-check input { width: 15px; height: 15px; accent-color: var(--accent-ink); }
+.cc-row { display: flex; align-items: center; gap: 8px; padding: 4px 4px; border-radius: 6px; font-size: 13px; color: var(--text-primary); }
+.cc-row[draggable="true"] { cursor: grab; }
+.cc-row:hover { background: var(--surface-2); }
+.cc-row.locked { color: var(--text-muted); }
+.cc-row.dragging { opacity: .4; }
+.cc-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.cc-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.cc-group {
+  font-family: var(--mono); font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--text-muted); padding: 10px 4px 4px;
+}
+.cc-grip, .cc-lock { color: var(--text-muted); width: 14px; display: inline-flex; justify-content: center; flex: 0 0 auto; }
+.cc-remove {
+  width: 24px; height: 24px; border-radius: 50%; flex: 0 0 auto; display: inline-grid; place-items: center;
+  font-size: 14px; line-height: 1; color: var(--text-muted);
+  background: var(--surface); border: 1px solid var(--border-light); cursor: pointer;
+}
+.cc-remove:hover { color: var(--danger-ink); border-color: var(--danger-border); }
+.cc-tag { margin-left: auto; flex: 0 0 auto; font-size: 11px; color: var(--text-muted); }
+.cc-link { background: none; border: 0; padding: 0; font-size: 12px; font-weight: 600; color: var(--accent-ink); cursor: pointer; }
+.cc-hint, .cc-empty { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.cc-hint { margin-top: 8px; }
+.cc-empty { padding: 6px 2px; }
+.cc-err { margin-right: auto; align-self: center; font-size: 12px; color: var(--danger-ink); }
+.cc-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.cc-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+@media (max-width: 700px) { .cc-body { grid-template-columns: 1fr; overflow: auto; } }
 .payload-json {
   margin: 0; padding: 12px 14px; flex: 1;
   font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
@@ -1454,6 +1499,7 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
   #rail { flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border); }
   .rail-group, .rail-spacer, .rail-foot { display: none; }
   #embed-list { flex-direction: row; }
+  .embed-item--sub { margin-left: 0; padding-left: 12px; border-left: 0; border-radius: 8px; }
   .tb-name, .tb-brand { display: none; }
 
   /* O2 — the topbar was one non-wrapping, non-scrolling row, so #connect-btn landed

@@ -308,6 +308,23 @@ export function doRender(section, config, callbacks, options = {}) {
       break;
     }
 
+    case 'custom-columns':
+      // One Liveboard tile as a native table: its saved query (columns re-ordered / hidden per user,
+      // filters and sort kept) searched against the tile's model. app.js reads the tile first.
+      if (!config._colsTile?.modelId) { onError('Customize Columns: the tile has not been read yet.'); return null; }
+      embed = new SearchEmbed('#ts-embed-container', {
+        ...common,
+        customActions,
+        ...flags,
+        // After ...flags — a shared link must not re-point the data source or the query.
+        dataSources: [config._colsTile.modelId],
+        searchOptions: { searchTokenString: config._colsTile.tokens, executeSearch: true },
+        hideSearchBar: true,
+        hideDataSources: true,
+        forceTable: true,
+      });
+      break;
+
     default:
       onError(`Unknown section: ${section}`);
       return null;

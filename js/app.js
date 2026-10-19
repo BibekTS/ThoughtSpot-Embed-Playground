@@ -14,6 +14,7 @@ import * as Discovery from './discovery.js';
 import { openAuthModal, buildTrustedAuthConfig, seedAuthHooks } from './auth.js';
 import { fetchAllRows, groupStatements, downloadStatementsPdf } from './invoice-pdf.js';
 import { renderSpotterMcpChat } from './spotter-mcp.js';
+import { splitTileQuery, orderColumns, tileTokenString, tileFromTml, findTileViz, readColPrefs, writeColPrefs, openColumnsDialog, GUID_RE, userGuidFromPayload } from './custom-columns.js';
 
 // ── Embed catalogue ──────────────────────────────────────────────────────────
 const EMBEDS = [
@@ -21,6 +22,7 @@ const EMBEDS = [
   { id: 'spotter',          name: 'Spotter AI',        cls: 'SpotterEmbed',   needs: 'worksheet' },
   { id: 'liveboard',        name: 'Liveboard',         cls: 'LiveboardEmbed', needs: 'liveboard' },
   { id: 'liveboard-custom', name: 'Custom Liveboard',  cls: 'LiveboardEmbed', needs: 'liveboard' },
+  { id: 'custom-columns',   name: 'Customize Columns', cls: 'SearchEmbed',    needs: 'tile', parent: 'liveboard-custom' },
   { id: 'ai-highlights',    name: 'AI Highlights',     cls: 'LiveboardEmbed', needs: 'liveboard' },
   { id: 'viz',              name: 'Single Viz',        cls: 'LiveboardEmbed', needs: 'viz' },
   { id: 'drillthrough',     name: 'Drill-through',     cls: 'LiveboardEmbed', needs: 'liveboard' },
@@ -34,7 +36,7 @@ const META = Object.fromEntries(EMBEDS.map(e => [e.id, e]));
 // embeds, the four LiveboardEmbed flavours, and the two whole-app / no-iframe options.
 const RAIL_GROUPS = [
   { label: 'Search & AI',  ids: ['search', 'spotter', 'spotter-chat'] },
-  { label: 'Liveboards',   ids: ['liveboard', 'liveboard-custom', 'ai-highlights', 'viz', 'drillthrough'] },
+  { label: 'Liveboards',   ids: ['liveboard', 'liveboard-custom', 'custom-columns', 'ai-highlights', 'viz', 'drillthrough'] },
   { label: 'App & REST',   ids: ['fullapp', 'ai-insights'] },
 ];
 
@@ -44,6 +46,7 @@ const EMBED_BLURBS = {
   spotter:          'Conversational AI analyst — ask a question, then keep asking follow-ups in a chat-style session.',
   liveboard:        'Embed a full interactive Liveboard (dashboard) with all its tiles, filters, and tabs.',
   'liveboard-custom':'A Liveboard driven by your own website-native filter bar, from outside the iframe.',
+  'custom-columns': 'Part of Custom Liveboard: one tile as a native table with a “Show/Hide columns” button, so each user picks and orders columns (saved per user).',
   'ai-highlights':  'Render a Liveboard, then surface AI-generated “Key Highlights” narratives over it.',
   viz:              'Embed a single visualization from a Liveboard — or one standalone Answer — on its own.',
   fullapp:          'Embed the entire ThoughtSpot app — nav bar, search, Liveboards, the works.',
@@ -254,6 +257,17 @@ const DT_ACTION_ID = '__dt_view_detail';
 // Id of the companion "View payload" action: same scope as DT_ACTION_ID, but it only shows the raw
 // EmbedEvent.CustomAction payload in a side panel, so you can see exactly what ThoughtSpot sends.
 const PAYLOAD_ACTION_ID = '__dt_view_payload';
+// Customize Columns: the only custom action on that section's table ("Show/Hide columns"), routed to
+// ccOpenDialog(). The tile (query → columns, model, kinds) is read once per host|liveboard|viz and
+// cached here, errors included; the signed-in user's GUID (the prefs key) once per host. Both are
+// session caches reset in connect(); ccSeq fences an in-flight read against a newer one.
+const COLS_ACTION_ID = '__cols_picker';
+const ccTiles = new Map();   // tileKey -> tileFromTml() result ({ ok:true, … } | { ok:false, error })
+const ccUsers = new Map();   // host -> { id, name } | null (unknown)
+let ccLoadingKey = '';       // tileKey with a read in flight
+let ccSeq = 0;
+const ccTileKey = (s) => `${s.host}|${s.liveboardId}|${s.vizId}`;
+const ccPrefKey = (s) => `${s.host}|${ccUsers.get(s.host)?.id || 'anon'}|${s.vizId}`;
 let editingActionId = null;      // id of the custom action currently loaded into the form for editing
 let lastSaved = null;            // { name, guid, at } — most recent EmbedEvent.Save this session
 let drillParent = null;          // { liveboardId } — set while drilled into a detail board (Q4)
@@ -713,6 +727,8 @@ async function connect({ silent = false, trustHost = false } = {}) {
   // "load once" guard never refetches for the new host. Fresh undefined re-triggers loadAnswers().
   answerList = undefined;
   answersLoading = false;
+  // Customize Columns' tile + user caches are session caches too (the user GUID is per host/session).
+  ccTiles.clear(); ccUsers.clear(); ccSeq++; ccLoadingKey = '';
   // Personal liveboards: repopulate the current board's copies (non-fatal — refreshPersonalCopies
   // resolves the scoping identity itself and stays empty if that or the search fails).
   if (getState().personalLb?.enabled) refreshPersonalCopies();
@@ -741,6 +757,7 @@ function renderEmbedList() {
     g.ids.forEach(id => {
       const e = META[id];
       const li = el('li', 'embed-item');
+      if (e.parent) li.classList.add('embed-item--sub'); // drawn indented under its parent section
       li.dataset.id = e.id;
       li.innerHTML = `<span class="ei-name">${e.name}</span><span class="ei-cls">${e.cls}</span>`;
       const blurb = EMBED_BLURBS[e.id];
@@ -912,6 +929,8 @@ function needsMissing(s) {
   if (m.needs === 'liveboard' && !s.liveboardId) return 'Pick a Liveboard in the Object section.';
   if (m.needs === 'viz' && !(s.answerId || (s.liveboardId && s.vizId)))
     return 'Pick a Liveboard + Visualization (or a standalone Answer) in the Object section.';
+  if (m.needs === 'tile' && !(s.liveboardId && s.vizId))
+    return 'Pick a Liveboard + a Visualization (table tile) in the Object section.';
   return null;
 }
 
@@ -921,6 +940,7 @@ function render() {
   // A normal render always exits any active drill-down (Q4) — drop the back bar and state.
   if (drillParent) { drillParent = null; hideDrillBar(); }
   dtClosePanel(); // the detail rows belong to a specific clicked point — never survive a re-render
+  document.getElementById('cc-modal')?.remove(); // the column picker belongs to the table being replaced
   const s = getState();
   renderPersonalStrip(); // paint/refresh the Personal-liveboards tab strip on every render path
   // fullHeight makes the SDK grow the iframe to the Liveboard's content height; the stage must then
@@ -963,6 +983,35 @@ function render() {
     return;
   }
 
+  // Customize Columns renders only once its tile has been read (Liveboard TML + the model's column
+  // kinds). Until then: the read's error, a "connect first" note, or a loading state while it runs.
+  const cc = s.section === 'custom-columns';
+  const ccTile = cc ? ccTiles.get(ccTileKey(s)) : null;
+  if (cc && !ccTile?.ok) {
+    if (currentEmbed) { try { currentEmbed.destroy(); } catch (_) {} currentEmbed = null; }
+    document.getElementById('ai-insights-panel')?.remove();
+    destroySpotterMcp();
+    flowReset(s.section);
+    refreshCode();
+    if (ccTile) {
+      showRenderError(ccTile.error);
+      // Re-rendering can't fix a tile that can't be read ("Reload tile" in the inspector re-reads it).
+      const proceedBtn = $('#state-overlay .st-error [data-act="proceed"]');
+      if (proceedBtn) proceedBtn.hidden = true;
+      return;
+    }
+    if (!connected) {
+      $('#needs-title').textContent = 'Customize Columns needs a connection';
+      $('#needs-sub').textContent = 'Connect above: the tile’s columns are read from the Liveboard over REST.';
+      setOverlay('needs');
+      return;
+    }
+    $('#loading-sub').textContent = 'Reading the tile’s columns from the Liveboard…';
+    setOverlay('loading');
+    ccLoadTile(s.host, s.liveboardId, s.vizId);
+    return;
+  }
+
   applyConfig();
   if (currentEmbed) { try { currentEmbed.destroy(); } catch (_) {} currentEmbed = null; }
   // Drop any leftover custom panel when switching back to a real embed.
@@ -981,12 +1030,17 @@ function render() {
   // clone-the-config pattern enterDrill() uses.
   const cfg = buildConfig();
   cfg.liveboardId = effectiveLiveboardId(s);
+  if (cc) {
+    const tokens = tileTokenString(ccTile.split, ccTile.measures, readColPrefs(ccPrefKey(s)));
+    cfg._colsTile = { modelId: ccTile.modelId, tokens };
+    if (window.__TS_PLAYGROUND_PROBE) window.__lastColsTokens = tokens;
+  }
 
   authFailed = false; // fresh render — clear any prior auth-failure latch
   appliedRuntimeCols = new Set(); // fresh iframe carries no runtime filters yet
   displayByChoice = displayByActive(s) && s.displayBy.mode === 'vizs' ? (s.displayBy.options[0]?.value || '') : ''; // fresh iframe = initial view
   currentEmbed = doRender(s.section, cfg, {
-    onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); applyLiveFilters(); if (getState().section === 'liveboard-custom') { cfbBuild(); hostHeaderBuild(); } maybeOpenCreatedCopyForEdit(); },
+    onDone() { if (authFailed) return; clearTimeout(fallback); setOverlay('hidden'); if (!cc) applyLiveFilters(); if (getState().section === 'liveboard-custom') { cfbBuild(); hostHeaderBuild(); } maybeOpenCreatedCopyForEdit(); },
     onError(msg) {
       clearTimeout(fallback);
       const str = typeof msg === 'string' ? msg : JSON.stringify(msg);
@@ -997,11 +1051,12 @@ function render() {
     },
     onEvent: logEvent,
   }, {
-    hiddenActions: hiddenActionKeys(s).map(k => Action[k]).filter(Boolean),
-    disabledActions: s.disabledActions.map(k => Action[k]).filter(Boolean),
-    disabledActionReason: s.disabledActionReason,
+    // Customize Columns exposes none of these knobs in its inspector, so it carries none of them.
+    hiddenActions: cc ? [] : hiddenActionKeys(s).map(k => Action[k]).filter(Boolean),
+    disabledActions: cc ? [] : s.disabledActions.map(k => Action[k]).filter(Boolean),
+    disabledActionReason: cc ? '' : s.disabledActionReason,
     customActions: buildEmbedCustomActions(s),
-    runtimeParameters: s.runtimeParameters,
+    runtimeParameters: cc ? [] : s.runtimeParameters,
     // visibleVizs goes AFTER the shared-link flags so it wins: vizs-mode "Display by" starts on the
     // first option's table (plus the always-visible charts).
     flags: { ...(s.flags[s.section] || {}), ...(hostHeaderOn(s) ? hostFlags(s) : {}), ...displayByInitialConfig(s) },
@@ -2326,6 +2381,17 @@ function renderInspector() {
     renderMcpInspector(s, body);
     return;
   }
+  // Customize Columns: the tile picker + the per-user column preferences, plus styles. The table is a
+  // fixed SearchEmbed, so the filter / action / host-event knobs of the Liveboard sections don't apply.
+  if (s.section === 'custom-columns') {
+    body.appendChild(groupLbl('Data'));
+    body.appendChild(sectionObject(s));
+    body.appendChild(sectionColumnPrefs(s));
+    body.appendChild(groupLbl('Appearance'));
+    body.appendChild(sectionStyles(s));
+    $('#insp-reset').onclick = () => { setState({ flags: { ...s.flags, [s.section]: {} } }); renderInspector(); render(); };
+    return;
+  }
   if (s.section === 'ai-highlights') {
     const aiNote = el('div', 'sec-note');
     aiNote.textContent = 'Renders the selected Liveboard, then fires HostEvent.AIHighlights to open the insights panel automatically. Requires AI Highlights + KPI anomaly detection enabled on the instance (admin); SDK ≥ 1.44 / TS ≥ 10.15.';
@@ -2760,7 +2826,7 @@ function sectionObject(s) {
       c.appendChild(toggleField('Auto-execute search', s.executeSearch, v => { setState({ executeSearch: v }); render(); }));
     }
   }
-  if (needs === 'liveboard' || needs === 'viz') {
+  if (needs === 'liveboard' || needs === 'viz' || needs === 'tile') {
     // Q3 — tag-based categorization. Tags come from metadata/search (metadata_header.tags);
     // pick one to narrow the liveboard list the way a host app's section navigation would.
     const allTags = [...new Set((discovered.liveboards || []).flatMap(lb => lb.tags || []))].sort();
@@ -2792,7 +2858,7 @@ function sectionObject(s) {
         renderInspector();
       }, '', !connected, true));
   }
-  if (needs === 'viz') {
+  if (needs === 'viz' || needs === 'tile') {
     // Lazy-load vizzes when the inspector renders with a pre-selected liveboard but a cold
     // cache — happens on page reload or when arriving via a shared link. Auto-load ONLY when
     // connected (same fence as the standalone-Answer auto-load below): discoverViz issues a
@@ -2816,29 +2882,32 @@ function sectionObject(s) {
         : 'No visualizations found. Paste a viz GUID into the picker.';
       c.appendChild(note);
     }
-    // Standalone saved Answer — the OTHER thing the Single-Viz section can embed. A saved answer
-    // cannot be embedded as a liveboard viz (SDK rule), so it renders via SearchEmbed({answerId,
-    // hideSearchBar:true}) — see embed.js. Answers are top-level objects (like Liveboards), so we
-    // list them all directly; picking one clears vizId (mutual exclusion — embed.js gives answerId
-    // precedence). Auto-load ONLY when connected, so a shared #s= link can't trigger a credentialed
-    // discovery POST at an unconfirmed host before the user clicks Connect (host-confirm invariant).
-    c.appendChild(el('div', 'sec-note', 'Or embed a standalone saved Answer:')); // literal only (el 3rd arg = innerHTML)
-    if (connected && answerList === undefined && !answersLoading) {
-      loadAnswers().then(() => renderInspector());
-    }
-    const answers = answerList || [];
-    c.appendChild(labeledSelect('Answer', s.answerId, answers,
-      v => { setState({ answerId: v, vizId: '' }); renderInspector(); render(); },
-      answersLoading ? 'Loading saved Answers…' : !connected ? 'Paste a GUID' : '', !connected, true));
-    if (connected && !answersLoading && answers.length === 0) {
-      const note = el('div', 'sec-note');
-      note.textContent = answerList === null
-        ? 'Answer list unavailable (CORS or auth). Paste an Answer GUID directly:'
-        : 'No saved Answers found. Paste an Answer GUID directly:';
-      c.appendChild(note);
-      c.appendChild(textField('Answer GUID', s.answerId,
-        v => { setState({ answerId: v.trim(), vizId: '' }); render(); },
-        'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'));
+    // Customize Columns reads a Liveboard tile, so it gets no Answer picker.
+    if (needs === 'viz') {
+      // Standalone saved Answer — the OTHER thing the Single-Viz section can embed. A saved answer
+      // cannot be embedded as a liveboard viz (SDK rule), so it renders via SearchEmbed({answerId,
+      // hideSearchBar:true}) — see embed.js. Answers are top-level objects (like Liveboards), so we
+      // list them all directly; picking one clears vizId (mutual exclusion — embed.js gives answerId
+      // precedence). Auto-load ONLY when connected, so a shared #s= link can't trigger a credentialed
+      // discovery POST at an unconfirmed host before the user clicks Connect (host-confirm invariant).
+      c.appendChild(el('div', 'sec-note', 'Or embed a standalone saved Answer:')); // literal only (el 3rd arg = innerHTML)
+      if (connected && answerList === undefined && !answersLoading) {
+        loadAnswers().then(() => renderInspector());
+      }
+      const answers = answerList || [];
+      c.appendChild(labeledSelect('Answer', s.answerId, answers,
+        v => { setState({ answerId: v, vizId: '' }); renderInspector(); render(); },
+        answersLoading ? 'Loading saved Answers…' : !connected ? 'Paste a GUID' : '', !connected, true));
+      if (connected && !answersLoading && answers.length === 0) {
+        const note = el('div', 'sec-note');
+        note.textContent = answerList === null
+          ? 'Answer list unavailable (CORS or auth). Paste an Answer GUID directly:'
+          : 'No saved Answers found. Paste an Answer GUID directly:';
+        c.appendChild(note);
+        c.appendChild(textField('Answer GUID', s.answerId,
+          v => { setState({ answerId: v.trim(), vizId: '' }); render(); },
+          'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'));
+      }
     }
   }
   if (needs === 'none') c.appendChild(el('div', 'sec-note', 'Full App needs no GUID — it embeds the whole ThoughtSpot experience.'));
@@ -2876,6 +2945,88 @@ async function loadAnswers() {
   } finally {
     if (getState().host === host) answersLoading = false; // only OUR fetch owns the flag for this host
   }
+}
+
+// Customize Columns: read one tile (Liveboard TML → its search query + model → the model's column
+// kinds) and cache the result, errors included, under host|liveboard|viz. The signed-in user's GUID
+// (the prefs key) is read once per host. Fenced like connect(): a newer read or a host switch drops
+// this one's writes. Only called from render() while connected, so never at an unconfirmed host.
+async function ccLoadTile(host, liveboardId, vizId) {
+  const key = `${host}|${liveboardId}|${vizId}`;
+  if (ccTiles.has(key) || ccLoadingKey === key) return;
+  ccLoadingKey = key;
+  const seq = ++ccSeq;
+  const stale = () => seq !== ccSeq || getState().host !== host;
+  try {
+    if (!ccUsers.has(host)) {
+      const u = await Discovery.getCurrentUser(host);
+      if (stale()) return;
+      ccUsers.set(host, u.ok && GUID_RE.test(u.userId) ? { id: u.userId, name: u.displayName || u.userName } : null);
+    }
+    let tile;
+    const r = await Discovery.exportLiveboardTml(host, liveboardId);
+    if (stale()) return;
+    if (!r.ok) {
+      tile = { ok: false, error: `Couldn’t read the Liveboard TML (${r.error}). Check CORS (${location.origin}) and that this user can export the Liveboard.` };
+    } else {
+      const f = findTileViz(r.liveboard, vizId);
+      if (f.ok) {
+        const k = await Discovery.modelColumnKinds(host, f.modelId);
+        if (stale()) return;
+        tile = tileFromTml(r.liveboard, vizId, k.ok ? k.kinds : new Map()); // no kinds → hinted in the dialog
+      } else tile = f;
+    }
+    ccTiles.set(key, tile);
+  } catch (e) {
+    if (!stale()) ccTiles.set(key, { ok: false, error: `Couldn’t read the tile: ${e.message}` });
+  } finally {
+    if (ccLoadingKey === key && seq === ccSeq) ccLoadingKey = '';
+  }
+  const s = getState();
+  if (!stale() && !pendingHostConfirm && s.section === 'custom-columns' && ccTileKey(s) === key) { renderInspector(); render(); }
+}
+
+// — Customize Columns: the tile's status + this user's saved layout (all TS text via textContent) —
+function sectionColumnPrefs(s) {
+  const c = el('div', 'sec-body');
+  const note = el('div', 'sec-note');
+  note.textContent = 'Each user’s hidden and reordered columns are saved per user in this browser (localStorage). In your app, save them to your backend, keyed by the signed-in ThoughtSpot user.';
+  c.appendChild(note);
+  const key = ccTileKey(s);
+  const t = ccTiles.get(key);
+  const status = el('div', 'sec-note');
+  if (!(s.liveboardId && s.vizId)) status.textContent = 'Pick a Liveboard and a table tile above.';
+  else if (!t) status.textContent = connected ? 'Reading tile…' : 'Connect to read the tile.';
+  else if (!t.ok) status.textContent = t.error;
+  else if (!t.split.ok) status.textContent = 'This tile’s query couldn’t be read safely, so it’s shown unchanged.';
+  else {
+    const p = readColPrefs(ccPrefKey(s));
+    const order = orderColumns(t.split, t.measures, []);
+    const hiddenN = new Set(p.hidden.filter(k => k !== order[0] && order.includes(k) && !t.split.sortKeys.has(k))).size;
+    const reordered = JSON.stringify(orderColumns(t.split, t.measures, p.order)) !== JSON.stringify(order);
+    const layout = [hiddenN ? `${hiddenN} hidden` : '', reordered ? 'custom order' : ''].filter(Boolean).join(', ') || 'default';
+    status.textContent = `${t.split.columns.length} columns · ${t.split.remainder.length} clauses kept as-is · Layout: ${layout}`;
+  }
+  c.appendChild(status);
+  if (ccUsers.has(s.host)) {
+    const who = el('div', 'sec-note');
+    const u = ccUsers.get(s.host);
+    who.textContent = u ? `Saving for: ${u.name || u.id}` : 'Saving for: unknown user (shared by everyone on this browser)';
+    c.appendChild(who);
+  }
+  const row = el('div', 'cc-actions');
+  const open = el('button', 'sec-apply'); open.type = 'button'; open.textContent = 'Open column picker';
+  open.disabled = !t?.ok;
+  open.addEventListener('click', () => ccOpenDialog());
+  const reset = el('button', 'sec-apply ghost'); reset.type = 'button'; reset.textContent = 'Reset my columns';
+  reset.disabled = !t?.ok;
+  reset.addEventListener('click', () => { writeColPrefs(ccPrefKey(getState()), null); logEvent('Columns', 'Reset to the tile’s default layout'); renderInspector(); render(); });
+  const reload = el('button', 'sec-apply ghost'); reload.type = 'button'; reload.textContent = 'Reload tile';
+  reload.disabled = !connected || !t;
+  reload.addEventListener('click', () => { ccTiles.delete(ccTileKey(getState())); renderInspector(); render(); });
+  row.append(open, reset, reload);
+  c.appendChild(row);
+  return accordion('Column preferences', '', c, true);
 }
 
 function textField(label, value, onChange, placeholder) {
@@ -3077,6 +3228,10 @@ function hiddenActionKeys(s) {
 // The custom actions passed to the embed: the user's, plus a synthetic "Export" menu action
 // (id '__export') when enabled, which the EmbedEvent.CustomAction dispatcher routes to runExport().
 function buildEmbedCustomActions(s) {
+  // Customize Columns carries exactly one action: the "Show/Hide columns" button on the table.
+  if (s.section === 'custom-columns') {
+    return [{ id: COLS_ACTION_ID, name: 'Show/Hide columns', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.ANSWER }];
+  }
   const actions = s.customActions.map(a => ({
     id: a.id,
     name: a.label,                                            // SDK 1.43+ reads "name", not "label"
@@ -3691,6 +3846,50 @@ function openDisplayByPicker() {
   panel.append(head, body);
   modal.append(scrim, panel);
   document.body.appendChild(modal);
+}
+
+// Customize Columns: open the column picker for the current tile (from the table's "Show/Hide
+// columns" button or the inspector). Prefs are keyed by the user GUID from auth/session/user; when
+// opened from the table, the CustomAction payload's user (embedAnswerData.user, verified live for
+// SearchEmbed) is the user actually signed into the iframe, so it wins when it differs.
+function ccOpenDialog(payload) {
+  const s = getState();
+  const tile = s.section === 'custom-columns' ? ccTiles.get(ccTileKey(s)) : null;
+  if (!tile?.ok) { toast('The tile hasn’t been read yet.'); return; }
+  const guid = userGuidFromPayload(payload);
+  if (guid && guid !== ccUsers.get(s.host)?.id) {
+    const n = payload.data.embedAnswerData.user.userName;
+    ccUsers.set(s.host, { id: guid, name: typeof n === 'string' ? n.slice(0, 256) : '' });
+    // Re-render first so the table and the inspector's "Saving for" show this user's saved layout
+    // even if the dialog is cancelled (render() removes #cc-modal, so the dialog opens after it).
+    renderInspector(); render();
+  }
+  openColumnsDialog({
+    tile,
+    prefs: readColPrefs(ccPrefKey(s)),
+    userLabel: ccUsers.get(s.host)?.name || 'an unknown user',
+    onApply: next => {
+      if (!writeColPrefs(ccPrefKey(getState()), next)) return false;
+      logEvent('Columns', `Saved: ${next.hidden.length} hidden`);
+      return true;
+    },
+    // The dialog has closed (focus restored) before this re-render; the render replaces the opener
+    // (inspector button or table iframe), so land focus on the new picker button.
+    onApplied: () => {
+      renderInspector(); render();
+      if (!document.activeElement || document.activeElement === document.body) ccFocusTarget()?.focus();
+    },
+    fallbackFocus: ccFocusTarget,
+  });
+}
+// Where focus goes when the picker's opener is gone: the inspector's picker button if it's visible
+// (the inspector is display:none at ≤860px), else the table container (made focusable on demand).
+function ccFocusTarget() {
+  const btn = [...document.querySelectorAll('#insp-body button')].find(b => b.textContent === 'Open column picker' && !b.disabled && b.getClientRects().length);
+  if (btn) return btn;
+  const box = $('#ts-embed-container');
+  if (box && !box.hasAttribute('tabindex')) box.tabIndex = -1;
+  return box;
 }
 
 // — Runtime filters (live, HostEvent) —
@@ -5844,6 +6043,8 @@ window.__onCustomAction = async (payload) => {
   if (id === DATE_ACTION_ID) { openDatePicker(); return; }
   // "Display by" primary button → host-side picker that switches the table/tab/parameter.
   if (id === DISPLAY_BY_ACTION_ID) { openDisplayByPicker(); return; }
+  // Customize Columns' "Show/Hide columns" button → the per-user column picker.
+  if (id === COLS_ACTION_ID) { ccOpenDialog(payload); return; }
   // Drill-through demo: the column-scoped "View detail" action → host-rendered detail rows.
   if (id === DT_ACTION_ID) { await openDetailPanel(payload); return; }
   // Its "View payload" companion → show the full payload ThoughtSpot passed.
@@ -7476,14 +7677,16 @@ function generateCode() {
   // The VizPointClick drill leg only exists when a left-click is NOT already claimed by the record
   // list and a detail board is configured — mirror the runtime condition exactly.
   const dtPointDrill = dtOn && s.drill.trigger !== 'click' && !!s.drill.drillLiveboardId;
+  // Customize Columns emits its own self-contained snippet (customColumnsLines) after init().
+  const ccOn = s.section === 'custom-columns';
   const importNames = ['init', 'AuthType', embedCls, 'EmbedEvent'];
-  if (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction || dispBy) importNames.push('CustomActionsPosition', 'CustomActionTarget');
+  if (s.customActions.length || exportMenu || pickerMenu || dateBtn || dtAction || dispBy || ccOn) importNames.push('CustomActionsPosition', 'CustomActionTarget');
   const cfbActiveFilters = s.section === 'liveboard-custom'
     ? Object.entries(cfbSelected).filter(([, v]) => v && v.length)
     : [];
   const drillAction = s.customActions.find(a => a.type === 'drill');
-  if (s.activeFilters.length || cfbActiveFilters.length || drillAction || dateBtn || dtPointDrill) importNames.push('HostEvent', 'RuntimeFilterOp');
-  if (hiddenActionKeys(s).length || s.disabledActions.length) importNames.push('Action');
+  if (!ccOn && (s.activeFilters.length || cfbActiveFilters.length || drillAction || dateBtn || dtPointDrill)) importNames.push('HostEvent', 'RuntimeFilterOp');
+  if (!ccOn && (hiddenActionKeys(s).length || s.disabledActions.length)) importNames.push('Action');
   if (s.section === 'fullapp') importNames.push('Page');
   if (s.section === 'ai-highlights') importNames.push('HostEvent');
   if (plbOn) importNames.push('HostEvent');
@@ -7530,6 +7733,7 @@ function generateCode() {
   }
   L.push(`init({\n${initLines.join('\n')}\n});`);
   L.push('');
+  if (ccOn) { L.push(...customColumnsLines(s, esc)); return L.join('\n'); }
   // embed
   const opt = [];
   opt.push('  frameParams: {},');
@@ -8248,6 +8452,76 @@ function spotterMcpCode(s) {
   ].join('\n');
 }
 
+// Customize Columns snippet body (after init()). The query split + token builder are emitted from
+// their LIVE source (Function.prototype.toString, the S46 pattern), so the snippet runs exactly what
+// the playground runs. Host-free: with no tile read yet it emits placeholders and still parses.
+function customColumnsLines(s, esc) {
+  const t = ccTiles.get(ccTileKey(s));
+  const tile = t?.ok ? t : null;
+  const measures = tile ? [...tile.measures].map(k => `'${esc(k)}'`).join(', ') : "'measure'";
+  return [
+    '// Customize Columns: one Liveboard tile as a native table whose columns each user hides and reorders.',
+    '// Read the tile once (server-side, or at build time) from the Liveboard TML:',
+    `//   POST /api/rest/2.0/metadata/tml/export { metadata: [{ identifier: '${esc(s.liveboardId || '<liveboard-guid>')}', type: 'LIVEBOARD' }], export_fqn: true, edoc_format: 'JSON' }`,
+    `//   viz = JSON.parse(edoc).liveboard.visualizations.find(v => v.viz_guid === '${esc(s.vizId || '<viz-guid>')}')`,
+    '//   TILE_QUERY = viz.answer.search_query, MODEL_ID = viz.answer.tables[0].fqn',
+    '// Column kinds: POST /api/rest/2.0/metadata/search { metadata: [{ identifier: MODEL_ID, type: \'LOGICAL_TABLE\' }], include_details: true }',
+    '//   MEASURES = lower-cased names of metadata_detail.columns with type MEASURE (aggregated tokens count too)',
+    `const MODEL_ID = '${tile ? esc(tile.modelId) : '<model-guid>'}';`,
+    `const VIZ_ID = '${esc(s.vizId || '<viz-guid>')}';`,
+    `const TILE_QUERY = '${tile ? esc(tile.split.query) : '[Column A] [Column B] [Measure]'}';`,
+    `const MEASURES = new Set([${measures}]);`,
+    '',
+    '// Split the query into columns (hide/reorder) and clauses kept verbatim (filters, sort, top-N).',
+    String(splitTileQuery),
+    String(orderColumns),
+    String(tileTokenString),
+    'const TILE = splitTileQuery(TILE_QUERY);',
+    '',
+    '// Per-user preferences: replace with your backend, keyed by the signed-in ThoughtSpot user.',
+    'async function loadPrefs(userId) {',
+    "  try { return JSON.parse(localStorage.getItem('colprefs:' + userId + ':' + VIZ_ID)) || { hidden: [], order: [] }; }",
+    '  catch { return { hidden: [], order: [] }; }',
+    '}',
+    'async function savePrefs(userId, prefs) {',
+    "  localStorage.setItem('colprefs:' + userId + ':' + VIZ_ID, JSON.stringify(prefs));",
+    '}',
+    '// Build your own dialog: list TILE.columns ({ key, label }) as checkboxes plus an ordered list,',
+    '// and resolve with { hidden: [keys], order: [keys] } (or null on Cancel).',
+    'async function openColumnsDialog(columns, prefs) { return null; }',
+    '',
+    'let embed = null;',
+    "let userId = 'anonymous'; // the signed-in user's GUID (GET /api/rest/2.0/auth/session/user, field id)",
+    'let prefs = { hidden: [], order: [] };',
+    '',
+    'function renderTable() {',
+    '  if (embed) embed.destroy(); // always destroy before re-render',
+    "  embed = new SearchEmbed('#ts-embed-container', {",
+    '    frameParams: {},',
+    '    dataSources: [MODEL_ID],',
+    '    searchOptions: { searchTokenString: tileTokenString(TILE, MEASURES, prefs), executeSearch: true },',
+    '    hideSearchBar: true,',
+    '    hideDataSources: true,',
+    '    forceTable: true,',
+    '    customActions: [',
+    `      { id: '${COLS_ACTION_ID}', name: 'Show/Hide columns', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.ANSWER },`,
+    '    ],',
+    '  });',
+    '  embed.on(EmbedEvent.CustomAction, async (e) => {',
+    `    if ((e.data?.id ?? e.id) !== '${COLS_ACTION_ID}') return;`,
+    '    const next = await openColumnsDialog(TILE.columns, prefs);',
+    '    if (!next) return;',
+    '    prefs = next;',
+    '    await savePrefs(userId, prefs);',
+    '    renderTable();',
+    '  });',
+    '  embed.render();',
+    '}',
+    '',
+    'loadPrefs(userId).then((p) => { prefs = p; renderTable(); });',
+  ];
+}
+
 function aiInsightsCode(s) {
   const esc = str => String(str || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const host = esc(s.host) || 'https://your-instance.thoughtspot.cloud';
@@ -8579,6 +8853,11 @@ function apiCatalog(s) {
   ];
   if (['liveboard', 'liveboard-custom', 'viz', 'ai-highlights'].includes(s.section))
     disc.push({ method: 'POST', path: '/api/rest/2.0/metadata/liveboard/data', scope: 'TS REST', desc: "List a liveboard's visualizations and derive custom-filter values." });
+  if (s.section === 'custom-columns') disc.push(
+    { method: 'POST', path: '/api/rest/2.0/metadata/tml/export', scope: 'TS REST', desc: "Read the Liveboard TML: the tile's saved search query and its model (direct call; needs CORS + export access)." },
+    { method: 'POST', path: '/api/rest/2.0/metadata/search', scope: 'TS REST', desc: "include_details on the tile's model: which columns are measures (they always sit after attributes)." },
+    { method: 'GET', path: '/api/rest/2.0/auth/session/user', scope: 'TS REST', desc: "The signed-in user's GUID, which keys the saved column preferences." },
+  );
   if (s.section === 'liveboard-custom' && auth)
     disc.push({ method: 'POST', path: '/api/filter-values', scope: 'playground', desc: 'CORS-safe relay for filter values, using YOUR minted token (never an admin mint).' });
   groups.push({ group: 'Discovery (REST)', items: disc });
@@ -8591,7 +8870,7 @@ function apiCatalog(s) {
     { method: 'SDK', path: 'embed.on(EmbedEvent.*)', scope: 'visual-embed-sdk', desc: 'Subscribe to lifecycle / data / error / custom-action / save events.' },
     { method: 'SDK', path: 'embed.destroy()', scope: 'visual-embed-sdk', desc: 'Tear down before every re-render.' },
   ];
-  if (s.activeFilters.length || s.section === 'liveboard-custom')
+  if ((s.activeFilters.length || s.section === 'liveboard-custom') && s.section !== 'custom-columns')
     sdk.push({ method: 'SDK', path: 'embed.trigger(HostEvent.UpdateRuntimeFilters, …)', scope: 'visual-embed-sdk', desc: 'Apply runtime filters live — no re-render.' });
   if (displayByActive(s)) {
     const ev = { vizs: 'SetVisibleVizs', tabs: 'SetActiveTab', param: 'UpdateParameters' }[s.displayBy.mode];
