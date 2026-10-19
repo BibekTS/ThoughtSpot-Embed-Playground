@@ -277,8 +277,8 @@ export function doRender(section, config, callbacks, options = {}) {
     case 'drillthrough':
     case 'custom-columns':
     case 'personal-copy':
-      // Read-only + Edit Columns, in its Table view: one tile as a native table (SearchEmbed). app.js
-      // reads the tile first and passes _colsTile; without it this section is the plain Liveboard below.
+      // Read-only + Edit Columns IS the Table view: one tile as a native table (SearchEmbed). app.js
+      // reads the tile first and passes _colsTile; the Liveboard is never rendered for this section.
       if (section === 'custom-columns' && config._colsTile) {
         if (!config._colsTile.modelId) { onError('Edit Columns: the tile has not been read yet.'); return null; }
         // The SDK merges a per-embed customCSS over init()'s SHALLOWLY, so this embed's rules_UNSTABLE
