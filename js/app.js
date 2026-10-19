@@ -3860,6 +3860,9 @@ function ccOpenDialog(payload) {
   if (guid && guid !== ccUsers.get(s.host)?.id) {
     const n = payload.data.embedAnswerData.user.userName;
     ccUsers.set(s.host, { id: guid, name: typeof n === 'string' ? n.slice(0, 256) : '' });
+    // Re-render first so the table and the inspector's "Saving for" show this user's saved layout
+    // even if the dialog is cancelled (render() removes #cc-modal, so the dialog opens after it).
+    renderInspector(); render();
   }
   openColumnsDialog({
     tile,
@@ -3879,10 +3882,14 @@ function ccOpenDialog(payload) {
     fallbackFocus: ccFocusTarget,
   });
 }
-// Where focus goes when the picker's opener is gone: the inspector's picker button, else the table.
+// Where focus goes when the picker's opener is gone: the inspector's picker button if it's visible
+// (the inspector is display:none at ≤860px), else the table container (made focusable on demand).
 function ccFocusTarget() {
-  return [...document.querySelectorAll('#insp-body button')].find(b => b.textContent === 'Open column picker' && !b.disabled)
-    || $('#ts-embed-container');
+  const btn = [...document.querySelectorAll('#insp-body button')].find(b => b.textContent === 'Open column picker' && !b.disabled && b.getClientRects().length);
+  if (btn) return btn;
+  const box = $('#ts-embed-container');
+  if (box && !box.hasAttribute('tabindex')) box.tabIndex = -1;
+  return box;
 }
 
 // — Runtime filters (live, HostEvent) —

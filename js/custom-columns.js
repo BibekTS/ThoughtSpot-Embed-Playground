@@ -347,7 +347,7 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply, onApplied, 
         li.append(icon, name);
       } else {
         li.draggable = true; li.tabIndex = 0;
-        li.setAttribute('aria-label', `${label(k)}. Alt plus arrow keys to move.`);
+        li.setAttribute('aria-label', `${label(k)}. Alt plus arrow keys to move.${sortKeys.has(k) ? ' Used for sort, can’t be hidden.' : ''}`);
         li.append(icon, name);
         if (sortKeys.has(k)) { li.title = SORT_NOTE; li.append(sortTag()); }
         else {
@@ -385,6 +385,8 @@ export function openColumnsDialog({ tile, prefs, userLabel, onApply, onApplied, 
     o.splice(o.indexOf(target), 0, src);
     draft.order = orderColumns(split, measures, o);
     paintOrder();
+    // The repaint removed the dragged row (focused by its mousedown): refocus it so Escape/Tab work.
+    order.querySelector(`li[data-key="${CSS.escape(src)}"]`)?.focus();
     announce(`${label(src)} moved.`);
   }
   function nudge(k, dir) {
