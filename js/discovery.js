@@ -8,7 +8,11 @@
 
 // In-memory only — never persisted to disk. Set by the UI for token-based discovery.
 let bearerToken = '';
-export function setBearerToken(t) { bearerToken = t || ''; }
+// Bumped whenever the bearer CHANGES, so a multi-step write chain can notice an identity swap mid-flight
+// without ever seeing the token itself.
+let bearerGen = 0;
+export function setBearerToken(t) { if ((t || '') !== bearerToken) bearerGen++; bearerToken = t || ''; }
+export const bearerGeneration = () => bearerGen;
 export function hasBearerToken() { return !!bearerToken; }
 export function getBearerToken() { return bearerToken; }
 
@@ -224,6 +228,53 @@ export async function discoverViz(host, liveboardId) {
 }
 
 /**
+ * Export a Liveboard's TML as JSON (Edit Columns reads one tile's saved search query from it).
+ * Direct call, like discoverViz: tml/export is not on the server's relay allowlist, so this needs the
+ * origin on ThoughtSpot's CORS allowlist and a user who can export the Liveboard.
+ * → { ok:true, liveboard } | { ok:false, status?, error }
+ */
+export async function exportLiveboardTml(host, liveboardId) {
+  try {
+    const resp = await api(host, '/api/rest/2.0/metadata/tml/export', {
+      method: 'POST',
+      body: JSON.stringify({ metadata: [{ identifier: liveboardId, type: 'LIVEBOARD' }], export_fqn: true, edoc_format: 'JSON' }),
+    });
+    if (!resp.ok) return { ok: false, status: resp.status, error: await restError(resp) };
+    const arr = await resp.json();
+    if (typeof arr?.[0]?.edoc !== 'string') return { ok: false, error: String(arr?.[0]?.info?.status?.error_message || 'No TML returned').slice(0, 500) };
+    const liveboard = JSON.parse(arr[0].edoc)?.liveboard;
+    if (!liveboard || typeof liveboard !== 'object') return { ok: false, error: 'The export is not a Liveboard' };
+    return { ok: true, liveboard };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * A model's column kinds: Map(lower-cased column name → 'ATTRIBUTE' | 'MEASURE'). Read from
+ * metadata/search include_details (view access is enough; the model's TML export needs edit access).
+ */
+export async function modelColumnKinds(host, modelId) {
+  try {
+    const resp = await apiRest(host, '/api/rest/2.0/metadata/search', {
+      method: 'POST',
+      body: { metadata: [{ identifier: modelId, type: 'LOGICAL_TABLE' }], include_details: true, record_size: 1 },
+    });
+    if (!resp.ok) return { ok: false, status: resp.status, error: await restError(resp) };
+    const d = await resp.json();
+    const cols = Array.isArray(d) ? d[0]?.metadata_detail?.columns : null;
+    const kinds = new Map();
+    for (const c of Array.isArray(cols) ? cols : []) {
+      const name = c?.header?.name;
+      if (typeof name === 'string' && (c.type === 'ATTRIBUTE' || c.type === 'MEASURE')) kinds.set(name.toLowerCase(), c.type);
+    }
+    return { ok: true, kinds };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
  * List all standalone saved Answers on the instance. Answers are top-level ANSWER metadata
  * objects (like Liveboards), so we search that type directly and read the top-level results —
  * NOT a worksheet's `dependent_objects` (that field is an opaque map, not keyed by type, so the
@@ -312,13 +363,19 @@ async function ensureTag(host, tagName) {
  * discovery attribute a copy to its origin server-side — unlike a title prefix. See docs/personal-liveboards.md §5.
  */
 export const sourceTag = (sourceId) => `src:${sourceId}`;
+/** The Personal-copy rail option's own tag. Distinct from sourceTag on purpose: the ＋ Personalize strip adopts
+ *  `src:` copies (and Reset deletes them), so the two features must never see each other's objects. */
+export const pcopyTag = (sourceId) => `pcopy:${sourceId}`;
 
 /** Ensure each tag exists, then assign them all to a liveboard in one call. Requires edit access (the owner). */
-export async function assignTags(host, metadataId, tags) {
+// `stale()` (optional) is checked before each write; true stops the chain with { ok:false, stale:true }.
+export async function assignTags(host, metadataId, tags, stale = () => false) {
+  const STOP = { ok: false, stale: true, error: 'the session changed mid-way' };
   try {
     const list = tags.filter(Boolean);
     if (!list.length) return { ok: true, status: 200, error: '' };
-    for (const t of list) await ensureTag(host, t);
+    for (const t of list) { if (stale()) return STOP; await ensureTag(host, t); }
+    if (stale()) return STOP;
     const resp = await apiRest(host, '/api/rest/2.0/tags/assign', {
       method: 'POST',
       body: { metadata: [{ identifier: metadataId, type: 'LIVEBOARD' }], tag_identifiers: list },

@@ -294,6 +294,35 @@ export function doRender(section, config, callbacks, options = {}) {
     case 'liveboard-custom':
     case 'ai-highlights':
     case 'drillthrough':
+    case 'custom-columns':
+    case 'personal-copy':
+      // Read-only + Edit Columns IS the Table view: one tile as a native table (SearchEmbed). app.js
+      // reads the tile first and passes _colsTile; the Liveboard is never rendered for this section.
+      if (section === 'custom-columns' && config._colsTile) {
+        if (!config._colsTile.modelId) { onError('Edit Columns: the tile has not been read yet.'); return null; }
+        // The SDK merges a per-embed customCSS over init()'s SHALLOWLY, so this embed's rules_UNSTABLE
+        // would replace the user's Custom-styles rules — spread those in first, then the title rules.
+        const initCSS = config._customStyles?.customCSS || {};
+        embed = new SearchEmbed('#ts-embed-container', {
+          ...common,
+          customActions,
+          ...flags,
+          // After ...flags — a shared link must not re-point the data source or the query.
+          // visibleActions is an allowlist: only the "Edit Columns" button shows (verified live,
+          // 26.11.0.cl). The SDK refuses visibleActions alongside a hiddenActions ARRAY, so both
+          // lists are cleared to undefined, not [].
+          hiddenActions: undefined,
+          disabledActions: undefined,
+          visibleActions: [config._colsTile.actionId],
+          customizations: { style: { customCSS: { ...initCSS, rules_UNSTABLE: { ...initCSS.rules_UNSTABLE, ...config._colsTile.titleRules } } } },
+          dataSources: [config._colsTile.modelId],
+          searchOptions: { searchTokenString: config._colsTile.tokens, executeSearch: true },
+          hideSearchBar: true,
+          hideDataSources: true,
+          forceTable: true,
+        });
+        break;
+      }
       embed = new LiveboardEmbed('#ts-embed-container', {
         ...common,
         liveboardV2: true,
@@ -307,6 +336,11 @@ export function doRender(section, config, callbacks, options = {}) {
         // code generator in app.js mirrors exactly that per-section pinning.
         liveboardId: config.liveboardId,
         ...(section === 'viz' && { vizId: config.vizId }),
+        // The two restrictive sections: an ALLOWLIST of buttons, pinned after ...flags (S29). The SDK
+        // refuses visibleActions alongside a hiddenActions ARRAY, so those are cleared to undefined.
+        // The allowlist is UI, not security.
+        ...(config._visibleActions && { hiddenActions: undefined, disabledActions: undefined, visibleActions: config._visibleActions }),
+        ...(section === 'personal-copy' && { hideLiveboardHeader: true }),
       });
       break;
 
@@ -332,6 +366,7 @@ export function doRender(section, config, callbacks, options = {}) {
       return null;
   }
 
+  if (window.__TS_PLAYGROUND_PROBE) window.__lastEmbed = embed; // headless probes read its viewConfig
   embed
     .on(EmbedEvent.AuthInit, () => {
       onEvent('AuthInit', 'Auth initialized');
@@ -415,6 +450,10 @@ export function doRender(section, config, callbacks, options = {}) {
       onEvent('CustomAction', JSON.stringify(payload?.data ?? payload, null, 2));
       // Notify app.js to display in the custom action panel
       if (window.__onCustomAction) window.__onCustomAction(payload);
+    })
+    .on(EmbedEvent.Alert, (payload) => {
+      // The editor's "Changes saved" toast arrives here (there is no EmbedEvent.Save for a Liveboard edit).
+      if (section === 'personal-copy') onEvent('Alert', JSON.stringify(payload?.data ?? payload));
     })
     .on(EmbedEvent.VizPointClick, (payload) => {
       // A click on a data point in any viz. Carries clickedPoint.selectedAttributes[] and
