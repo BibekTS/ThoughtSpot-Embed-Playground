@@ -63,15 +63,34 @@ async function fetchTrustedAuthToken(config) {
     const data = await resp.json().catch(() => null);
     if (!resp.ok || !data?.token) {
       const msg = data?.error || `Token request failed (${resp.status})`;
-      if (window.__onAuthToken) window.__onAuthToken({ requestBody, error: msg, response: data });
+      if (window.__onAuthToken) window.__onAuthToken({ requestBody, error: msg, response: data, host: config.thoughtSpotHost });
       throw new Error(msg);
     }
-    if (window.__onAuthToken) window.__onAuthToken({ requestBody, response: data });
+    if (window.__onAuthToken) window.__onAuthToken({ requestBody, response: data, host: config.thoughtSpotHost });
     return data.token;
   } catch (err) {
-    if (window.__onAuthToken) window.__onAuthToken({ requestBody, error: err.message });
+    if (window.__onAuthToken) window.__onAuthToken({ requestBody, error: err.message, host: config.thoughtSpotHost });
     throw err;
   }
+}
+
+// S58: the host's discovery bearer reuses the SDK's mint when one is IN FLIGHT for the same config
+// (the SDK mints on init only on its first cookieless init); otherwise the host mints once itself.
+// The SDK only ever receives tokens it requested itself (it never joins anything), so there is no
+// DUPLICATE_TOKEN_ERR risk.
+const mintKey = (c) => JSON.stringify([c.thoughtSpotHost, c.trustedAuth?.tokenEndpoint, c.trustedAuth?.requestBody]);
+let sdkMint = null; // { key, p }: the SDK's in-flight getAuthToken mint
+function sdkGetAuthToken(config) {
+  const p = fetchTrustedAuthToken(config);
+  const entry = { key: mintKey(config), p };
+  sdkMint = entry;
+  p.catch(() => {}).finally(() => { if (sdkMint === entry) sdkMint = null; }); // .catch FIRST, or the derived promise is an unhandled rejection
+  return p;
+}
+/** Host-side mint: joins the SDK's in-flight mint for the same config, else mints once. Never feeds the SDK. */
+export function mintTrustedToken(config) {
+  if (sdkMint && sdkMint.key === mintKey(config)) return sdkMint.p;
+  return fetchTrustedAuthToken(config);
 }
 
 /**
@@ -104,7 +123,7 @@ export function initSDK(config) {
       ...base,
       authType: AuthType[config.authType],
       autoLogin: config.trustedAuth?.autoLogin ?? true,
-      getAuthToken: () => fetchTrustedAuthToken(config),
+      getAuthToken: () => sdkGetAuthToken(config),
     });
   } else {
     authEE = init({ ...base, authType: AuthType[config.authType] ?? AuthType.None });

@@ -8,7 +8,7 @@
  * the trusted-auth token playground lives in auth.js.
  */
 
-import { initSDK, doRender, HostEvent, Action, RuntimeFilterOp, CustomActionsPosition, CustomActionTarget } from './embed.js';
+import { initSDK, mintTrustedToken, doRender, HostEvent, Action, RuntimeFilterOp, CustomActionsPosition, CustomActionTarget } from './embed.js';
 import { getState, setState, subscribe, loadState, resetState, getHostSource, holdHostPersist, isHttpUrl } from './state.js';
 import * as Discovery from './discovery.js';
 import { openAuthModal, buildTrustedAuthConfig, seedAuthHooks } from './auth.js';
@@ -274,6 +274,11 @@ let plbDiscovering = false;      // true while refreshPersonalCopies() is in fli
 let plbClickTimer = null;        // debounces a copy-tab click so a dblclick can cancel it (rename vs switch)
 let pendingHostConfirm = false;  // a shared-link (#s=) host is awaiting an explicit Connect click
 let tokenServerAvailable = true; // Trusted Auth mints via the local token server; probed on boot (see probeTokenServer)
+let bearerMintError = '';        // S58: why connect()'s discovery mint failed ('' = no failure) — copy only, never the token
+const isTrustedAuth = (t) => t === 'TrustedAuthTokenCookieless' || t === 'TrustedAuthToken';
+// S58: Discovery's in-memory bearer belongs to ONE host + trusted auth mode; drop it (fail closed)
+// whenever either changes, so a token minted for host A is never sent to host B.
+function dropBearer() { Discovery.setBearerToken(''); bearerMintError = ''; }
 
 // ── AI Insights (headless REST panel) runtime state ───────────────────────────
 let aiQuery = '';   // last free-text question typed into the AI Insights panel
@@ -353,13 +358,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   // is what clears pendingHostConfirm/holdHostPersist, so calling it here would trust an
   // unconfirmed shared-link host without a click (S10). applyConfig() is itself a no-op on the
   // host while unconfirmed; Confirm re-runs both.
+  // S58: the token is handed to connect(), which seeds the bearer only AFTER its own S10 checks.
   seedAuthHooks({ logEvent, onTokenApplied: (token) => {
-    if (token) Discovery.setBearerToken(token);
-    applyConfig();
-    if (pendingHostConfirm) { showHostConfirm(getState().host); return; }
-    if (token && getState().host) connect({ silent: true });
-    else render();
+    if (pendingHostConfirm) { applyConfig(); showHostConfirm(getState().host); return; }
+    // A blank/malformed host input stops connect() before applyConfig(), so re-init the SDK here then.
+    if (token && getState().host) { connect({ silent: true, token }).then((went) => { if (went === false) { applyConfig(); render(); } }); return; }
+    applyConfig(); render();
   } });
+  // S58 (mid-session expiry): adopt the SDK's own successful re-mints for the connected host, so
+  // discovery's bearer does not outlive the embed's. Inspector rendering still runs first.
+  const inspectToken = window.__onAuthToken;
+  window.__onAuthToken = (info) => {
+    inspectToken?.(info);
+    const st = getState();
+    if (!info?.error && info?.response?.token && info.host === st.host && isTrustedAuth(st.authType) && !pendingHostConfirm) {
+      Discovery.setBearerToken(info.response.token); bearerMintError = '';
+    }
+  };
+  if (window.__TS_PLAYGROUND_PROBE) window.__bearerSet = () => Discovery.hasBearerToken(); // boolean only, never the token
 
   const s = getState();
   $('#host-input').value = s.host;
@@ -535,6 +551,7 @@ function applyTrustedAuthAvailability() {
     // Fall back to browser-session auth so Connect doesn't dead-end on a missing endpoint.
     if (getState().authType !== 'None') {
       setState({ authType: 'None' });
+      dropBearer(); // S58
       if (sel) sel.value = 'None';
       applyConfig();
       logEvent('Trusted Auth', 'Unavailable — no local token server. Using browser session.');
@@ -630,22 +647,23 @@ function applyConfig() {
   // own token server) and ships it to thoughtSpotHost, with no embed render and no click. Every
   // applyConfig() call site funnels through here, so the short-circuit covers all of them; Connect
   // clears pendingHostConfirm and re-runs applyConfig(), so nothing is lost.
-  if (pendingHostConfirm) return;
+  if (pendingHostConfirm) return cfg;
   initSDK(cfg);
+  return cfg;
 }
 
 // ── Connection ────────────────────────────────────────────────────────────────
-async function connect({ silent = false, trustHost = false } = {}) {
+async function connect({ silent = false, trustHost = false, token = '' } = {}) {
   let host = $('#host-input').value.trim().replace(/\/+$/, '');
-  if (!host) { toast('Enter a host URL first.'); return; }
+  if (!host) { toast('Enter a host URL first.'); return false; } // false = never proceeded (onTokenApplied falls back)
   // Auto-prefix https:// when the user omits the scheme (e.g. "my-co.thoughtspot.cloud").
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) { host = 'https://' + host; }
   // Normalize to the bare ORIGIN, in lockstep with state.js's sanitize(): that guard accepts only
   // an origin, so writing anything richer here (a pasted '…/#/home') would connect fine now and
   // then silently vanish on the next load when sanitize blanks it. The writer and the sanitizer
   // must agree — same rule the org recorded for safeNavUrl.
-  try { host = new URL(host).origin; } catch { toast('That does not look like a valid host URL.'); return; }
-  if (!isHttpUrl(host)) { toast('Host must be an http(s) URL.'); return; }
+  try { host = new URL(host).origin; } catch { toast('That does not look like a valid host URL.'); return false; }
+  if (!isHttpUrl(host)) { toast('Host must be an http(s) URL.'); return false; }
   $('#host-input').value = host;
   // S10: only the confirm overlay's own button may trust a shared-link host. Any other route here
   // — notably the token-applied auto-connect — must leave the overlay standing. Typing a DIFFERENT
@@ -660,13 +678,35 @@ async function connect({ silent = false, trustHost = false } = {}) {
   setState({ host });
   const seq = ++connectSeq;                       // this attempt's ticket
   const isStale = () => seq !== connectSeq || getState().host !== host;
+  dropBearer(); // S58: fail closed — a host change, Retry or failed mint never reuses the old bearer
   setStatus('connecting', 'Connecting…');
   // Show a prominent connecting state on the main stage immediately — discovery below can take a
   // few seconds, and until now the stage kept showing the "not connected" walkthrough (only the
   // top-bar pill changed), which read as broken. Phase 0 = verifying the session.
   setConnectPhase(0);
   setOverlay('connecting');
-  applyConfig();
+  const cfg = applyConfig();
+  // S58: under trusted auth, discovery needs a bearer — there may be no browser session at all.
+  // Only reached past the S10 confirm above, so an unconfirmed host never sees a minted token.
+  // A failed mint is non-fatal: discovery falls back to the cookie, and the 401 overlay says why.
+  if (isTrustedAuth(getState().authType) && tokenServerAvailable) {
+    if (token) Discovery.setBearerToken(token);
+    else {
+      try {
+        const t = await mintTrustedToken(cfg);
+        if (isStale()) return;
+        // The user may have picked None mid-mint (its dropBearer() can't cancel this await) — then
+        // don't re-arm the bearer; discovery just carries on on the browser session.
+        if (isTrustedAuth(getState().authType)) Discovery.setBearerToken(t);
+      } catch (e) {
+        if (isStale()) return;
+        if (isTrustedAuth(getState().authType)) {
+          bearerMintError = String(e?.message || e).slice(0, 300);
+          logEvent('Auth', `✗ Token mint for discovery failed: ${bearerMintError}`);
+        }
+      }
+    }
+  }
 
   const org = await Discovery.discoverOrg(host);
   if (isStale()) return; // a newer connect() owns the UI now — drop this response entirely
@@ -677,7 +717,7 @@ async function connect({ silent = false, trustHost = false } = {}) {
     // corporate-proxy login page). Reporting that as "Unreachable" sent people debugging DNS.
     const isProxy = org.reason === 'proxy';
     const label = org.status === 401 ? 'Not logged in' : isCors ? 'CORS blocked' : isProxy ? 'Not ThoughtSpot' : 'Unreachable';
-    const detail = isCors
+    const detail = org.status === 401 && bearerMintError ? `Token mint failed: ${bearerMintError}` : isCors
       ? `Host is reachable, but the browser blocked the cross-origin REST call. Add ${location.origin} to ThoughtSpot’s CORS allowlist (Develop → Customizations → Security Settings). The embed iframe is unaffected.`
       : org.error;
     setStatus('error', label, detail);
@@ -700,6 +740,7 @@ async function connect({ silent = false, trustHost = false } = {}) {
     return;
   }
   connected = true;
+  bearerMintError = ''; // the cookie fallback worked — a later SDK auth failure must not blame the mint
   setStatus('ok', `${org.userName}${org.orgName ? ' · ' + org.orgName : ''}`);
   currentUserName = org.userName || '';
 
@@ -1091,10 +1132,16 @@ function setOverlay(state) {
     const isTrusted = authType === 'TrustedAuthTokenCookieless' || authType === 'TrustedAuthToken';
     const title = $('#not-logged-in-title');
     const sub = $('#not-logged-in-sub');
-    if (title) title.textContent = isTrusted ? 'Embed session not authenticated' : 'Log in to ThoughtSpot first';
-    if (sub) sub.textContent = isTrusted
-      ? 'ThoughtSpot rejected the trusted-auth token, so the embed has no session. Re-mint a fresh token from Token claims… (Mint & apply), then it reloads automatically.'
-      : 'Browser-session auth needs an active login at the host. Open ThoughtSpot, sign in, then retry.';
+    if (isTrusted && bearerMintError) {
+      // S58: the token server failed, so ThoughtSpot never saw a token — don't blame ThoughtSpot.
+      if (title) title.textContent = 'Couldn’t get a sign-in token';
+      if (sub) sub.textContent = `The token server could not mint a token (${bearerMintError}), so discovery fell back to your browser session, which ThoughtSpot did not accept. Check that the token server is running and Token claims… are right, then Retry.`;
+    } else {
+      if (title) title.textContent = isTrusted ? 'Embed session not authenticated' : 'Log in to ThoughtSpot first';
+      if (sub) sub.textContent = isTrusted
+        ? 'ThoughtSpot rejected the trusted-auth token, so the embed has no session. Re-mint a fresh token from Token claims… (Mint & apply), then it reloads automatically.'
+        : 'Browser-session auth needs an active login at the host. Open ThoughtSpot, sign in, then retry.';
+    }
     // Swap the actions to match the auth mode: trusted auth is fixed by re-minting (Token
     // claims…), not by signing in at the host — so promote that button and demote Retry to a
     // secondary. Browser session keeps "Open ThoughtSpot ↗" + a primary Retry.
@@ -1177,6 +1224,7 @@ function bindTopbar() {
   });
   $('#auth-select').addEventListener('change', e => {
     setState({ authType: e.target.value });
+    if (e.target.value === 'None') dropBearer(); // S58: a browser-session pick must not keep sending a token
     $('#auth-config-btn').hidden = e.target.value === 'None';
     // Modal first — it carries the setup guide, and must appear even if the SDK
     // re-init below throws (e.g. a malformed host typed into the top bar).
