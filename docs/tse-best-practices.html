@@ -30,8 +30,8 @@
 </script>
 <script type="application/json" id="guide-meta">
 {
-  "version": "3.7.1",
-  "lastUpdated": "2026-10-19",
+  "version": "3.7.2",
+  "lastUpdated": "2026-10-26",
   "verifiedAgainst": {
     "sdk": "1.53.0",
     "thoughtspot": "26.10.0.cl"
@@ -40,6 +40,11 @@
   "staleAfterDays": 90,
   "sourceOfTruth": "https://developers.thoughtspot.com/docs/",
   "changelog": [
+    {
+      "version": "3.7.2",
+      "date": "2026-10-26",
+      "summary": "Re-verified Trusted auth step by step and Auth methods and sessions claim by claim (token endpoints and defaults, JIT, lifetimes, rate limits, key rotation, AuthType versions, init options). No newer SDK or Cloud release than 1.53.0 and 26.10.0.cl. New: your own REST v2 calls under cookieless auth (tokenizedFetch versus a separately minted token, with a Field-observed note), and multi-Org tokens (Beta, 26.10.0.cl). Corrected: Per Org Subdomain is GA since 26.5.0.cl, not Early Access; the performance section's vague advice to keep a bearer token in sync now points at tokenizedFetch."
+    },
     {
       "version": "3.7.1",
       "date": "2026-10-19",
@@ -1179,7 +1184,7 @@
       {"label":"Yes","next":"r_esso"},
       {"label":"No","next":"r_trusted_iframe"}]},
     "r_trusted_noidp":{"result":"Way B: Trusted auth","html":"<p>There is no IdP for ThoughtSpot to redirect to, so the best fit is <code>TrustedAuthTokenCookieless</code>. Your backend authenticates the user however it already does, then requests the token. <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods'>docs</a> The docs list users who do not exist in your IdP as a reason to choose trusted authentication.</p><p><b>Main alternative:</b> none if you have no IdP and no backend; the docs do not recommend trusted authentication without a backend, so budget for one. <b>Changes if:</b> you add an iframe-friendly SAML/OIDC IdP (then Embedded SSO becomes possible).</p>"},
-    "r_trusted_multi":{"result":"Way B: Trusted auth","html":"<p>The docs recommend trusted authentication for multiple IdPs without federation. <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods'>docs</a> Your app routes each user to the right IdP, and ThoughtSpot only ever sees your backend. It needs a backend of your own.</p><p><b>Main alternative:</b> if you use Orgs, per-Org IdPs with Per Org Subdomain (Early Access, via Support) are documented for identifying Orgs with different IdPs; we have not verified that this fits every multi-IdP design. <b>Changes if:</b> you federate the IdPs behind one.</p>"},
+    "r_trusted_multi":{"result":"Way B: Trusted auth","html":"<p>The docs recommend trusted authentication for multiple IdPs without federation. <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods'>docs</a> Your app routes each user to the right IdP, and ThoughtSpot only ever sees your backend. It needs a backend of your own.</p><p><b>Main alternative:</b> if you use Orgs, per-Org IdPs with Per Org Subdomain (GA since 26.5.0.cl, enabled via Support) are documented for identifying Orgs with different IdPs; we have not verified that this fits every multi-IdP design. <b>Changes if:</b> you federate the IdPs behind one.</p>"},
     "r_trusted_iframe":{"result":"Way B: Trusted auth","html":"<p>The docs do not recommend EmbeddedSSO when the IdP cannot be configured to allow iframe redirects. <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods'>docs</a> Best fit: <code>TrustedAuthTokenCookieless</code>.</p><p><b>Main alternative:</b> if you cannot add a backend, <code>SAMLRedirect</code> or <code>OIDCRedirect</code> redirect the whole host page to the IdP (an app-wide redirect; popup mode softens it). <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_samlredirect_authentication'>docs</a> <b>Changes if:</b> the IdP can be configured to allow iframe redirects.</p>"},
     "r_esso":{"result":"Way A: EmbeddedSSO fits the stated answers","html":"<p>Configure SAML or OIDC on ThoughtSpot, allow iframing at the IdP, then <code>init({ thoughtSpotHost, authType: AuthType.EmbeddedSSO })</code>. <a class='src' href='https://developers.thoughtspot.com/docs/embed-auth#_embedded_sso_authentication'>docs</a> Also consider ThoughtSpot on a custom domain under your app's domain, which the docs recommend to avoid third-party cookie blocking. <a class='src' href='https://developers.thoughtspot.com/docs/security-settings#_third_party_cookies'>docs</a></p><p><b>Main alternative:</b> trusted auth, which costs a token service you run and gives per-mint data values and an app-side mint log (our synthesis, see the table). <b>Changes if:</b> you add a second IdP, need per-session data rules, or the IdP stops allowing iframes.</p>"}
   }}</script></div>
@@ -1198,7 +1203,7 @@
         <tr><td>Third-party cookies</td><td>The docs list Embedded SSO among the options that avoid the third-party-cookie problem <a class="src" href="https://developers.thoughtspot.com/docs/security-settings#_third_party_cookies">docs</a>. The IdP login still runs inside the iframe, so test it in Safari and in private windows before launch (our guidance).</td><td>None by design</td></tr>
         <tr><td>Front-end code</td><td>A few lines</td><td>A few lines plus a backend endpoint</td></tr>
         <tr><td>Moving parts</td><td>Fewer. IdP outage: the docs are silent; expect sign-in at the IdP to fail (our inference)</td><td>More (token service, entitlement lookup). Token service outage: new tokens cannot be minted (our inference)</td></tr>
-        <tr><td>Multi-tenant future</td><td>The docs advise against it with multiple IdPs; per-Org IdPs and Per Org Subdomain (Early Access) exist for Orgs</td><td>Any number of IdPs, because your backend is the converging point</td></tr>
+        <tr><td>Multi-tenant future</td><td>The docs advise against it with multiple IdPs; per-Org IdPs and Per Org Subdomain (GA since 26.5.0.cl; enabled via Support) exist for Orgs</td><td>Any number of IdPs, because your backend is the converging point</td></tr>
       </tbody>
     </table></div>
     <p class="muted">This table is our synthesis of the documented selection guidance, not a table the docs publish; cells marked as inference are ours. Per-Org IdPs and a Per Org Subdomain exist for clusters that use Orgs. <a class="src" href="https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/orgs">docs</a></p>
@@ -1212,7 +1217,7 @@
         <tr><td>MFA</td><td><code>AuthType.Basic</code> is documented to fail when MFA is enabled on ThoughtSpot, and so do REST calls that use basic authentication (username and password) to <code>session/login</code> and the token endpoints (MFA for local auth is Beta from 10.6.0.cl; see <a href="#hardening">hardening</a>). Token calls with <code>secret_key</code> are the documented path. <a class="src" href="https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods">docs</a> Nothing else about MFA is stated for embeds.</td><td><b>Trusted auth:</b> your app authenticates, so MFA is whatever your login enforces (inference: ThoughtSpot never sees the login). <b>Embedded SSO:</b> the IdP enforces it in the iframe (inference). Ask ThoughtSpot Support what applies to your instance.</td></tr>
         <tr><td>IdP or login outage</td><td>Not documented.</td><td>Both ways depend on your login. Embedded SSO adds the IdP-in-iframe hop; trusted auth adds your token service. Existing trusted tokens work until expiry, so a longer lifetime rides out short outages but widens the leak window.</td></tr>
         <tr><td>Regulated orgs: A or B</td><td>The docs choose by IdP conditions, not by regulation. <a class="src" href="https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods">docs</a></td><td><b>Embedded SSO</b> keeps the user credential flow at the IdP and has no secret key to protect, but gives you less app-side audit (our reading). <b>Trusted auth</b> adds a high-value secret key and a service to harden, and gives a mint log you control (our reading). Choose by who your auditors trust to enforce login.</td></tr>
-        <tr><td>Several IdPs or tenants with their own IdP</td><td>Docs recommend trusted auth for multiple IdPs without federation, and advise against Embedded SSO. Per Org Subdomain lets Orgs with different IdPs be identified. <a class="src" href="https://developers.thoughtspot.com/docs/orgs#_per_org_subdomain">docs</a></td><td>Trusted auth: one integration, your routing logic. Per-Org IdPs: ThoughtSpot-side per-tenant SSO, but Early Access features and an Orgs license. See <a href="#identity">Who each person becomes</a>.</td></tr>
+        <tr><td>Several IdPs or tenants with their own IdP</td><td>Docs recommend trusted auth for multiple IdPs without federation, and advise against Embedded SSO. Per Org Subdomain lets Orgs with different IdPs be identified. <a class="src" href="https://developers.thoughtspot.com/docs/orgs#_per_org_subdomain">docs</a></td><td>Trusted auth: one integration, your routing logic. Per-Org IdPs: ThoughtSpot-side per-tenant SSO, but it needs Orgs and Support to enable it (Per Org Subdomain is GA since 26.5.0.cl). See <a href="#identity">Who each person becomes</a>.</td></tr>
         <tr><td>User lifecycle on exit</td><td>See the deprovisioning table in <a href="#identity">identity</a>.</td><td>With Embedded SSO the docs describe user creation at first login, not removal, so confirm with ThoughtSpot whether an IdP removal deactivates the ThoughtSpot user; plan an explicit deactivation either way.</td></tr>
       </tbody>
     </table></div>
@@ -1221,7 +1226,7 @@
 
 <!-- ===== 21-trusted-flow.html ===== -->
 <section class="sec" id="trusted-flow" data-chapter="ch-sign-in" data-nav="Trusted auth, step by step"
-         data-verified="2026-10-01" data-scenarios="saas regulated">
+         data-verified="2026-10-26" data-scenarios="saas regulated">
   <header class="sec-head">
     <span class="num">0</span>
     <h2>Trusted auth, step by step</h2>
@@ -1435,7 +1440,7 @@ init({
       <p>Not necessarily. With <code>auto_create: true</code> the token request creates the user if missing. You must send <code>display_name</code> and <code>email</code>; send <code>group_identifiers</code> only if you want JIT group assignment. The docs warn that this creates users and any new groups with default options, and that the <code>users</code> and <code>groups</code> endpoints give full control. <a class="src" href="https://developers.thoughtspot.com/docs/just-in-time-provisioning#_autocreate_using_token_request">docs</a> The token service may also call other REST APIs, using a service account with administrator privileges. <a class="src" href="https://developers.thoughtspot.com/docs/just-in-time-provisioning#_jit_rest_api_provisioning_trusted_authentication">docs</a></p>
     </div></details>
     <details class="acc"><summary>We have two IdPs, Okta for customers and Entra for staff. How does that work?</summary><div class="acc-body">
-      <p>Both sign users into your app, and both end at the same backend. The docs recommend trusted authentication for multiple IdPs without federation, because ThoughtSpot sees one kind of token request from one trusted service. <a class="src" href="https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods">docs</a> Routing by subdomain or email domain is your app's job. The cost is that one backend, one secret key and your routing logic become critical. If you use Orgs, per-Org IdPs with Per Org Subdomain (Early Access, via Support) are the ThoughtSpot-side alternative. <a class="src" href="https://developers.thoughtspot.com/docs/orgs#_per_org_subdomain">docs</a></p>
+      <p>Both sign users into your app, and both end at the same backend. The docs recommend trusted authentication for multiple IdPs without federation, because ThoughtSpot sees one kind of token request from one trusted service. <a class="src" href="https://developers.thoughtspot.com/docs/embed-auth#_supported_authentication_methods">docs</a> Routing by subdomain or email domain is your app's job. The cost is that one backend, one secret key and your routing logic become critical. If you use Orgs, per-Org IdPs with Per Org Subdomain (GA since 26.5.0.cl, enabled via Support) are the ThoughtSpot-side alternative. <a class="src" href="https://developers.thoughtspot.com/docs/orgs#_per_org_subdomain">docs</a></p>
     </div></details>
   </div></details>
   <details class="deeper"><summary>Go deeper: running the token service in production <small>about 3 min</small></summary><div class="deeper-body">
@@ -1455,7 +1460,7 @@ init({
 
 <!-- ===== 22-auth.html ===== -->
 <section class="sec" id="auth" data-chapter="ch-sign-in" data-nav="Auth methods &amp; sessions"
-         data-verified="2026-10-01" data-scenarios="saas internal ai regulated mobile">
+         data-verified="2026-10-26" data-scenarios="saas internal ai regulated mobile">
   <header class="sec-head">
     <span class="num">0</span>
     <h2>Auth methods and sessions</h2>
@@ -1539,6 +1544,28 @@ const authEE = init({
 });</code></pre>
   </div></div>
 
+  <details class="deeper"><summary>Go deeper: your own REST v2 calls under cookieless auth <small>about 2 min</small></summary><div class="deeper-body">
+    <div class="vs">
+      <div class="side a"><span class="k">Way A</span><h4>SDK's token via <code>tokenizedFetch</code></h4><p>Browser calls reuse the bearer token the SDK already holds. <span class="ver">SDK 1.28.0+</span> <a class="src" href="https://developers.thoughtspot.com/docs/Function_tokenizedFetch">docs</a></p><p><b>Fits when:</b> the page calls REST v2 as the signed-in user (listing Liveboards, filter values). <b>Costs:</b> no second mint. <b>Gives up:</b> it only works in the browser, after the SDK has its token.</p></div>
+      <div class="or">or</div>
+      <div class="side b"><span class="k">Way B</span><h4>Your own token from the backend</h4><p>Your page or server mints a token and sends <code>Authorization: Bearer</code> itself. <a class="src" href="https://developers.thoughtspot.com/docs/api-authv2#_token_based_authentication">docs</a></p><p><b>Fits when:</b> a server job, or a call that must not depend on the embed. <b>Costs:</b> one more mint per token, counted against the REST rate limit. <b>Gives up:</b> a second token to store and expire.</p></div>
+    </div>
+    <ul>
+      <li>With cookieless auth the SDK uses the token as a bearer token and establishes no session, so a plain <code>fetch()</code> to <code>/api/rest/2.0/...</code> carries no credential. The REST page says to obtain a bearer token or set session cookies before calling an endpoint. <a class="src" href="https://developers.thoughtspot.com/docs/rest-apiv2-js">docs</a> That a bare <code>fetch()</code> then fails is our inference from those two statements.</li>
+      <li><code>tokenizedFetch</code> takes the same arguments as the Web <code>fetch</code> and adds the token to the request. The docs say it works for any authorization method. <a class="src" href="https://developers.thoughtspot.com/docs/rest-apiv2-js">docs</a></li>
+      <li>The docs' own example stores the token in a global variable from inside <code>getAuthToken</code> for other REST calls. <a class="src" href="https://developers.thoughtspot.com/docs/trusted-auth-sdk#_code_examples">docs</a> A token never extends, and <code>autoLogin</code> replaces it before expiry, so a saved copy goes stale (our inference). <code>tokenizedFetch</code> avoids keeping one.</li>
+      <li>Returning a reused token from <code>getAuthToken</code> triggers <code>DUPLICATE_TOKEN_ERR</code>, so do not point <code>getAuthToken</code> at a cached copy to share it. <a class="src" href="https://developers.thoughtspot.com/docs/handling-embed-errors#_error_handling_guidelines">docs</a></li>
+    </ul>
+    <pre class="code" data-lang="js" data-title="REST v2 call with the SDK's token"><code>import { tokenizedFetch } from '@thoughtspot/visual-embed-sdk';
+
+const r = await tokenizedFetch(`${TS_HOST}/api/rest/2.0/auth/session/user`, {
+  method: 'GET',
+  headers: { Accept: 'application/json' },
+});
+if (!r.ok) throw new Error(`REST ${r.status}`);</code></pre>
+    <div class="callout warn"><div><strong>Field-observed, and not a docs statement</strong><p><span class="badge field">Field-observed</span> A playground pinned to SDK 1.49.0 sent its REST discovery calls with no bearer under <code>TrustedAuthTokenCookieless</code>, and its Connect step failed until the calls carried the token. The docs do not describe this failure; the cause matches the two statements above. Host-page <code>fetch()</code> calls also need your page origin in the CORS allowlist. <a class="src" href="https://developers.thoughtspot.com/docs/security-settings">docs</a></p></div></div>
+  </div></details>
+
   <h3 id="auth-cookies">Third-party cookies and Safari</h3>
   <div class="cards">
     <div class="card d"><h4>Safari</h4><p>Blocks third-party cookies by default, even in standard mode.</p></div>
@@ -1593,6 +1620,7 @@ const authEE = init({
         <tr><td><code>POST /api/rest/2.0/auth/token/custom</code> <span class="badge ga" data-feature="auth/token/custom (ABAC tokens)" data-ver="TS 10.4.0.cl" data-src="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">GA</span></td><td>You pass RLS formula variable values (ABAC) per user.</td><td>10.4.0.cl+. <code>persist_option</code> is required (<code>APPEND</code>, <code>NONE</code>, <code>RESET</code> from 10.4.0.cl; <code>REPLACE</code> from 10.5.0.cl). <a class="src" href="https://developers.thoughtspot.com/docs/abac-user-parameters">docs</a> Takes <code>org_identifier</code> (string), not <code>org_id</code>. <code>auto_create</code> defaults to true from 10.5.0.cl. <code>variable_values</code> arrived in 10.14.0.cl. <a class="src" href="https://developers.thoughtspot.com/docs/restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fauthentication%2Fget-custom-access-token">docs</a></td></tr>
       </tbody>
     </table></div>
+    <p><b>Multi-Org tokens</b> <span class="badge beta" data-feature="Multi-Org tokens (scope, X-Org-Selector)" data-ver="TS 26.10.0.cl · off by default; enable via Support" data-src="https://developers.thoughtspot.com/docs/api-authv2#multi-org-tokens">Beta</span> A token request by a cluster administrator can carry a <code>scope</code> object instead of <code>org_id</code>, and each API call then picks its Org with the <code>X-Org-Selector</code> header. <code>full</code>, <code>object</code> and <code>custom</code> support it, and <code>custom</code> supports <code>SPECIFIC_ORGS</code> only. It is disabled by default and needs Support to enable. <a class="src" href="https://developers.thoughtspot.com/docs/api-authv2#multi-org-tokens">docs</a> Our guidance: treat it as an admin or back-office tool, not a replacement for one token per tenant user.</p>
     <div class="callout warn"><div><strong>Copy-paste hazards between endpoints</strong><p>Full and object take <code>org_id</code> (integer); custom takes <code>org_identifier</code> (ID or name). <code>auto_create</code> defaults to false on full and object, true on custom. <code>persist_option</code> <code>NONE</code> or <code>RESET</code> cannot be combined with <code>variable_values</code>. Passing filters or parameters inside the token is being phased out: <code>user_parameters</code> on full and object is deprecated from 10.4.0.cl, <code>filter_rules</code> on custom is no longer available for new configurations as of 26.3.0.cl (existing implementations keep working), and <code>parameter_values</code> is supported but will be deprecated (the docs conflict: the ABAC page already lists it as deprecated; see <a href="#data-security-legacy">Legacy ABAC</a>). The docs steer new work to RLS variables (<code>variable_values</code>). <span class="badge deprecated" data-feature="ABAC via token filters/parameters" data-ver="user_parameters deprecated 10.4.0.cl; filter_rules closed to new configs 26.3.0.cl" data-src="https://developers.thoughtspot.com/docs/rest-v2-changelog#_custom_token_generation_api">Deprecated</span> <a class="src" href="https://developers.thoughtspot.com/docs/rest-v2-changelog#_custom_token_generation_api">docs</a></p></div></div>
   </div></details>
 
@@ -1765,7 +1793,7 @@ authEE.on(AuthStatus.LOGOUT, () =&gt; goToAppSignIn());</code></pre>
       <li><strong>Per-Org secret keys</strong> exist from 9.2.0.cl, enabled by contacting Support. You can also enable trusted auth programmatically with <code>POST /api/rest/2.0/auth/configure</code> (26.6.0.cl or later). <a class="src" href="https://developers.thoughtspot.com/docs/api-authv2">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/orgs#_trusted_authentication">docs</a></li>
       <li><strong>Create Orgs</strong> with <code>POST /api/rest/2.0/orgs/create</code> (9.0.0.cl+; cluster admin, or <code>ORG_ADMINISTRATION</code> under RBAC). <a class="src" href="https://developers.thoughtspot.com/docs/orgs-api-op#_get_started_with_orgs">docs</a></li>
       <li><strong>Per-Org SSO:</strong> with a per-Org IdP, only claims referencing that IdP's Org are honored; cross-Org claims are dropped and logged as security audit events, and existing manually assigned Org memberships are not removed by a per-Org IdP login. <a class="src" href="https://developers.thoughtspot.com/docs/orgs">docs</a> Separately, OIDC Org mapping needs Support to enable; while it is on, group mapping does not work, and a mapped login assigns the user only to the Orgs in the assertion (removing the others). <a class="src" href="https://developers.thoughtspot.com/docs/orgs#_oidc_authentication">docs</a></li>
-      <li><strong>Per Org Subdomain</strong> (<code>&lt;org&gt;.&lt;cluster&gt;.thoughtspot.cloud</code>) is Early Access via support ticket. Org names must be DNS-friendly and new Orgs need a new request. <span class="badge ea" data-feature="Per Org Subdomain" data-ver="Support ticket" data-src="https://developers.thoughtspot.com/docs/orgs#_per_org_subdomain">Early access</span> <a class="src" href="https://developers.thoughtspot.com/docs/orgs#_per_org_subdomain">docs</a></li>
+      <li><strong>Per Org Subdomain</strong> (<code>&lt;org&gt;.&lt;cluster&gt;.thoughtspot.cloud</code>) is generally available (it was Early Access before 26.5.0.cl) and is enabled by contacting Support. Org names must be DNS-friendly and new Orgs need a new request. <span class="badge ga" data-feature="Per Org Subdomain" data-ver="TS 26.5.0.cl · enable via Support" data-src="https://developers.thoughtspot.com/docs/whats-new#_may_2026">GA</span> <a class="src" href="https://developers.thoughtspot.com/docs/orgs#_per_org_subdomain">docs</a></li>
       <li><strong>Per-Org custom embed URL and cross-Org links</strong> (<code>overrideOrgId</code>, SDK 1.35.0) are Early Access from 10.5.0.cl and off by default; the docs note <code>overrideOrgId</code> may not work with trusted auth if <code>tokenAuthPerOrg</code> is enabled. <span class="badge ea" data-feature="Per-Org custom embed URL (overrideOrgId)" data-ver="TS 10.5.0.cl+" data-src="https://developers.thoughtspot.com/docs/orgs#_per_org_custom_embed_url_for_custom_link_settings">Early access</span> <a class="src" href="https://developers.thoughtspot.com/docs/orgs#_per_org_custom_embed_url_for_custom_link_settings">docs</a></li>
     </ul>
     <div class="callout warn"><div><strong>Orgs are a one-way door</strong><p>You cannot disable Orgs once enabled, and the Org of a token silently follows the parameter you send. Mixing up <code>org_id</code> and <code>org_identifier</code> between endpoints scopes tokens to the wrong Org, or fails to scope them at all. Test per-tenant isolation with two real tenants before launch.</p></div></div>
@@ -4036,7 +4064,7 @@ await view.render();               // methods also available: showPreRender(), h
       <li>Do one fetch and derive from it. For example, load a filter's values once and compute dependent lists locally rather than calling per control.</li>
       <li>Cache by object id, and share an in-flight request between callers so two components asking for the same thing produce one call.</li>
       <li>Do not start a REST call per visualization on page load (an N+1 pattern); batch or defer until needed.</li>
-      <li>Keep your bearer token in sync with the embed session so you do not re-authenticate on every call. See <a href="#auth">Authentication</a>.</li>
+      <li>Under cookieless trusted auth, send browser REST calls through the SDK's <code>tokenizedFetch</code> (SDK 1.28.0), which adds the bearer token the SDK already holds, so you do not mint a second one per call. <a class="src" href="https://developers.thoughtspot.com/docs/rest-apiv2-js">docs</a> See <a href="#auth">Authentication</a>.</li>
     </ul>
     <h4>Measuring</h4>
     <p>The docs do not prescribe a measurement method; this is general practice. Mark <code>performance.now()</code> when you call <code>render()</code> and when <code>LiveboardRendered</code> fires, and log the difference by environment and strategy. Compare cold and warm loads separately. Check the browser network panel to see whether time is in assets, auth, or slow queries; query time points to the warehouse, which the docs list as a lever. <a class="src" href="https://developers.thoughtspot.com/docs/best-practices">docs</a></p>
