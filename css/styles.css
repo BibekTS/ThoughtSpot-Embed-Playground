@@ -299,7 +299,7 @@ a.tb-icon-btn { display: inline-flex; align-items: center; text-decoration: none
 .st.active { display: flex; }
 .st-icon { font-size: 40px; margin-bottom: 16px; opacity: .85; }
 .st-title { font-size: 19px; font-weight: 700; margin-bottom: 8px; color: var(--navy); }
-.st-sub { font-size: 13.5px; color: var(--text-secondary); line-height: 1.6; }
+.st-sub { font-size: 13.5px; color: var(--text-secondary); line-height: 1.6; overflow-wrap: anywhere; } /* a long unbroken server error must not overflow the card */
 /* What the shared link carries beyond the host (confirm-host overlay). */
 .st-extras {
   list-style: none; margin: 12px 0 0; padding: 10px 14px; text-align: left;

@@ -1486,6 +1486,8 @@ async function runPreauthExfilProbe(browser, authType, expectPath, testAuthChang
 //     overlay names the mint failure as inert text (not the "token rejected" copy).
 //   Leg B′: Retry with a working mint → host B connects (positive control for the failure leg).
 //   Leg C: picking None drops the bearer (read via the boolean-only __bearerSet probe hook).
+//   Leg D: picking None WHILE connect()'s mint is in flight (a 1.5s stubbed mint) must not let that
+//     mint re-arm the bearer when it lands. Positive control: the slow mint actually completed.
 async function runTrustedConnectProbe(browser) {
   const HOST_A = 'https://s58a.invalid';
   const HOST_B = 'https://s58b.invalid';
@@ -1498,7 +1500,7 @@ async function runTrustedConnectProbe(browser) {
   try {
     await page.evaluateOnNewDocument((A, B) => {
       window.__TS_PLAYGROUND_PROBE = true;
-      window.__s58 = { ev: [], failMint: false };
+      window.__s58 = { ev: [], failMint: false, slowMint: false };
       const SESSION = '/api/rest/2.0/auth/session/user';
       const SEARCH = '/api/rest/2.0/metadata/search';
       const json = (body, status = 200) => new Response(JSON.stringify(body), {
@@ -1512,6 +1514,10 @@ async function runTrustedConnectProbe(browser) {
         const auth = h.get('Authorization') || '';
         if (method === 'POST' && u.includes('/api/auth/token')) {
           window.__s58.ev.push('mint');
+          if (window.__s58.slowMint) {
+            await new Promise((r) => setTimeout(r, 1500));
+            window.__s58.ev.push('mint-done');
+          }
           return window.__s58.failMint
             ? json({ error: 'S58 mint refused <img src=x onerror="window.__s58pwn=1">' }, 503)
             : json({ token: 'FAKE-TOKEN', expiration_time_in_millis: Date.now() + 300000, valid_for_username: 's58' });
@@ -1593,6 +1599,7 @@ async function runTrustedConnectProbe(browser) {
     });
     const bConnected = await waitPill('S58_USER_B');
     const retryMinted = mints(await ev()) > mintsBeforeRetry;
+    const finalPill = await pill(); // read before leg D reconnects
 
     // Leg C — picking None must drop the bearer.
     const bearerBefore = await page.evaluate(() => window.__bearerSet?.());
@@ -1603,7 +1610,33 @@ async function runTrustedConnectProbe(browser) {
       return window.__bearerSet?.();
     });
 
+    // Leg D — None picked mid-mint: the late mint must not re-arm the bearer.
+    const doneBeforeD = (await ev()).filter((x) => x === 'mint-done').length;
+    await page.evaluate(() => {
+      window.__s58.slowMint = true;
+      const sel = document.getElementById('auth-select');
+      sel.value = 'TrustedAuthTokenCookieless';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('connect-btn').click();
+    });
+    await sleep(400); // connect() is now parked on the 1.5s mint
+    const dMintInFlight = await page.evaluate(() => {
+      const e = window.__s58.ev;
+      return e.lastIndexOf('mint') > e.lastIndexOf('mint-done');
+    });
+    await page.evaluate(() => {
+      const sel = document.getElementById('auth-select');
+      sel.value = 'None';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await sleep(2500); // well past the mint's 1.5s hold — it lands in here
+    const dMintCompleted = (await ev()).filter((x) => x === 'mint-done').length > doneBeforeD;
+    const dBearerAfter = await page.evaluate(() => window.__bearerSet?.());
+
     return {
+      dMintInFlight,
+      dMintCompleted,
+      dBearerAfter,
       confirmShown,
       preConfirmEv,
       confirmClicked,
@@ -1620,7 +1653,7 @@ async function runTrustedConnectProbe(browser) {
       retryClicked,
       bConnected,
       retryMinted,
-      finalPill: await pill(),
+      finalPill,
       bearerBefore,
       bearerAfterNone,
       probeErrors,
@@ -1879,13 +1912,17 @@ try {
   console.log(`${s58Tag} host B connected after Retry: ${s58.bConnected} (“${s58.finalPill}”)`);
   console.log(`${s58Tag} bearer set while connected: ${s58.bearerBefore === true}`);
   console.log(`${s58Tag} picking None drops the bearer: ${s58.bearerAfterNone === false}`);
+  console.log(`${s58Tag} None picked mid-mint: mint was in flight at the switch: ${s58.dMintInFlight}`);
+  console.log(`${s58Tag} None picked mid-mint: slow mint completed (positive control): ${s58.dMintCompleted}`);
+  console.log(`${s58Tag} None picked mid-mint: late mint did not re-arm the bearer: ${s58.dBearerAfter === false}`);
   console.log(`${s58Tag} zero page errors: ${s58.probeErrors.length === 0}`);
   s58.probeErrors.forEach((e) => console.log('  - probe page:', e));
   const s58Ok = s58.confirmShown && s58.preConfirmEv.length === 0 && s58.confirmClicked && s58.aConnected
     && s58.aMintBeforeSession && s58.aSessionBearer && !s58.aNotLoggedIn
     && s58.bMintAttempted && s58.bNoBearer && s58.bOverlay && s58CopyOk
     && s58.retryClicked && s58.retryMinted && s58.bConnected
-    && s58.bearerBefore === true && s58.bearerAfterNone === false && s58.probeErrors.length === 0;
+    && s58.bearerBefore === true && s58.bearerAfterNone === false
+    && s58.dMintInFlight && s58.dMintCompleted && s58.dBearerAfter === false && s58.probeErrors.length === 0;
 
   ok = resp.status() === 200 && shellMounted && errors.length === 0 && badResponses.length === 0
     && !xss.executed && xss.inChip && xss.inLog && hostOk && answerOk

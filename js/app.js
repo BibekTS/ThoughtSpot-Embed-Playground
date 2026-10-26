@@ -361,7 +361,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // S58: the token is handed to connect(), which seeds the bearer only AFTER its own S10 checks.
   seedAuthHooks({ logEvent, onTokenApplied: (token) => {
     if (pendingHostConfirm) { applyConfig(); showHostConfirm(getState().host); return; }
-    if (token && getState().host) { connect({ silent: true, token }); return; }
+    // A blank/malformed host input stops connect() before applyConfig(), so re-init the SDK here then.
+    if (token && getState().host) { connect({ silent: true, token }).then((went) => { if (went === false) { applyConfig(); render(); } }); return; }
     applyConfig(); render();
   } });
   // S58 (mid-session expiry): adopt the SDK's own successful re-mints for the connected host, so
@@ -654,15 +655,15 @@ function applyConfig() {
 // ── Connection ────────────────────────────────────────────────────────────────
 async function connect({ silent = false, trustHost = false, token = '' } = {}) {
   let host = $('#host-input').value.trim().replace(/\/+$/, '');
-  if (!host) { toast('Enter a host URL first.'); return; }
+  if (!host) { toast('Enter a host URL first.'); return false; } // false = never proceeded (onTokenApplied falls back)
   // Auto-prefix https:// when the user omits the scheme (e.g. "my-co.thoughtspot.cloud").
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) { host = 'https://' + host; }
   // Normalize to the bare ORIGIN, in lockstep with state.js's sanitize(): that guard accepts only
   // an origin, so writing anything richer here (a pasted '…/#/home') would connect fine now and
   // then silently vanish on the next load when sanitize blanks it. The writer and the sanitizer
   // must agree — same rule the org recorded for safeNavUrl.
-  try { host = new URL(host).origin; } catch { toast('That does not look like a valid host URL.'); return; }
-  if (!isHttpUrl(host)) { toast('Host must be an http(s) URL.'); return; }
+  try { host = new URL(host).origin; } catch { toast('That does not look like a valid host URL.'); return false; }
+  if (!isHttpUrl(host)) { toast('Host must be an http(s) URL.'); return false; }
   $('#host-input').value = host;
   // S10: only the confirm overlay's own button may trust a shared-link host. Any other route here
   // — notably the token-applied auto-connect — must leave the overlay standing. Typing a DIFFERENT
@@ -694,11 +695,15 @@ async function connect({ silent = false, trustHost = false, token = '' } = {}) {
       try {
         const t = await mintTrustedToken(cfg);
         if (isStale()) return;
-        Discovery.setBearerToken(t);
+        // The user may have picked None mid-mint (its dropBearer() can't cancel this await) — then
+        // don't re-arm the bearer; discovery just carries on on the browser session.
+        if (isTrustedAuth(getState().authType)) Discovery.setBearerToken(t);
       } catch (e) {
         if (isStale()) return;
-        bearerMintError = String(e?.message || e).slice(0, 300);
-        logEvent('Auth', `✗ Token mint for discovery failed: ${bearerMintError}`);
+        if (isTrustedAuth(getState().authType)) {
+          bearerMintError = String(e?.message || e).slice(0, 300);
+          logEvent('Auth', `✗ Token mint for discovery failed: ${bearerMintError}`);
+        }
       }
     }
   }
@@ -735,6 +740,7 @@ async function connect({ silent = false, trustHost = false, token = '' } = {}) {
     return;
   }
   connected = true;
+  bearerMintError = ''; // the cookie fallback worked — a later SDK auth failure must not blame the mint
   setStatus('ok', `${org.userName}${org.orgName ? ' · ' + org.orgName : ''}`);
   currentUserName = org.userName || '';
 
@@ -1129,7 +1135,7 @@ function setOverlay(state) {
     if (isTrusted && bearerMintError) {
       // S58: the token server failed, so ThoughtSpot never saw a token — don't blame ThoughtSpot.
       if (title) title.textContent = 'Couldn’t get a sign-in token';
-      if (sub) sub.textContent = `The token server could not mint a token (${bearerMintError}), so discovery fell back to your browser session, which ThoughtSpot did not accept. Check Token claims…, then Retry.`;
+      if (sub) sub.textContent = `The token server could not mint a token (${bearerMintError}), so discovery fell back to your browser session, which ThoughtSpot did not accept. Check that the token server is running and Token claims… are right, then Retry.`;
     } else {
       if (title) title.textContent = isTrusted ? 'Embed session not authenticated' : 'Log in to ThoughtSpot first';
       if (sub) sub.textContent = isTrusted

@@ -74,9 +74,10 @@ async function fetchTrustedAuthToken(config) {
   }
 }
 
-// S58: the host's discovery bearer must come from the SAME mint the SDK is already doing for this
-// config, not a second one. The SDK only ever receives tokens it requested itself (it never joins
-// anything), so there is no DUPLICATE_TOKEN_ERR risk; the host side joins the SDK's in-flight mint.
+// S58: the host's discovery bearer reuses the SDK's mint when one is IN FLIGHT for the same config
+// (the SDK mints on init only on its first cookieless init); otherwise the host mints once itself.
+// The SDK only ever receives tokens it requested itself (it never joins anything), so there is no
+// DUPLICATE_TOKEN_ERR risk.
 const mintKey = (c) => JSON.stringify([c.thoughtSpotHost, c.trustedAuth?.tokenEndpoint, c.trustedAuth?.requestBody]);
 let sdkMint = null; // { key, p }: the SDK's in-flight getAuthToken mint
 function sdkGetAuthToken(config) {
