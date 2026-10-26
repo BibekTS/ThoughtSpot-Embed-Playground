@@ -31,7 +31,9 @@ const inflight = new Map(); // one find-or-create per key at a time within this 
  * names another. Nothing is created unless `create` is true (an explicit click); `exclude` = ids to ignore
  * (a just-deleted copy the search index may still list). The source id is GUID-gated and never its own copy.
  */
-export function findOrCreateCopy(host, user, sourceId, sourceName, { create = false, exclude = [] } = {}) {
+// `stale()` is checked before every write (copy, tag, cleanup delete): a session, host or bearer change mid-chain
+// stops it, so the rest never runs as a different user. A stop after the copy exists reports that copy's GUID.
+export function findOrCreateCopy(host, user, sourceId, sourceName, { create = false, exclude = [], stale = () => false } = {}) {
   if (!GUID_RE.test(sourceId)) return Promise.resolve({ ok: false, error: 'Pick a Liveboard (a valid GUID) first.' });
   const key = pcCacheKey(host, user.id, sourceId), ikey = key + (create ? '|c' : ''); // the cache key is shared by find and create
   if (!inflight.has(ikey)) { const p = run().finally(() => { if (inflight.get(ikey) === p) inflight.delete(ikey); }); inflight.set(ikey, p); }
@@ -49,12 +51,17 @@ export function findOrCreateCopy(host, user, sourceId, sourceName, { create = fa
       return { ok: true, id: hit.id, title: hit.title, created: false, extra: mine.length - 1 };
     }
     if (!create) return { ok: true, none: true };
+    if (stale()) return { ok: false, stale: true, error: 'The session changed before the copy was made; nothing was created.' };
     const title = pcTitle(sourceName, user.name);
     const cp = await Discovery.copyLiveboard(host, sourceId, title);
     if (!cp.ok) {
       return { ok: false, error: cp.status === 403 ? 'This user may not copy the Liveboard (needs view access on the source plus create/edit rights).' : `Copy failed: ${cp.error}` };
     }
-    const t = await Discovery.assignTags(host, cp.id, [tag]);
+    // Stopped mid-way: the copy can't be tagged or removed as the new identity, so name it for manual cleanup.
+    const orphan = { ok: false, stale: true, error: `The session changed while creating your copy; ${cp.id} may be left untagged: delete it in ThoughtSpot.` };
+    if (stale()) return orphan;
+    const t = await Discovery.assignTags(host, cp.id, [tag], stale);
+    if (t.stale || (!t.ok && stale())) return orphan;
     if (!t.ok) {
       // An untagged copy could never be found again (the next visit would make another): remove it.
       await Discovery.deleteLiveboard(host, cp.id);

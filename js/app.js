@@ -3212,8 +3212,8 @@ function pcBusyUi() {
 // Fenced on the SESSION only (epoch + host): a copy created while the user looked elsewhere is still recorded
 // under its own key, so coming back shows it instead of "no copy" (and a second create can't duplicate it).
 async function pcRun(host, sourceId, create, exclude) {
-  const ep = ccSeq;
-  const stale = () => ep !== ccSeq || getState().host !== host;
+  const ep = ccSeq, gen = Discovery.bearerGeneration(); // the bearer can swap on the SAME host (Token claims → apply)
+  const stale = () => ep !== ccSeq || getState().host !== host || Discovery.bearerGeneration() !== gen;
   let res, k = pcCacheKey(host, '', sourceId);
   try {
     const u = await ccEnsureUser(host);
@@ -3224,7 +3224,8 @@ async function pcRun(host, sourceId, create, exclude) {
     else {
       const name = discovered.liveboards.find(lb => lb.id === sourceId)?.name || ccLbs.get(`${host}|${sourceId}`)?.name || 'Liveboard';
       logEvent('Personal copy', `${create ? 'Creating' : 'Looking for'} ${u.name || u.id}’s copy of ${sourceId}`);
-      const r = await findOrCreateCopy(host, u, sourceId, name, { create, exclude });
+      const r = await findOrCreateCopy(host, u, sourceId, name, { create, exclude, stale });
+      if (r.stale) logEvent('Personal copy', `✗ ${r.error}`); // logged even though the result is dropped
       if (stale()) return;
       res = r.ok ? r : { error: r.error };
       if (r.none) logEvent('Personal copy', 'none found; waiting for “Create my copy”');
@@ -3245,7 +3246,7 @@ async function pcCreate() {
   focusIfLost(ccFocusTarget, was); // the overlay button is gone
 }
 async function pcReset() {
-  const s = getState(), k = pcKey(s), c = pcCopies.get(k), u = ccUsers.get(s.host);
+  const s = getState(), k = pcKey(s), c = pcCopies.get(k), u = ccUsers.get(s.host), ep = ccSeq, gen = Discovery.bearerGeneration();
   if (!c?.id || !u || pcResetting) return;
   if (c.id === s.liveboardId) { toast('Refusing to delete the source Liveboard.', 'error'); return; }
   const was = document.activeElement;
@@ -3256,7 +3257,8 @@ async function pcReset() {
   logEvent('Personal copy', `Deleted ${c.id}; a fresh copy of the original follows`);
   pcCopies.delete(k); // the captured state's key, not getState(): the user may have moved on during the await
   const g = getState();
-  const same = g.host === s.host && g.liveboardId === s.liveboardId && g.section === 'personal-copy';
+  const same = g.host === s.host && g.liveboardId === s.liveboardId && g.section === 'personal-copy'
+    && ep === ccSeq && Discovery.bearerGeneration() === gen; // no recreate as a different session or identity
   // The Reset click is the explicit create. Started first so the render below joins it instead of finding
   // (and, with a lagging search index, re-finding the deleted copy).
   const again = same ? pcEnsure(true, [c.id]) : null;

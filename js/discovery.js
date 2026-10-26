@@ -8,7 +8,11 @@
 
 // In-memory only — never persisted to disk. Set by the UI for token-based discovery.
 let bearerToken = '';
-export function setBearerToken(t) { bearerToken = t || ''; }
+// Bumped whenever the bearer CHANGES, so a multi-step write chain can notice an identity swap mid-flight
+// without ever seeing the token itself.
+let bearerGen = 0;
+export function setBearerToken(t) { if ((t || '') !== bearerToken) bearerGen++; bearerToken = t || ''; }
+export const bearerGeneration = () => bearerGen;
 export function hasBearerToken() { return !!bearerToken; }
 export function getBearerToken() { return bearerToken; }
 
@@ -364,11 +368,14 @@ export const sourceTag = (sourceId) => `src:${sourceId}`;
 export const pcopyTag = (sourceId) => `pcopy:${sourceId}`;
 
 /** Ensure each tag exists, then assign them all to a liveboard in one call. Requires edit access (the owner). */
-export async function assignTags(host, metadataId, tags) {
+// `stale()` (optional) is checked before each write; true stops the chain with { ok:false, stale:true }.
+export async function assignTags(host, metadataId, tags, stale = () => false) {
+  const STOP = { ok: false, stale: true, error: 'the session changed mid-way' };
   try {
     const list = tags.filter(Boolean);
     if (!list.length) return { ok: true, status: 200, error: '' };
-    for (const t of list) await ensureTag(host, t);
+    for (const t of list) { if (stale()) return STOP; await ensureTag(host, t); }
+    if (stale()) return STOP;
     const resp = await apiRest(host, '/api/rest/2.0/tags/assign', {
       method: 'POST',
       body: { metadata: [{ identifier: metadataId, type: 'LIVEBOARD' }], tag_identifiers: list },
