@@ -1802,7 +1802,7 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
 .dt-more:hover:not(:disabled) { filter: brightness(1.05); }
 .dt-more:disabled { opacity: .6; cursor: default; }
 
-/* ── Drill-through: the modal record list (Salesloft-style "View details") ── */
+/* ── Drill-through: the modal record list (Acme-style "View details") ── */
 .dt-modal-panel { width: 620px; max-height: 84vh; }
 .dt-modal-body { gap: 0; padding: 0; }
 .dt-summary {

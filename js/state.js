@@ -153,9 +153,9 @@ export function defaultState() {
       scopeColumn: '',                // attribute carried from a point click, e.g. 'Stage'
       drillLiveboardId: '',           // detail Liveboard opened on a point click ('' = stay, panel only)
       drillVizId: '',                 // only THIS viz's point clicks drill ('' = any viz on the board)
-      linkTemplate: '',               // per-row deep link, e.g. https://app.salesloft.com/app/meetings/{Meeting Id}
+      linkTemplate: '',               // per-row deep link, e.g. https://crm.acme.example/meetings/{Meeting Id}
       pageSize: 100,                  // record_size per searchdata page
-      // — presentation, modelled on the Salesloft "View details" drill-through —
+      // — presentation, modelled on an Acme CRM "View details" drill-through —
       presentation: 'modal',          // 'modal' = centred record list over the board | 'panel' = docked grid
       trigger: 'action',              // 'action' = right-click menu item | 'click' = plain left-click on the point
       periodLabel: '',                // subtitle under the modal title, e.g. 'This Year'
