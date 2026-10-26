@@ -3023,8 +3023,9 @@ async function ccEnsureUser(host) {
   }
   return ccUsers.get(host) || null;
 }
-// Trusted auth gives discovery no bearer until the claims panel mints one (S58); say so next to REST errors.
-const bearerHint = () => /^TrustedAuth/.test(getState().authType)
+// Since S58 connect() mints and sets the discovery bearer itself, so a trusted-auth REST error usually has
+// another cause. Only when that mint failed (no bearer) point at the claims panel; '' otherwise.
+const bearerHint = () => /^TrustedAuth/.test(getState().authType) && !Discovery.hasBearerToken()
   ? ' No ThoughtSpot bearer yet? Use “Mint & apply to embed” in the Token claims panel, then retry.' : '';
 // One in-flight promise per key: concurrent callers (a render and a click) share the read.
 function ccDedupe(key, fn) {
@@ -3032,14 +3033,14 @@ function ccDedupe(key, fn) {
   return ccInflight.get(key);
 }
 // The Liveboard TML (one export, cached) — the source of both the table-tile list and each tile's query.
+// Cached only if the session epoch and host still match: a stale export never lands in the new session's cache.
 async function ccReadTml(host, liveboardId) {
-  const k = `${host}|${liveboardId}`;
-  if (!ccTmls.has(k)) {
-    const r = await Discovery.exportLiveboardTml(host, liveboardId);
-    if (!r.ok) return { ok: false, error: `Couldn’t read the Liveboard TML (${r.error}).${bearerHint() || ` Check CORS (${location.origin}) and that this user can export the Liveboard.`}` };
-    ccTmls.set(k, r);
-  }
-  return ccTmls.get(k);
+  const k = `${host}|${liveboardId}`, ep = ccSeq;
+  if (ccTmls.has(k)) return ccTmls.get(k);
+  const r = await Discovery.exportLiveboardTml(host, liveboardId);
+  if (!r.ok) return { ok: false, error: `Couldn’t read the Liveboard TML (${r.error}). Check CORS (${location.origin}) and that this user can export the Liveboard.${bearerHint()}` };
+  if (ep === ccSeq && getState().host === host) ccTmls.set(k, r);
+  return r;
 }
 // Read the Liveboard's table tiles (display_mode TABLE_MODE) — the tiles the Table view can show.
 function ccLoadLiveboard(host, liveboardId) {
@@ -3049,6 +3050,7 @@ function ccLoadLiveboard(host, liveboardId) {
     const ep = ccSeq, stale = () => ep !== ccSeq || getState().host !== host;
     try {
       await ccEnsureUser(host);
+      if (stale()) return; // a host switch here would send the old host's export with the new host's bearer
       const r = await ccReadTml(host, liveboardId);
       if (stale()) return;
       ccLbs.set(key, r.ok ? { ok: true, name: String(r.liveboard?.name || ''), vizs: tableVizsFromTml(r.liveboard) } : r);
@@ -3207,9 +3209,11 @@ function pcBusyUi() {
   const b = $('#state-overlay [data-act="pc-create"]');
   if (b) { const busy = pcCreating(); b.disabled = !connected || busy; b.textContent = busy ? 'Creating…' : 'Create my copy'; }
 }
+// Fenced on the SESSION only (epoch + host): a copy created while the user looked elsewhere is still recorded
+// under its own key, so coming back shows it instead of "no copy" (and a second create can't duplicate it).
 async function pcRun(host, sourceId, create, exclude) {
   const ep = ccSeq;
-  const stale = () => ep !== ccSeq || getState().host !== host || getState().liveboardId !== sourceId || getState().section !== 'personal-copy';
+  const stale = () => ep !== ccSeq || getState().host !== host;
   let res, k = pcCacheKey(host, '', sourceId);
   try {
     const u = await ccEnsureUser(host);
@@ -3230,7 +3234,8 @@ async function pcRun(host, sourceId, create, exclude) {
   } catch (e) { res = { error: `Personal copy failed: ${e.message}` }; }
   if (stale()) return;
   pcCopies.set(k, res);
-  renderInspector(); render();
+  const g = getState();
+  if (g.liveboardId === sourceId && g.section === 'personal-copy') { renderInspector(); render(); }
 }
 async function pcCreate() {
   if (pcCreating()) return;
@@ -8821,7 +8826,7 @@ function personalCopyLines(s, esc) {
     '// changes do not reach existing copies; copies are private to the author (admins can see them). The',
     '// allowlist is UI, not a security boundary. Prefer the read-only Edit Columns option when you can.',
     `const SOURCE_ID = '${src}';`,
-    "const SRC_TAG = 'src:' + SOURCE_ID; // marks which Liveboard a copy came from",
+    "const COPY_TAG = 'pcopy:' + SOURCE_ID; // marks which Liveboard a copy came from",
     '',
     '// REST with the signed-in session (add an Authorization bearer header for cookieless trusted auth).',
     'async function rest(path, body) {',
@@ -8836,7 +8841,7 @@ function personalCopyLines(s, esc) {
     '// The search (tag + author) is the source of truth; never trust a cached GUID on its own.',
     'async function findCopy(user) {',
     "  const found = await rest('/metadata/search', {",
-    "    metadata: [{ type: 'LIVEBOARD' }], tag_identifiers: [SRC_TAG],",
+    "    metadata: [{ type: 'LIVEBOARD' }], tag_identifiers: [COPY_TAG],",
     '    created_by_user_identifiers: [user.id], record_size: -1, // tags are tenant-wide: ALWAYS filter by author',
     '  });',
     '  return found.map((m) => m.metadata_id).sort()[0] || null; // lowest GUID wins if a race made two',
@@ -8845,8 +8850,8 @@ function personalCopyLines(s, esc) {
     "  const { metadata_id } = await rest('/metadata/copyobject', {",
     "    identifier: SOURCE_ID, type: 'LIVEBOARD', title: sourceName + ' — ' + user.name + ' (personal copy)',",
     '  });',
-    "  await rest('/tags/create', { name: SRC_TAG }).catch(() => {}); // already exists is fine",
-    "  await rest('/tags/assign', { metadata: [{ identifier: metadata_id, type: 'LIVEBOARD' }], tag_identifiers: [SRC_TAG] });",
+    "  await rest('/tags/create', { name: COPY_TAG }).catch(() => {}); // already exists is fine",
+    "  await rest('/tags/assign', { metadata: [{ identifier: metadata_id, type: 'LIVEBOARD' }], tag_identifiers: [COPY_TAG] });",
     '  return metadata_id;',
     '}',
     '// Reset to original: delete, then find-or-create again.',
@@ -9208,7 +9213,7 @@ function apiCatalog(s) {
   if (s.section === 'personal-copy') disc.push(
     { method: 'GET', path: '/api/rest/2.0/auth/session/user', scope: 'TS REST', desc: "The signed-in user: the copy's owner." },
     { method: 'POST', path: '/api/rest/2.0/metadata/copyobject', scope: 'TS REST', desc: "Make the user's copy of the source Liveboard (once)." },
-    { method: 'POST', path: '/api/rest/2.0/tags/assign', scope: 'TS REST', desc: 'Tag the copy src:<source GUID>; with its author, the tag finds it again.' },
+    { method: 'POST', path: '/api/rest/2.0/tags/assign', scope: 'TS REST', desc: 'Tag the copy pcopy:<source GUID>; with its author, the tag finds it again.' },
     { method: 'POST', path: '/api/rest/2.0/metadata/delete', scope: 'TS REST', desc: 'Reset to original: delete the copy, then make a new one.' },
   );
   if (s.section === 'custom-columns') disc.push(
