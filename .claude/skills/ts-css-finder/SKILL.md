@@ -53,8 +53,7 @@ node $S '<link>' measure '[data-testid="kpi_herodata"]'   # offset from tile cen
    skill, which is not in the repo:
    `node .claude/skills/link-generator/link.mjs encode --base '<link>' --set 'styles.rules=<json>'`.
    Without it, paste the CSS into the playground's Custom styles → CSS rules box and copy the share
-   link. Then
-   then run `measure` (or `tree`) on the new link. Compare before and after with numbers, not just
+   link. Then run `measure` (or `tree`) on the new link. Compare before and after with numbers, not just
    screenshots. Drop any rule whose removal does not change the measurement.
 7. **Hand over**, in this order: the CSS, what each rule does, the before/after numbers, the
    screenshots, the playground link ("open it, then press ⌘R"), and the caveats below. For a

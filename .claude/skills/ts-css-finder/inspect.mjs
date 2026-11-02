@@ -42,6 +42,7 @@ try {
   linkUrl = new URL(link);
   state = JSON.parse(Buffer.from(link.split('#s=')[1] || '', 'base64url').toString('utf8'));
 } catch { fail('Not a playground link (expected http://localhost:3000/#s=…).'); }
+if (!state || typeof state !== 'object') fail('Not a playground link (expected http://localhost:3000/#s=…).');
 if (linkUrl.origin !== ORIGIN) fail(`Link origin ${linkUrl.origin} is not the playground server ${ORIGIN} (pass --server to change it).`);
 let HOST;
 try { HOST = new URL(state.host).origin; } catch { fail('Link has no valid ThoughtSpot host.'); }
