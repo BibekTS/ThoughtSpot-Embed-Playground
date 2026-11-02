@@ -19,6 +19,14 @@
 !/scripts/
 !/docs/
 
+# .claude/: only the ts-css-finder skill (headless rules_UNSTABLE selector finder); the rest of the
+# agent org stays local.
+!/.claude/
+/.claude/*
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/ts-css-finder/
+
 # docs/: only the public guide (vantage-sales-analytics.vercel.app/docs/tse-best-practices.html)
 # and the integration write-ups the README and app UI link to.
 /docs/*
