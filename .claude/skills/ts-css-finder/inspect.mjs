@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Inspect the DOM inside a real ThoughtSpot embed, headless, so rules_UNSTABLE selectors come from
-// what ThoughtSpot actually renders. Needs `npm start` running on :3000 (it mints the login token).
+// what ThoughtSpot actually renders. Needs `npm start` running on :3000 (it mints the login token,
+// --server to change), and only logs in to the server's own THOUGHTSPOT_HOST.
 //
 //   node inspect.mjs '<playground link>' find '<query>'      [--shot out.png]
 //   node inspect.mjs '<playground link>' tree '<selector>'   [--up 14] [--down 3] [--nth 0]
@@ -17,20 +18,46 @@ import { existsSync } from 'node:fs';
 
 const puppeteer = createRequire(import.meta.url)('puppeteer-core');
 const [link, mode, query, ...rest] = process.argv.slice(2);
-const opt = (name, dflt) => { const i = rest.indexOf(`--${name}`); return i >= 0 ? rest[i + 1] : dflt; };
+const opt = (name, dflt) => {
+  const i = rest.indexOf(`--${name}`);
+  if (i < 0) return dflt;
+  const v = rest[i + 1];
+  if (v === undefined || v.startsWith('--')) { console.error(`--${name} needs a value.`); process.exit(2); }
+  return v;
+};
 if (!link || !['find', 'tree', 'measure'].includes(mode) || !query) {
-  console.error("usage: inspect.mjs '<link>' find|tree|measure '<selector | text:words>' [--shot f.png] [--up N] [--down N] [--nth N] [--tile sel] [--wait ms]");
+  console.error("usage: inspect.mjs '<link>' find|tree|measure '<selector | text:words>' [--shot f.png] [--up N] [--down N] [--nth N] [--tile sel] [--wait ms] [--server http://localhost:3000]");
   process.exit(2);
 }
-const ORIGIN = new URL(link).origin;
+const fail = (msg) => { console.error(msg); process.exit(2); };
+// The token service is always the local server (--server), never the link's own origin: a link on
+// another origin must not receive the mint request or be loaded with a live session.
+const ORIGIN = new URL(opt('server', 'http://localhost:3000')).origin;
 const CHROME = [process.env.CHROME_PATH, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/usr/bin/google-chrome', '/usr/bin/chromium'].filter(Boolean).find(p => existsSync(p));
-if (!CHROME) { console.error('No Chrome found; set CHROME_PATH.'); process.exit(2); }
+if (!CHROME) fail('No Chrome found; set CHROME_PATH.');
 
-// The host comes from the link itself, so the login targets the same cluster the embed renders.
-const state = JSON.parse(Buffer.from(link.split('#s=')[1], 'base64url').toString('utf8'));
-const HOST = String(state.host || '').replace(/\/$/, '');
-if (!/^https:\/\//.test(HOST)) { console.error('Link has no https host.'); process.exit(2); }
+let state, linkUrl;
+try {
+  linkUrl = new URL(link);
+  state = JSON.parse(Buffer.from(link.split('#s=')[1] || '', 'base64url').toString('utf8'));
+} catch { fail('Not a playground link (expected http://localhost:3000/#s=…).'); }
+if (linkUrl.origin !== ORIGIN) fail(`Link origin ${linkUrl.origin} is not the playground server ${ORIGIN} (pass --server to change it).`);
+let HOST;
+try { HOST = new URL(state.host).origin; } catch { fail('Link has no valid ThoughtSpot host.'); }
+if (!HOST.startsWith('https://')) fail('Link host must be https.');
+for (const n of ['up', 'down', 'nth', 'wait', 'width', 'height']) {
+  if (opt(n) !== undefined && !/^\d+$/.test(opt(n))) fail(`--${n} must be a whole number.`);
+}
+
+// A shared link chooses its own host, so only log in to the cluster this server mints for. The
+// script skips the playground's "connect to this host?" prompt, so this check stands in for it.
+const cfgResp = await fetch(`${ORIGIN}/api/auth/config`).catch(() => null);
+if (!cfgResp?.ok) fail(`Cannot reach ${ORIGIN}/api/auth/config — is npm start running?`);
+const serverHost = (await cfgResp.json()).thoughtSpotHost;
+let serverOrigin = '';
+try { serverOrigin = new URL(serverHost).origin; } catch { /* reported below */ }
+if (HOST !== serverOrigin) fail(`Link host ${HOST} is not the server's THOUGHTSPOT_HOST (${serverOrigin || 'unset'}); refusing to mint a token for it.`);
 
 const browser = await puppeteer.launch({
   executablePath: CHROME, headless: true,
@@ -47,8 +74,13 @@ try {
   const mint = await fetch(`${ORIGIN}/api/auth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: state.auth?.username || '' }) });
   if (!mint.ok) throw new Error(`token mint failed: HTTP ${mint.status} (is npm start running, is the user allowlisted?)`);
   const t = await mint.json();
-  await page.goto(`${HOST}/callosum/v1/session/login/token?username=${encodeURIComponent(t.valid_for_username)}&auth_token=${encodeURIComponent(t.token)}&redirect_url=${encodeURIComponent(HOST + '/')}`,
-    { waitUntil: 'networkidle2', timeout: 60_000 });
+  try {
+    await page.goto(`${HOST}/callosum/v1/session/login/token?username=${encodeURIComponent(t.valid_for_username)}&auth_token=${encodeURIComponent(t.token)}&redirect_url=${encodeURIComponent(HOST + '/')}`,
+      { waitUntil: 'networkidle2', timeout: 60_000 });
+  } catch (e) {
+    // puppeteer errors quote the full URL; never let the token reach the terminal or a transcript.
+    throw new Error(`ThoughtSpot token login failed: ${String(e.message).split(t.token).join('<redacted>').replace(/auth_token=[^&\s]+/g, 'auth_token=<redacted>')}`);
+  }
 
   // 2. Open the link, accept the "connect to this host?" prompt, wait for the embed to settle.
   page.on('pageerror', e => errors.push(`page: ${e.message}`));
@@ -89,6 +121,8 @@ try {
       down(e, 1);
       return lines;
     }
+    let tileOk = true; try { document.querySelector(o.tile); } catch { tileOk = false; }
+    if (!tileOk) return [`invalid --tile selector: ${o.tile}`];
     return matches.map((e) => { // measure
       const tile = e.closest(o.tile) || document.body, tr = tile.getBoundingClientRect();
       const range = document.createRange(); range.selectNodeContents(e); const b = range.getBoundingClientRect();

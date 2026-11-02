@@ -9,8 +9,15 @@ ThoughtSpot renders inside a cross-origin iframe, so its DOM is not visible from
 page and selectors cannot be guessed. This skill inspects the **real** embed headless, picks
 selectors that survive releases, and verifies the result by measurement and screenshot.
 
-Script: `.claude/skills/ts-css-finder/inspect.mjs` (needs `npm start` on :3000; it mints the login
-token through the local server, so the link's user must be on the username allowlist).
+Script: `.claude/skills/ts-css-finder/inspect.mjs`. Prerequisites:
+- Node 18+, `npm install` done, and Google Chrome (or `CHROME_PATH`).
+- `npm start` running on :3000 (`--server` to change). The script mints its login token there, so
+  `.env` needs `TS_SECRET_KEY`, and the link's user must be on the username allowlist
+  (`npm run doctor` checks this).
+- The link's host must equal the server's `THOUGHTSPOT_HOST`. The script refuses any other host:
+  it skips the playground's "connect to this host?" prompt, and a shared link must not be able to
+  send a live token to a host it names.
+- The target must render with data. If it does not, run `find … --shot` and look at the screenshot.
 
 ```bash
 S=.claude/skills/ts-css-finder/inspect.mjs
@@ -42,8 +49,11 @@ node $S '<link>' measure '[data-testid="kpi_herodata"]'   # offset from tile cen
    per-tile attribute with `tree`; if none exists, say so.
 5. **Write the rules** as `{ selector: { 'kebab-case-prop': 'value !important' } }`. Every value
    needs `!important`, or ThoughtSpot's own styles win.
-6. **Apply them through the link and measure.** Encode with
-   `node .claude/skills/link-generator/link.mjs encode --base '<link>' --set 'styles.rules=<json>'`,
+6. **Apply them through the link and measure.** Encode with the local-only `link-generator`
+   skill, which is not in the repo:
+   `node .claude/skills/link-generator/link.mjs encode --base '<link>' --set 'styles.rules=<json>'`.
+   Without it, paste the CSS into the playground's Custom styles → CSS rules box and copy the share
+   link. Then
    then run `measure` (or `tree`) on the new link. Compare before and after with numbers, not just
    screenshots. Drop any rule whose removal does not change the measurement.
 7. **Hand over**, in this order: the CSS, what each rule does, the before/after numbers, the
@@ -86,5 +96,7 @@ init({
   `/api/auth/token`), which matches a user who is already signed in.
 - Headless Chrome blocks third-party cookies, which the iframe needs. The script launches with
   that blocking turned off.
-- It clicks the playground's "connect to this host?" confirm, waits for the iframe, then waits
+- It compares the link's host with `/api/auth/config`'s `thoughtSpotHost` before minting anything.
+  It also redacts the token from any login error, since puppeteer error messages quote the full URL.
+- It then clicks the playground's "connect to this host?" confirm, waits for the iframe, then waits
   `--wait` ms (default 15000) for tiles to render. Raise it for slow boards.
