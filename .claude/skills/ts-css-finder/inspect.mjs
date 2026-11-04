@@ -1,40 +1,19 @@
 #!/usr/bin/env node
-// Inspect the DOM inside a real ThoughtSpot embed, headless, so rules_UNSTABLE selectors come from
-// what ThoughtSpot actually renders. Needs `npm start` running on :3000 (it mints the login token,
-// --server to change), and only logs in to the server's own THOUGHTSPOT_HOST.
-//
-//   node inspect.mjs '<playground link>' find '<query>'      [--props color,fill] [--shot out.png]
-//   node inspect.mjs '<playground link>' tree '<query>'      [--up 14] [--down 3] [--nth 0]
-//   node inspect.mjs '<playground link>' measure '<query>'   [--tile '<selector>']
-//
-// <query> is a CSS selector, or `text:<words>`. `text:` matches an element that owns a text node
-// with the words (SVG <text><tspan> labels included) OR whose aria-label / title / alt / placeholder /
-// data-tooltip contains them, so icon-only buttons ("Share", "More") are found by their label.
-//
-// find    : every match's frame, tag, data-testid, classes, aria-label/title, layout, colors, icon
-//           (svg <use> id, <img> src, background/mask image, ::before/::after content), plus a
-//           suggested stable selector. --props a,b,c prints those computed properties instead of
-//           the color line.
-// tree    : ancestors of the nth match (up to --up levels) and its descendants (--down levels).
-// measure : for each match, the horizontal offset of its text from the center of its tile
-//           (closest --tile ancestor, default a Liveboard grid item). 0px = centered.
-//
-// Reaching UI that only exists after interaction: --click '<query>' and --hover '<query>', each
-// repeatable, run IN THE ORDER GIVEN before inspecting (e.g. --click 'text:More' to open the "⋯"
-// menu, then find 'text:Download'). Each step waits --step-wait ms (default 2000).
-//
-// Every mode searches the ThoughtSpot iframe AND the frames nested in it (custom/BYOC charts run in
-// their own cross-origin iframe, e.g. *.pdom.thoughtspot.com), and descends into open shadow roots.
+// Inspect the DOM inside a real ThoughtSpot embed, headless: every embed frame (incl. nested
+// custom-chart iframes) and open shadow roots. Modes find|tree|measure, --click/--hover steps:
+// usage and output are documented in SKILL.md next to this file. Needs `npm start` on :3000 and
+// only logs in to that server's own THOUGHTSPOT_HOST.
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 
 const puppeteer = createRequire(import.meta.url)('puppeteer-core');
 const [link, mode, query, ...rest] = process.argv.slice(2);
+const fail = (msg) => { console.error(msg); process.exit(2); };
 const opt = (name, dflt) => {
   const i = rest.indexOf(`--${name}`);
   if (i < 0) return dflt;
   const v = rest[i + 1];
-  if (v === undefined || v.startsWith('--')) { console.error(`--${name} needs a value.`); process.exit(2); }
+  if (v === undefined || v.startsWith('--')) fail(`--${name} needs a value.`);
   return v;
 };
 // --click / --hover are repeatable and ordered, so collect them as a list of steps.
@@ -42,15 +21,11 @@ const steps = [];
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === '--click' || rest[i] === '--hover') {
     const v = rest[i + 1];
-    if (v === undefined || v.startsWith('--')) { console.error(`${rest[i]} needs a value.`); process.exit(2); }
+    if (v === undefined || v.startsWith('--')) fail(`${rest[i]} needs a value.`);
     steps.push({ action: rest[i].slice(2), target: v }); i++;
   }
 }
-if (!link || !['find', 'tree', 'measure'].includes(mode) || !query) {
-  console.error("usage: inspect.mjs '<link>' find|tree|measure '<selector | text:words>' [--click '<q>'] [--hover '<q>'] (repeatable, in order) [--step-wait ms] [--props a,b] [--shot f.png] [--up N] [--down N] [--nth N] [--tile sel] [--wait ms] [--server http://localhost:3000]");
-  process.exit(2);
-}
-const fail = (msg) => { console.error(msg); process.exit(2); };
+if (!link || !['find', 'tree', 'measure'].includes(mode) || !query) fail("usage: inspect.mjs '<link>' find|tree|measure '<selector | text:words>' [--click '<q>'] [--hover '<q>'] (repeatable, in order) [--step-wait ms] [--props a,b] [--shot f.png] [--up N] [--down N] [--nth N] [--tile sel] [--wait ms] [--server http://localhost:3000]");
 // The token service is always the local server (--server), never the link's own origin: a link on
 // another origin must not receive the mint request or be loaded with a live session.
 const ORIGIN = new URL(opt('server', 'http://localhost:3000')).origin;
