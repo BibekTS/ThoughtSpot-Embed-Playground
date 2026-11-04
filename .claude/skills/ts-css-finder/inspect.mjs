@@ -3,16 +3,28 @@
 // what ThoughtSpot actually renders. Needs `npm start` running on :3000 (it mints the login token,
 // --server to change), and only logs in to the server's own THOUGHTSPOT_HOST.
 //
-//   node inspect.mjs '<playground link>' find '<query>'      [--shot out.png]
-//   node inspect.mjs '<playground link>' tree '<selector>'   [--up 14] [--down 3] [--nth 0]
-//   node inspect.mjs '<playground link>' measure '<selector>' [--tile '<selector>']
+//   node inspect.mjs '<playground link>' find '<query>'      [--props color,fill] [--shot out.png]
+//   node inspect.mjs '<playground link>' tree '<query>'      [--up 14] [--down 3] [--nth 0]
+//   node inspect.mjs '<playground link>' measure '<query>'   [--tile '<selector>']
 //
-// find    : <query> is a CSS selector, or `text:<words>` to match visible text. Prints every match's
-//           tag, data-testid, classes, layout styles and width, plus a suggested stable selector.
-// tree    : ancestors of the nth match (up to --up levels) and its descendants (--down levels),
-//           with the box-model and flex/alignment values that explain where it sits.
+// <query> is a CSS selector, or `text:<words>`. `text:` matches an element that owns a text node
+// with the words (SVG <text><tspan> labels included) OR whose aria-label / title / alt / placeholder /
+// data-tooltip contains them, so icon-only buttons ("Share", "More") are found by their label.
+//
+// find    : every match's frame, tag, data-testid, classes, aria-label/title, layout, colors, icon
+//           (svg <use> id, <img> src, background/mask image, ::before/::after content), plus a
+//           suggested stable selector. --props a,b,c prints those computed properties instead of
+//           the color line.
+// tree    : ancestors of the nth match (up to --up levels) and its descendants (--down levels).
 // measure : for each match, the horizontal offset of its text from the center of its tile
 //           (closest --tile ancestor, default a Liveboard grid item). 0px = centered.
+//
+// Reaching UI that only exists after interaction: --click '<query>' and --hover '<query>', each
+// repeatable, run IN THE ORDER GIVEN before inspecting (e.g. --click 'text:More' to open the "⋯"
+// menu, then find 'text:Download'). Each step waits --step-wait ms (default 2000).
+//
+// Every mode searches the ThoughtSpot iframe AND the frames nested in it (custom/BYOC charts run in
+// their own cross-origin iframe, e.g. *.pdom.thoughtspot.com), and descends into open shadow roots.
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 
@@ -25,8 +37,17 @@ const opt = (name, dflt) => {
   if (v === undefined || v.startsWith('--')) { console.error(`--${name} needs a value.`); process.exit(2); }
   return v;
 };
+// --click / --hover are repeatable and ordered, so collect them as a list of steps.
+const steps = [];
+for (let i = 0; i < rest.length; i++) {
+  if (rest[i] === '--click' || rest[i] === '--hover') {
+    const v = rest[i + 1];
+    if (v === undefined || v.startsWith('--')) { console.error(`${rest[i]} needs a value.`); process.exit(2); }
+    steps.push({ action: rest[i].slice(2), target: v }); i++;
+  }
+}
 if (!link || !['find', 'tree', 'measure'].includes(mode) || !query) {
-  console.error("usage: inspect.mjs '<link>' find|tree|measure '<selector | text:words>' [--shot f.png] [--up N] [--down N] [--nth N] [--tile sel] [--wait ms] [--server http://localhost:3000]");
+  console.error("usage: inspect.mjs '<link>' find|tree|measure '<selector | text:words>' [--click '<q>'] [--hover '<q>'] (repeatable, in order) [--step-wait ms] [--props a,b] [--shot f.png] [--up N] [--down N] [--nth N] [--tile sel] [--wait ms] [--server http://localhost:3000]");
   process.exit(2);
 }
 const fail = (msg) => { console.error(msg); process.exit(2); };
@@ -47,7 +68,7 @@ if (linkUrl.origin !== ORIGIN) fail(`Link origin ${linkUrl.origin} is not the pl
 let HOST;
 try { HOST = new URL(state.host).origin; } catch { fail('Link has no valid ThoughtSpot host.'); }
 if (!HOST.startsWith('https://')) fail('Link host must be https.');
-for (const n of ['up', 'down', 'nth', 'wait', 'width', 'height']) {
+for (const n of ['up', 'down', 'nth', 'wait', 'step-wait', 'width', 'height']) {
   if (opt(n) !== undefined && !/^\d+$/.test(opt(n))) fail(`--${n} must be a whole number.`);
 }
 
@@ -62,8 +83,11 @@ if (HOST !== serverOrigin) fail(`Link host ${HOST} is not the server's THOUGHTSP
 
 const browser = await puppeteer.launch({
   executablePath: CHROME, headless: true,
-  // The embed iframe is third-party; headless Chrome blocks its cookies by default.
-  args: ['--disable-features=TrackingProtection3pcd,ThirdPartyStoragePartitioning', '--test-third-party-cookie-phaseout=false'],
+  // The embed iframe is third-party; headless Chrome blocks its cookies by default. Site isolation is
+  // off so nested cross-origin frames (custom charts) render in-process: with it on, headless
+  // screenshots of those frames come back blank or stale (they showed a tooltip the DOM had removed).
+  args: ['--disable-features=TrackingProtection3pcd,ThirdPartyStoragePartitioning,site-per-process,IsolateOrigins',
+    '--disable-site-isolation-trials', '--test-third-party-cookie-phaseout=false'],
 });
 const errors = [];
 try {
@@ -96,42 +120,142 @@ try {
   if (!frame) throw new Error('ThoughtSpot iframe never loaded — check the overlay in --shot.');
   await new Promise(r => setTimeout(r, Number(opt('wait', 15_000)))); // let tiles render
 
-  // 3. Inspect inside the iframe.
-  const out = await frame.evaluate((mode, query, o) => {
+  // 3. Inspect. Runs in every frame inside the embed: the ThoughtSpot iframe plus anything nested in
+  //    it (custom charts), descending into open shadow roots (ThoughtSpot re-draws custom-chart
+  //    tooltips in one). The same function also locates --click/--hover targets.
+  const inEmbed = (f) => { for (let p = f; p; p = p.parentFrame()) if (p.url().startsWith(HOST)) return true; return false; };
+  const frameLabel = (f) => (f.url().startsWith(HOST) ? 'ts' : (() => { try { return new URL(f.url()).host; } catch { return 'frame'; } })());
+  const inFrame = (op, query, o) => {
+    // Deep query: the document plus every open shadow root, recursively.
+    const deepAll = (root, sel) => {
+      const out = [...root.querySelectorAll(sel)];
+      for (const e of root.querySelectorAll('*')) if (e.shadowRoot) out.push(...deepAll(e.shadowRoot, sel));
+      return out;
+    };
+    const up = (e) => e.parentElement || (e.getRootNode() instanceof ShadowRoot ? e.getRootNode().host : null);
+    const LABEL_ATTRS = ['aria-label', 'title', 'alt', 'placeholder', 'data-tooltip'];
+    const visible = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const pseudo = (e, p) => { const c = getComputedStyle(e, p).content; return c && c !== 'none' && c !== 'normal' ? c.slice(0, 40) : ''; };
+    // Where an element's icon comes from — what you must override to change it.
+    const icon = (e) => {
+      const cs = getComputedStyle(e), bits = [];
+      const use = e.tagName.toLowerCase() === 'svg' ? e.querySelector('use') : (e.tagName.toLowerCase() === 'use' ? e : null);
+      if (use) bits.push(`svg-use=${use.getAttribute('href') || use.getAttribute('xlink:href')}`);
+      else if (e.tagName.toLowerCase() === 'svg') bits.push(`inline-svg(${e.children.length} children)`);
+      if (e.tagName === 'IMG') bits.push(`img=${(e.getAttribute('src') || '').slice(0, 60)}`);
+      if (cs.backgroundImage !== 'none') bits.push(`bg-image=${cs.backgroundImage.slice(0, 60)}`);
+      const mask = cs.maskImage || cs.webkitMaskImage; if (mask && mask !== 'none') bits.push(`mask=${mask.slice(0, 60)}`);
+      const b = pseudo(e, '::before'), a = pseudo(e, '::after');
+      if (b) bits.push(`::before=${b}`); if (a) bits.push(`::after=${a}`);
+      return bits.length ? ` icon{${bits.join(' ')}}` : '';
+    };
     const describe = (e) => {
       const cs = getComputedStyle(e), r = e.getBoundingClientRect();
       const cls = [...e.classList].join('.');
-      return `${e.tagName.toLowerCase()}${cls ? '.' + cls : ''}${e.dataset.testid ? ` [data-testid="${e.dataset.testid}"]` : ''}`
+      const lab = LABEL_ATTRS.map(a => e.getAttribute(a) ? ` ${a}="${e.getAttribute(a).slice(0, 40)}"` : '').join('');
+      const look = o.props ? ' ' + o.props.split(',').map(p => `${p.trim()}=${cs.getPropertyValue(p.trim())}`).join(' ')
+        : ` color=${cs.color} bg=${cs.backgroundColor}${['svg', 'path', 'rect', 'text', 'tspan', 'circle', 'use'].includes(e.tagName.toLowerCase()) ? ` fill=${cs.fill}` : ''}`;
+      return `${e.getRootNode() instanceof ShadowRoot ? '(shadow) ' : ''}${e.tagName.toLowerCase()}${cls ? '.' + cls : ''}${e.dataset?.testid ? ` [data-testid="${e.dataset.testid}"]` : ''}${lab}`
         + ` | ${cs.display}${cs.display.includes('flex') ? ` dir=${cs.flexDirection} justify=${cs.justifyContent} align=${cs.alignItems}` : ''}`
-        + ` text-align=${cs.textAlign} pad=${cs.paddingLeft}/${cs.paddingRight} margin=${cs.marginLeft}/${cs.marginRight} x=${r.x | 0} w=${r.width | 0}`
+        + ` text-align=${cs.textAlign} pad=${cs.paddingLeft}/${cs.paddingRight} margin=${cs.marginLeft}/${cs.marginRight} x=${r.x | 0} y=${r.y | 0} w=${r.width | 0} h=${r.height | 0}`
+        + look + icon(e)
         + (e.children.length ? '' : ` "${e.textContent.trim().slice(0, 30)}"`);
     };
-    // Prefer data-testid, then hash-free CSS-module class fragments (e.g. kpi-module__hero → [class*="hero"]).
-    const suggest = (e) => e.dataset.testid ? `[data-testid="${e.dataset.testid}"]`
-      : ([...e.classList].map(c => c.split('__')[1]).find(Boolean) ? `[class*="${[...e.classList].map(c => c.split('__')[1]).find(Boolean)}"]` : e.tagName.toLowerCase());
-    const matches = query.startsWith('text:')
-      ? [...document.querySelectorAll('body *')].filter(e => !e.children.length && e.textContent.includes(query.slice(5)))
-      : [...document.querySelectorAll(query)];
-    if (!matches.length) return [`no match for ${query}`];
-    if (mode === 'find') return matches.slice(0, 40).map((e, i) => `#${i} ${describe(e)}\n    suggested selector: ${suggest(e)}`);
-    if (mode === 'tree') {
+    // Prefer data-testid on the element or its nearest ancestor (so an icon inside a test-hooked button
+    // gets `[data-testid="x"] svg`), then a hash-free CSS-module fragment, then aria-label, then class.
+    const cssStr = (v) => v.replace(/["\\]/g, '\\$&');
+    const own = (e) => {
+      if (e.dataset?.testid) return `[data-testid="${cssStr(e.dataset.testid)}"]`;
+      const frag = [...e.classList].map(c => c.split('__')[1]).find(Boolean);
+      if (frag) return `[class*="${frag}"]`;
+      if (e.getAttribute('aria-label')) return `${e.tagName.toLowerCase()}[aria-label="${cssStr(e.getAttribute('aria-label'))}"]`;
+      return '';
+    };
+    const suggest = (e) => {
+      const mine = own(e); if (mine && e.dataset?.testid) return mine;
+      for (let p = up(e), i = 0; p && i < 4; p = up(p), i++) if (p.dataset?.testid) return `[data-testid="${cssStr(p.dataset.testid)}"] ${mine || e.tagName.toLowerCase()}`;
+      return mine || (e.classList[0] ? `.${e.classList[0]}` : e.tagName.toLowerCase());
+    };
+    let matches;
+    if (query.startsWith('text:')) {
+      // Own text node (catches SVG <tspan>/<text> and mixed content) or an accessible-label attribute.
+      // '*', not 'body *': a shadow root has no <body>, and its copy of a tooltip must match too.
+      const words = query.slice(5);
+      matches = deepAll(document, '*').filter(e => !['STYLE', 'SCRIPT', 'TITLE', 'HEAD'].includes(e.tagName)
+        && ([...e.childNodes].some(n => n.nodeType === 3 && n.textContent.includes(words))
+          || LABEL_ATTRS.some(a => (e.getAttribute(a) || '').includes(words))));
+    } else {
+      try { matches = deepAll(document, query); } catch { return { error: `invalid selector: ${query}` }; }
+    }
+    if (op === 'locate') {
+      // rank 0 = owns the text (what a user sees), rank 1 = only an aria-label/title hit. The caller
+      // compares ranks across frames, so a chart's "…Southwest." aria-label never beats a real label.
+      const ownsText = (e) => !query.startsWith('text:') || [...e.childNodes].some(n => n.nodeType === 3 && n.textContent.includes(query.slice(5)));
+      const vis = matches.filter(visible);
+      const e = vis.find(ownsText) || vis[0];
+      if (!e) return { count: 0 };
+      const r = e.getBoundingClientRect();
+      return { count: 1, rank: ownsText(e) ? 0 : 1, x: r.x + r.width / 2, y: r.y + r.height / 2, what: describe(e).slice(0, 120) };
+    }
+    if (!matches.length) return { count: 0 };
+    // Nearest ancestor test hooks: a generic hook on the element (e.g. every menu label's
+    // "menu-item-label-testid") is useless for targeting ONE item; its row's "download" is not.
+    const hooks = (e) => { const out = []; for (let p = up(e), i = 0; p && i < 8 && out.length < 3; p = up(p), i++) if (p.dataset?.testid) out.push(`[data-testid="${p.dataset.testid}"]`); return out.length ? `\n    ancestor hooks: ${out.join(' < ')}` : ''; };
+    if (op === 'find') return { count: matches.length, lines: matches.slice(0, 40).map((e, i) => `#${i} ${visible(e) ? '' : '(not rendered) '}${describe(e)}\n    suggested selector: ${suggest(e)}${hooks(e)}`) };
+    if (op === 'tree') {
       const e = matches[Number(o.nth)] || matches[0], lines = [];
-      const ups = []; for (let p = e.parentElement, i = 1; p && i <= Number(o.up); p = p.parentElement, i++) ups.push(`up ${i}: ${describe(p)}`);
+      const ups = []; for (let p = up(e), i = 1; p && i <= Number(o.up); p = up(p), i++) ups.push(`up ${i}: ${describe(p)}`);
       lines.push(...ups.reverse(), `>> ${describe(e)}`);
-      const down = (n, d) => [...n.children].forEach(c => { lines.push(`${'   '.repeat(d)}└ ${describe(c)}`); if (d < Number(o.down)) down(c, d + 1); });
+      const down = (n, d) => [...(n.shadowRoot ? n.shadowRoot.children : []), ...n.children].forEach(c => { lines.push(`${'   '.repeat(d)}└ ${describe(c)}`); if (d < Number(o.down)) down(c, d + 1); });
       down(e, 1);
-      return lines;
+      return { count: matches.length, lines };
     }
     let tileOk = true; try { document.querySelector(o.tile); } catch { tileOk = false; }
-    if (!tileOk) return [`invalid --tile selector: ${o.tile}`];
-    return matches.map((e) => { // measure
+    if (!tileOk) return { error: `invalid --tile selector: ${o.tile}` };
+    return { count: matches.length, lines: matches.map((e) => { // measure
       const tile = e.closest(o.tile) || document.body, tr = tile.getBoundingClientRect();
       const range = document.createRange(); range.selectNodeContents(e); const b = range.getBoundingClientRect();
       return `tile w=${tr.width | 0} | "${e.textContent.trim().slice(0, 24)}" center offset=${(b.x + b.width / 2 - (tr.x + tr.width / 2)).toFixed(1)}px left gap=${(b.x - tr.x) | 0} right gap=${(tr.right - b.right) | 0}`;
-    });
-  }, mode, query, { up: opt('up', 14), down: opt('down', 3), nth: opt('nth', 0), tile: opt('tile', '[data-testid="layout-item"], .react-grid-item') });
-  console.log(out.join('\n'));
+    }) };
+  };
+  const embedFrames = () => page.frames().filter(f => !f.isDetached() && inEmbed(f));
+  const o = { up: opt('up', 14), down: opt('down', 3), nth: opt('nth', 0), props: opt('props', ''), tile: opt('tile', '[data-testid="layout-item"], .react-grid-item') };
+
+  // 3a. --click / --hover steps, in order. Targets are searched in every embed frame; the first
+  //     visible match wins. Frame coordinates are shifted to page coordinates for the real mouse.
+  for (const s of steps) {
+    let hit;
+    for (const f of embedFrames()) {
+      const r = await f.evaluate(inFrame, 'locate', s.target, o).catch(() => ({ count: 0 }));
+      if (r.error) throw new Error(r.error);
+      if (r.count && (!hit || r.rank < hit.r.rank)) hit = { f, r }; // best rank wins; frame order breaks ties
+    }
+    if (!hit) throw new Error(`--${s.action} target not found or not visible in any embed frame: ${s.target}`);
+    let x = hit.r.x, y = hit.r.y;
+    if (hit.f !== page.mainFrame()) { const box = await (await hit.f.frameElement()).boundingBox(); x += box.x; y += box.y; }
+    await page.mouse.move(x, y, { steps: 8 });
+    if (s.action === 'click') await page.mouse.click(x, y);
+    await new Promise(r => setTimeout(r, Number(opt('step-wait', 2000))));
+    console.log(`${s.action} ${s.target} → [${frameLabel(hit.f)}] ${hit.r.what}`);
+  }
+
+  // 3b. The query itself, in every embed frame.
+  let found = 0;
+  for (const f of embedFrames()) {
+    const r = await f.evaluate(inFrame, mode, query, o).catch(e => ({ error: `${frameLabel(f)}: ${e.message}` }));
+    if (r.error) { console.log(r.error); continue; }
+    if (!r.count) continue;
+    found += r.count;
+    console.log(`── frame [${frameLabel(f)}] ${r.count} match(es)`);
+    console.log(r.lines.join('\n'));
+    if (mode === 'tree') break; // tree: the first frame with a match only
+  }
+  if (!found) console.log(`no match for ${query} in ${embedFrames().length} embed frame(s)`);
   if (opt('shot')) { await page.screenshot({ path: opt('shot') }); console.log(`screenshot: ${opt('shot')}`); }
+} catch (e) {
+  // One clean line instead of a stack. Login errors are already token-redacted above.
+  console.error(`error: ${e.message}`);
+  process.exitCode = 2;
 } finally {
   console.log(`JS errors: ${errors.length ? '\n  ' + errors.join('\n  ') : 'none'}`);
   await browser.close();
