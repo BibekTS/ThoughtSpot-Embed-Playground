@@ -46,22 +46,43 @@ tile render), `--width`/`--height` (viewport, default 1600×1000).
   `::before`/`::after` content.
 - `(not rendered)` when it is in the DOM but hidden or 0×0.
 - A **suggested selector**, plus the **ancestor hooks** (the nearest `data-testid`s above it).
+- **`ts-vars:`** lists the documented `--ts-var-*` variables that ThoughtSpot's own CSS already uses
+  on this element, as `property←variable` (e.g. `color←--ts-var-viz-title-color`). If the property
+  you need is listed, set that variable instead of writing a rule (Workflow step 0). It's read
+  from the stylesheets the frame can access, so an empty line means "none found", not "none
+  exist": check the docs too.
 
 `text:` matches an element that owns a text node with the words, or whose `aria-label`, `title`,
 `alt`, `placeholder` or `data-tooltip` contains them.
 
 ## Workflow
 
-0. **Check for a supported option first.** `rules_UNSTABLE` is the last resort, because it breaks
-   when ThoughtSpot's DOM changes. Offer the documented option when one fits, and CSS only for the
-   rest:
-   | Ask | Supported option |
-   |---|---|
-   | Hide or grey out a menu item or action button (Download, Share, Pin, Edit, …) | `hiddenActions` / `disabledActions` (+ `disabledActionReason`) with `Action.*` on the embed |
-   | Brand colors, fonts, backgrounds | `customizations.style.customCSS.variables` (`--ts-var-*`) |
-   | Rename labels or text | `customizations.content.strings` / `stringIDs` |
-   | Replace icons across the app | `customizations.iconSpriteUrl` (your own SVG sprite with the same `rd-icon-*` ids) |
-   | Many rules, or rules hosted with the app | `customizations.style.customCSSUrl` |
+0. **Check what ThoughtSpot already provides out of the box, before any CSS rule.**
+   `rules_UNSTABLE` is the last resort, because it breaks when ThoughtSpot's DOM changes. Go down
+   this ladder and stop at the first rung that does the job:
+
+   | # | Ask | Out-of-the-box option | Doc |
+   |---|---|---|---|
+   | 1 | Logo, favicon, chart color palette, chart/table fonts, nav color, footer, page title (whole instance, no code) | Admin **Develop → Customizations → Styles** | [customize-style](https://developers.thoughtspot.com/docs/customize-style) |
+   | 2 | Hide or grey out an action, menu item or button (Download, Share, Pin, Edit, …) | `hiddenActions` / `disabledActions` (+ `disabledActionReason`) with `Action.*`. Confirm the member exists with the MCP `symbol: "Action"` lookup. | SDK `Action` enum |
+   | 3 | Colors, fonts, radius, shadows, spacing of a component | `customizations.style.customCSS.variables` (`--ts-var-*`). `find` prints the variables that already style the element (`ts-vars:`). | [css-variables-reference](https://developers.thoughtspot.com/docs/css-variables-reference) |
+   | 4 | A whole brand theme, or a theme from brand assets | **Theme Builder** (Develop → Customizations → Theme Builder; AI or Manual mode). Its exported JSON goes into `customCSS.variables`. To try it in the playground, paste it into the CSS rules box wrapped as `{"variables": <the JSON>}`, or as `:root { … }` CSS. A bare flat `{"--ts-var-…": …}` map is not recognised as variables and gets dropped. | [theme-builder-doc](https://developers.thoughtspot.com/docs/theme-builder-doc) |
+   | 5 | Rename UI text | `customizations.content.stringIDs` (precise; find IDs with `exposeTranslationIDs`, the playground's Custom styles → *expose IDs*), or `strings` (substring, global, case-sensitive; longest first). Keep `{placeholders}`. | [customize-text](https://developers.thoughtspot.com/docs/customize-text) |
+   | 6 | Replace an icon (one or many) | `customizations.iconSpriteUrl`: an SVG sprite whose `<symbol id>` reuses the `rd-icon-*` id that `find` reports as `svg-use=`. The host needs CSP connect-src + img-src. | [customize-icons](https://developers.thoughtspot.com/docs/customize-icons) |
+   | 7 | Fonts, or many rules hosted with the app | `customizations.style.customCSSUrl`: one file holding variables, `@font-face` and rules. The host goes on the CSP allowlist (Develop → Security Settings); `cdn.jsdelivr.net` is allowed by default. | [custom-css](https://developers.thoughtspot.com/docs/custom-css) |
+   | 8 | Anything else | `rules_UNSTABLE`: the rest of this workflow | [custom-css](https://developers.thoughtspot.com/docs/custom-css) |
+
+   - **Look these up live; don't trust this table's details.** All six pages are indexed by the
+     Spottercode MCP. Call `get-developer-docs-reference` with the ask, e.g. `query: "CSS variable
+     for viz tile title color"`, or `pageId`/`symbol` for exact members. Pass `environment.sdkVersion`
+     when you know it, so the MCP flags members your version lacks. Fall back to the doc links if the
+     MCP is unavailable.
+   - **Use the live DOM to confirm.** A variable name in the docs is only a candidate until `find`'s
+     `ts-vars:` line shows ThoughtSpot's CSS reading it on that element. The docs note that some
+     names differ by release.
+   - **Mix freely, and say which rung each part uses.** For example, `variables` for the colors
+     plus one `rules_UNSTABLE` rule for the one thing no variable covers. Note that CSS overrides
+     beat the admin Styles settings.
 1. **Get a playground link that renders the target.** Use the user's link, or build one with the
    `link-generator` skill. Run `find … --shot` once and look at the screenshot. If tiles show "No
    data", an overlay or the wrong board, fix that first; you cannot style what does not render.

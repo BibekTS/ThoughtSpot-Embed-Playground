@@ -201,7 +201,28 @@ try {
     // Nearest ancestor test hooks: a generic hook on the element (e.g. every menu label's
     // "menu-item-label-testid") is useless for targeting ONE item; its row's "download" is not.
     const hooks = (e) => { const out = []; for (let p = up(e), i = 0; p && i < 8 && out.length < 3; p = up(p), i++) if (p.dataset?.testid) out.push(`[data-testid="${p.dataset.testid}"]`); return out.length ? `\n    ancestor hooks: ${out.join(' < ')}` : ''; };
-    if (op === 'find') return { count: matches.length, lines: matches.slice(0, 40).map((e, i) => `#${i} ${visible(e) ? '' : '(not rendered) '}${describe(e)}\n    suggested selector: ${suggest(e)}${hooks(e)}`) };
+    // Documented --ts-var-* variables that already style this element: ThoughtSpot's own rules that
+    // match it and read a variable. If the property you want is here, set the variable (stable,
+    // documented) instead of writing rules_UNSTABLE. CDN sheets that block cssRules are skipped.
+    let varRules;
+    const tsVars = (e) => {
+      if (!varRules) {
+        varRules = [];
+        const walk = (list) => { for (const r of list) { if (r.selectorText) { if (r.cssText.includes('--ts-var-')) varRules.push(r); } else if (r.cssRules) walk(r.cssRules); } };
+        for (const s of document.styleSheets) { try { walk(s.cssRules); } catch { /* cross-origin sheet */ } }
+      }
+      const seen = new Map();
+      for (const r of varRules) {
+        let hit = false; try { hit = e.matches(r.selectorText); } catch { /* selector this browser rejects */ }
+        if (!hit) continue;
+        for (let i = 0; i < r.style.length; i++) {
+          const prop = r.style[i];
+          for (const m of r.style.getPropertyValue(prop).matchAll(/var\((--ts-var-[\w-]+)/g)) if (!seen.has(m[1])) seen.set(m[1], prop);
+        }
+      }
+      return seen.size ? `\n    ts-vars: ${[...seen].slice(0, 10).map(([v, p]) => `${p}←${v}`).join('  ')}${seen.size > 10 ? `  (+${seen.size - 10} more)` : ''}` : '';
+    };
+    if (op === 'find') return { count: matches.length, lines: matches.slice(0, 40).map((e, i) => `#${i} ${visible(e) ? '' : '(not rendered) '}${describe(e)}\n    suggested selector: ${suggest(e)}${hooks(e)}${tsVars(e)}`) };
     if (op === 'tree') {
       const e = matches[Number(o.nth)] || matches[0], lines = [];
       const ups = []; for (let p = up(e), i = 1; p && i <= Number(o.up); p = up(p), i++) ups.push(`up ${i}: ${describe(p)}`);
