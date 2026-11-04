@@ -1,9 +1,9 @@
 ---
 name: ts-css-finder
-description: Find the real CSS selector for ANY element inside an embedded ThoughtSpot view, including icon-only buttons, menu items that appear only after a click, tooltips and popovers that appear on hover, icons, tile titles, KPI values, filter chips, and custom (BYOC) chart internals. Then write the rules_UNSTABLE CSS that hides, recolors, resizes, aligns or swaps it, prove the change by measuring it headless against the live cluster, and hand over the SDK code plus a playground link. Use when the user or a client asks to "hide", "remove", "style", "center", "move", "recolor", "change the icon of" or "write custom CSS for" anything in an embed, asks "what's the CSS selector for…", or wants rules_UNSTABLE / customCSS code.
+description: Make any client styling ask for an embedded ThoughtSpot view real, out-of-the-box first. Check what ThoughtSpot already provides (admin Styles, hiddenActions/disabledActions, --ts-var-* CSS variables, Theme Builder, stringIDs text overrides, iconSpriteUrl, customCSSUrl) through the Spottercode MCP docs tool. Then, only for what's left, find the real CSS selector for ANY element (icon-only buttons, menu items that appear after a click, tooltips that appear on hover, icons, tile titles, KPI values, filter chips, custom/BYOC chart internals) and write rules_UNSTABLE that hide, recolor, resize, align or swap it. Prove every change by measuring it headless against the live cluster, and hand over the SDK code plus a playground link. Use when the user or a client asks to "hide", "remove", "style", "theme", "brand", "rename", "center", "move", "recolor", "change the icon of" or "write custom CSS for" anything in an embed, asks "what's the CSS selector/variable for…", or wants customizations / rules_UNSTABLE code.
 ---
 
-# ts-css-finder: from "make X look like Y" to tested rules_UNSTABLE code
+# ts-css-finder: from "make X look like Y" to tested customization code
 
 ThoughtSpot renders inside a cross-origin iframe, so its DOM is not visible from the playground
 page and selectors cannot be guessed. This skill inspects the **real** embed headless, reaches UI
@@ -50,7 +50,10 @@ tile render), `--width`/`--height` (viewport, default 1600×1000).
   on this element, as `property←variable` (e.g. `color←--ts-var-viz-title-color`). If the property
   you need is listed, set that variable instead of writing a rule (Workflow step 0). It's read
   from the stylesheets the frame can access, so an empty line means "none found", not "none
-  exist": check the docs too.
+  exist": check the docs too. Before recommending a variable, check it against
+  `symbol: "CustomCssVariables"` (see "Docs lookup") for `availableInYourVersion` and any required
+  feature flag. ThoughtSpot's CSS also reads a few internal variables that aren't in that list;
+  those count as unsupported.
 
 `text:` matches an element that owns a text node with the words, or whose `aria-label`, `title`,
 `alt`, `placeholder` or `data-tooltip` contains them.
@@ -64,7 +67,7 @@ tile render), `--width`/`--height` (viewport, default 1600×1000).
    | # | Ask | Out-of-the-box option | Doc |
    |---|---|---|---|
    | 1 | Logo, favicon, chart color palette, chart/table fonts, nav color, footer, page title (whole instance, no code) | Admin **Develop → Customizations → Styles** | [customize-style](https://developers.thoughtspot.com/docs/customize-style) |
-   | 2 | Hide or grey out an action, menu item or button (Download, Share, Pin, Edit, …) | `hiddenActions` / `disabledActions` (+ `disabledActionReason`) with `Action.*`. Confirm the member exists with the MCP `symbol: "Action"` lookup. | SDK `Action` enum |
+   | 2 | Hide or grey out an action, menu item or button (Download, Share, Pin, Edit, AI Highlights, …) | `hiddenActions` / `disabledActions` (+ `disabledActionReason`) with `Action.*`. Map `find`'s `data-testid` to the member (see "Docs lookup"). | SDK `Action` enum |
    | 3 | Colors, fonts, radius, shadows, spacing of a component | `customizations.style.customCSS.variables` (`--ts-var-*`). `find` prints the variables that already style the element (`ts-vars:`). | [css-variables-reference](https://developers.thoughtspot.com/docs/css-variables-reference) |
    | 4 | A whole brand theme, or a theme from brand assets | **Theme Builder** (Develop → Customizations → Theme Builder; AI or Manual mode). Its exported JSON goes into `customCSS.variables`. To try it in the playground, paste it into the CSS rules box wrapped as `{"variables": <the JSON>}`, or as `:root { … }` CSS. A bare flat `{"--ts-var-…": …}` map is not recognised as variables and gets dropped. | [theme-builder-doc](https://developers.thoughtspot.com/docs/theme-builder-doc) |
    | 5 | Rename UI text | `customizations.content.stringIDs` (precise; find IDs with `exposeTranslationIDs`, the playground's Custom styles → *expose IDs*), or `strings` (substring, global, case-sensitive; longest first). Keep `{placeholders}`. | [customize-text](https://developers.thoughtspot.com/docs/customize-text) |
@@ -72,11 +75,9 @@ tile render), `--width`/`--height` (viewport, default 1600×1000).
    | 7 | Fonts, or many rules hosted with the app | `customizations.style.customCSSUrl`: one file holding variables, `@font-face` and rules. The host goes on the CSP allowlist (Develop → Security Settings); `cdn.jsdelivr.net` is allowed by default. | [custom-css](https://developers.thoughtspot.com/docs/custom-css) |
    | 8 | Anything else | `rules_UNSTABLE`: the rest of this workflow | [custom-css](https://developers.thoughtspot.com/docs/custom-css) |
 
-   - **Look these up live; don't trust this table's details.** All six pages are indexed by the
-     Spottercode MCP. Call `get-developer-docs-reference` with the ask, e.g. `query: "CSS variable
-     for viz tile title color"`, or `pageId`/`symbol` for exact members. Pass `environment.sdkVersion`
-     when you know it, so the MCP flags members your version lacks. Fall back to the doc links if the
-     MCP is unavailable.
+   - **Look these up live; don't trust this table's details.** All six pages, plus the SDK types,
+     are indexed by the Spottercode MCP's docs tool. See "Docs lookup" for the calls that work.
+     Fall back to the doc links if the MCP is unavailable.
    - **Use the live DOM to confirm.** A variable name in the docs is only a candidate until `find`'s
      `ts-vars:` line shows ThoughtSpot's CSS reading it on that element. The docs note that some
      names differ by release.
@@ -135,24 +136,69 @@ tile render), `--width`/`--height` (viewport, default 1600×1000).
      you have the wrong element.
    - Check what must NOT change: for example, the other menu items still `display=flex`, or the
      bar tooltip still appears.
-7. **Hand over**, in this order: the CSS, what each rule does, the before/after numbers, the
-   screenshots, the playground link ("open it, then press ⌘R"), and the caveats below. For a
+7. **Hand over**, in this order:
+   1. The supported options used, and which step-0 rung each one is.
+   2. The CSS, if any, and what each rule does, with a note on why no supported option covered it.
+   3. The before/after numbers and the screenshots.
+   4. The playground link ("open it, then press ⌘R").
+   5. The caveats below. For a
    customer, write a short `.md` with the `init()` snippet. Keep it outside the repo, with no
    customer names or data in anything committed.
+
+## Docs lookup: the Spottercode MCP docs tool
+
+The tool is `get-developer-docs-reference` on the Spottercode MCP (in Claude Code:
+`mcp__claude_ai_Spottercode__get-developer-docs-reference`). It's often deferred: load it with
+`ToolSearch` `select:<that name>` first. It needs no org and no data access; it only searches the
+developer docs and the SDK type definitions. These calls were verified on 2026-11-04:
+
+| Need | Call | What comes back |
+|---|---|---|
+| Is there a variable for X? | `query: "CSS variable for <component> <property>"` | Matching rows of the CSS variables reference, with descriptions |
+| Every variable, and whether *your* versions have it | `symbol: "CustomCssVariables"` + `environment: {sdkVersion, clusterVersion}` | 356 variables (on SDK 1.49.0), each with `description` and `availableInYourVersion`. Two needed a newer SDK (`--ts-var-liveboard-header-horizontal-margin`, `--ts-var-unsaved-filter-indicator-color`). Some need a feature flag (e.g. `isLiveboardMasterpiecesEnabled`); it's stated in the description. |
+| Which `Action` hides this button/menu item? | `symbol: "Action"` + `environment` | 213 members: `name` (for code: `Action.Download`), `value` (`"download"`), `description` (where it appears), `availableInYourVersion` |
+| What `customizations` accepts | `symbol: "CustomisationsInterface"` | `content`, `iconSpriteUrl`, `style` |
+| One page's details | `pageId` = the URL slug: `customize-text`, `customize-icons`, `theme-builder-doc`, `custom-css`, `customize-style` + a `query` | Sections from that page only |
+
+- **`pageId: "css-variables-reference"` does not filter** (it returned an unrelated page). For
+  variables, use `query` or `symbol: "CustomCssVariables"`.
+- **Big symbol results** (`CustomCssVariables` ~104k chars, `Action` ~78k) don't fit inline; the
+  harness saves them to a file. Parse that file instead of reading it:
+  ```bash
+  python3 - "$FILE" <<'EOF'
+  import json,sys
+  c=json.load(open(sys.argv[1]))['results'][0]['content']; m=json.loads(c[c.index('{'):])['members']
+  for x in m:
+      if 'chip' in x['name']: print(x['name'], x.get('availableInYourVersion'), (x.get('description') or '')[:90])
+  EOF
+  ```
+- Always pass `environment` (`sdkVersion` from the embed's SDK, `clusterVersion` from the iframe's CDN
+  URL, e.g. `26.11.0.cl`), so unavailable members are flagged. Never recommend a member marked
+  `false`; state the version it needs.
+- **`find` → `Action` bridge:** a menu item's `data-testid` is often the `Action` *value*
+  (`data-testid="download"` ↔ `Action.Download = "download"`). Search the members by value, then
+  read the `description` to confirm it is the same control. Buttons don't always match (Share is
+  `share-button`, AI Highlights is `highlights-button` ↔ `Action.AIHighlights`).
+- **Playground state takes `Action` *names*, not values:** `hiddenActions: ["Download"]` in a link
+  (the app maps `Action[name]`). `"download"` is silently dropped. To confirm what reached the
+  embed, read the `hideAction=` parameter in the ThoughtSpot iframe URL.
 
 ## Recipes (tested 2026-11-04, cluster 26.11.0.cl, SDK 1.49.0, Liveboard embed)
 
 Each recipe was applied through a playground link and verified with `find --props` plus a screenshot.
+**Use the supported column when it has an entry.** The CSS is for when it doesn't, or when the
+client explicitly wants CSS.
 
-| Ask | Rule(s) | Found with |
-|---|---|---|
-| Hide a header button | `[data-testid="highlights-button"] { display: none }` | `find 'text:AI Highlights'` |
-| Recolor a button | `[data-testid="share-button"] { background-color: #ffe08a }` | `find 'text:Share'` |
-| Swap one icon | `[data-testid="share-button"] svg use { display: none }` and `[data-testid="share-button"] svg { background: url("data:image/svg+xml;utf8,<svg …>") center / contain no-repeat }` | `find '[data-testid="share-button"] svg'` → `icon{svg-use=#rd-icon-share}` |
-| Hide one tile-menu item | `[data-testid="answer-header-action-menu"] [data-testid="download"] { display: none }` (prefer `hiddenActions: [Action.Download]`) | `find 'text:Download' --hover 'text:<tile>' --click '[data-testid="answer-header-menu-button"]'`, then read the ancestor hooks |
-| No tooltip on a custom chart's axis labels, keep the bar tooltip | `.muze-axis-container .muze-ticks { pointer-events: none }` | see "Custom charts" |
+| Ask | Supported (preferred) | CSS rule(s) | Found with |
+|---|---|---|---|
+| Hide a header button (AI Highlights) | `hiddenActions: [Action.AIHighlights]`: verified, the button is not rendered at all | `[data-testid="highlights-button"] { display: none }` | `find 'text:AI Highlights'` |
+| Hide one tile-menu item (Download) | `hiddenActions: [Action.Download]`: verified, the item is gone and the rest of the menu is intact | `[data-testid="answer-header-action-menu"] [data-testid="download"] { display: none }` | `find 'text:Download' --hover 'text:<tile>' --click '[data-testid="answer-header-menu-button"]'`, then read the ancestor hooks |
+| Recolor a button | `--ts-var-button--secondary-background` (+ `-color`), but this restyles **all** secondary buttons | `[data-testid="share-button"] { background-color: #ffe08a }` (this button only) | `find 'text:Share'`; its `ts-vars:` line shows the variables |
+| Swap one icon | `iconSpriteUrl` with a `<symbol id="rd-icon-share">` (every place that icon is used) | `[data-testid="share-button"] svg use { display: none }` and `[data-testid="share-button"] svg { background: url("data:image/svg+xml;utf8,<svg …>") center / contain no-repeat }` (this button only) | `find '[data-testid="share-button"] svg'` → `icon{svg-use=#rd-icon-share}` |
+| Tile title color/font/size | `--ts-var-viz-title-color`, `--ts-var-viz-title-font-family`, `--ts-var-liveboard-tile-title-fontsize` | only for one specific tile | `find 'text:<tile title>'` → `ts-vars:` |
+| No tooltip on a custom chart's axis labels, keep the bar tooltip | none | `.muze-axis-container .muze-ticks { pointer-events: none }` | see "Custom charts" |
 
-(Every value also needs `!important`. It's left out above to keep the table short.)
+(Every CSS value also needs `!important`. It's left out above to keep the table short.)
 
 Icon notes:
 - ThoughtSpot icons are sprite references: `<svg><use href="#rd-icon-NAME">`.
@@ -168,10 +214,22 @@ Icon notes:
 ```js
 init({
   thoughtSpotHost, authType, /* … */
-  customizations: { style: { customCSS: { rules_UNSTABLE: {
-    '[data-testid="kpi_herodata"]': { 'text-align': 'center !important' },
-  } } } },
+  customizations: {
+    style: {
+      customCSSUrl: 'https://cdn.jsdelivr.net/gh/<org>/<repo>/theme.css', // optional; loads first
+      customCSS: {
+        variables: { '--ts-var-viz-title-color': '#1d232f' },             // supported, preferred
+        rules_UNSTABLE: {                                                // only what variables can't do
+          '[data-testid="kpi_herodata"]': { 'text-align': 'center !important' },
+        },
+      },
+    },
+    content: { stringIDs: { 'Facet.objectType.pinboards': 'Dashboards' } },
+    iconSpriteUrl: 'https://cdn.jsdelivr.net/gh/<org>/<repo>/icons.svg',
+  },
 });
+// Actions are per embed, not in customizations:
+new LiveboardEmbed('#embed', { liveboardId, hiddenActions: [Action.Download, Action.AIHighlights] });
 ```
 
 - Rules in `init()` apply to every embed on the page.
