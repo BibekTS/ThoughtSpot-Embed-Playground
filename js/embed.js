@@ -266,8 +266,12 @@ export function doRender(section, config, callbacks, options = {}) {
       break;
 
     case 'spotter':
+    case 'spotter-audience':
+      // Audience builder adds its own ANSWER/PRIMARY "Create audience" button (app.js passes it in
+      // customActions). Plain Spotter is unchanged: it takes no custom actions.
       embed = new SpotterEmbed('#ts-embed-container', {
         ...common,
+        ...(section === 'spotter-audience' && { customActions }),
         worksheetId: config.worksheetId,
         ...flags,
       });
@@ -381,7 +385,7 @@ export function doRender(section, config, callbacks, options = {}) {
       // Bridge from AI Insights: once Spotter loads, run the natural-language question.
       // We send the NL query (not the resolved search tokens, which aren't a valid
       // searchTokenString) — Spotter is the engine that turns NL into a real answer.
-      if (section === 'spotter' && spotterQuery) {
+      if ((section === 'spotter' || section === 'spotter-audience') && spotterQuery) {
         setTimeout(() => {
           try {
             embed.trigger(HostEvent.SpotterSearch, { query: spotterQuery, executeSearch: true });
@@ -438,8 +442,19 @@ export function doRender(section, config, callbacks, options = {}) {
       onError(msg);
       onEvent('Error', msg);
     })
-    .on(EmbedEvent.Data, () => {
+    .on(EmbedEvent.Data, (payload) => {
       onEvent('Data', 'Data payload received');
+      if (window.__onData) window.__onData(payload, section);
+    })
+    .on(EmbedEvent.SpotterQueryTriggered, (payload) => {
+      if (section !== 'spotter-audience') return;
+      const p = payload?.data ?? payload;
+      onEvent('SpotterQueryTriggered', `"${String(p?.prompt ?? '').slice(0, 200)}"`);
+      if (window.__onSpotterQuery) window.__onSpotterQuery(p);
+    })
+    .on(EmbedEvent.SpotterData, () => {
+      // Spotter replied with TEXT (e.g. "no stores in Texas") — no answer to build an audience from.
+      if (section === 'spotter-audience' && window.__onSpotterText) window.__onSpotterText();
     })
     .on(EmbedEvent.FilterChanged, (payload) => {
       onEvent('FilterChanged', JSON.stringify(payload?.data ?? payload, null, 2));

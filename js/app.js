@@ -21,6 +21,7 @@ import { pcCacheKey, findOrCreateCopy, deleteCopy as deleteUserCopy } from './pe
 const EMBEDS = [
   { id: 'search',           name: 'Search Data',       cls: 'SearchEmbed',    needs: 'worksheet' },
   { id: 'spotter',          name: 'Spotter AI',        cls: 'SpotterEmbed',   needs: 'worksheet' },
+  { id: 'spotter-audience', name: 'Audience builder',  cls: 'SpotterEmbed',   needs: 'worksheet', parent: 'spotter' },
   { id: 'liveboard',        name: 'Liveboard',         cls: 'LiveboardEmbed', needs: 'liveboard' },
   { id: 'liveboard-custom', name: 'Custom Liveboard',  cls: 'LiveboardEmbed', needs: 'liveboard' },
   { id: 'custom-columns',   name: 'Read-only + Edit Columns', cls: 'SearchEmbed', needs: 'liveboard', parent: 'liveboard-custom' },
@@ -37,7 +38,7 @@ const META = Object.fromEntries(EMBEDS.map(e => [e.id, e]));
 // Rail grouping — mirrors how the SDK families the surfaces: the three search-driven
 // embeds, the four LiveboardEmbed flavours, and the two whole-app / no-iframe options.
 const RAIL_GROUPS = [
-  { label: 'Search & AI',  ids: ['search', 'spotter', 'spotter-chat'] },
+  { label: 'Search & AI',  ids: ['search', 'spotter', 'spotter-audience', 'spotter-chat'] },
   { label: 'Liveboards',   ids: ['liveboard', 'liveboard-custom', 'custom-columns', 'personal-copy', 'ai-highlights', 'viz', 'drillthrough'] },
   { label: 'App & REST',   ids: ['fullapp', 'ai-insights'] },
 ];
@@ -46,6 +47,7 @@ const RAIL_GROUPS = [
 const EMBED_BLURBS = {
   search:           'Full search experience — build a query against a Worksheet/Model and get an auto-charted answer.',
   spotter:          'Conversational AI analyst — ask a question, then keep asking follow-ups in a chat-style session.',
+  'spotter-audience': 'Part of Spotter AI: ask for a list (e.g. unique products sold in Michigan), then “Create audience” hands your app the answer’s search tokens, SQL and ID list — no Save needed.',
   liveboard:        'Embed a full interactive Liveboard (dashboard) with all its tiles, filters, and tabs.',
   'liveboard-custom':'A Liveboard driven by your own website-native filter bar, from outside the iframe.',
   'custom-columns': 'Part of Custom Liveboard: a Liveboard table tile as a read-only native Table view. Its one “Edit Columns” button lets each user hide and reorder columns, saved per user in your database.',
@@ -82,6 +84,7 @@ const ACTIONS = {
 ACTIONS['liveboard-custom'] = ACTIONS.liveboard;
 ACTIONS['ai-highlights'] = ACTIONS.liveboard;
 ACTIONS['drillthrough'] = ACTIONS.liveboard;
+ACTIONS['spotter-audience'] = ACTIONS.spotter;
 
 // Per-action scope tooltips for the "Modify actions" rows (which surface to hover title).
 const ACTION_HINTS = {
@@ -152,6 +155,7 @@ const DISPLAY = {
 };
 
 DISPLAY['liveboard-custom'] = DISPLAY.liveboard; // same display flags as liveboard
+DISPLAY['spotter-audience'] = DISPLAY.spotter;  // Audience builder is a SpotterEmbed
 DISPLAY['ai-highlights'] = DISPLAY.liveboard;    // AI Highlights renders a Liveboard, then triggers HostEvent.AIHighlights
 DISPLAY.drillthrough = DISPLAY.liveboard;         // the drill-through demo renders a plain Liveboard as its summary
 
@@ -268,6 +272,7 @@ const PAYLOAD_ACTION_ID = '__dt_view_payload';
 // connect()): a read from an older session drops its writes. Concurrent reads of one key share a promise
 // (ccInflight).
 const COLS_ACTION_ID = '__cols_picker';
+const AUD_ACTION_ID = 'create-audience'; // Audience builder: ANSWER/PRIMARY button on each Spotter answer
 const ccTiles = new Map();   // tileKey -> tileFromTml() result ({ ok:true, … } | { ok:false, error })
 const ccTmls = new Map();    // host|liveboard -> exportLiveboardTml() result
 const ccLbs = new Map();     // host|liveboard -> { ok:true, name, vizs:[{vizId,name}] } | { ok:false, error }
@@ -1152,8 +1157,9 @@ function render() {
     // visibleVizs goes AFTER the shared-link flags so it wins: vizs-mode "Display by" starts on the
     // first option's table (plus the always-visible charts).
     flags: { ...(s.flags[s.section] || {}), ...(hostHeaderOn(s) ? hostFlags(s) : {}), ...displayByInitialConfig(s) },
-    spotterQuery: s.section === 'spotter' ? pendingSpotterQuery : null,
+    spotterQuery: (s.section === 'spotter' || s.section === 'spotter-audience') ? pendingSpotterQuery : null,
   });
+  audienceBarSync(); // shows the host "Create audience" bar only on the Audience builder
   pendingSpotterQuery = null; // consumed — only auto-runs on the render triggered by the bridge
   flowStart(); // SDK is now creating the iframe & opening the postMessage bridge
 }
@@ -1447,8 +1453,32 @@ const hhEvent = (name, desc) => [{ method: 'SDK', scope: 'visual-embed-sdk', pat
 const REPORT_API = { method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/report/liveboard', desc: 'Export the liveboard (PDF/XLSX/CSV/PNG); active filters bake in as override_filters.' };
 const RUNTIME_FILTERS_API = { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.trigger(HostEvent.UpdateRuntimeFilters, …)', desc: 'Apply runtime filters live — no re-render. Appends, so clearing resends the column with values:[].' };
 const CUSTOM_ACTION_API = { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.on(EmbedEvent.CustomAction)', desc: 'Fires when the action is clicked inside the embed; the payload carries the clicked row/viz.' };
+// Audience builder: every call behind the flow, shared by the API hints and the APIs Used tab. The
+// /prism/?op=… rows are INTERNAL GraphQL the SDK's AnswerService sends (captured live); call them only
+// through the documented AnswerService methods their Docs links point at.
+const TS_DOCS = 'https://developers.thoughtspot.com/docs/';
+const AUD_API = {
+  register: { method: 'SDK', scope: 'visual-embed-sdk', path: "customActions: [{ id: 'create-audience', position: PRIMARY, target: ANSWER }]", desc: 'Registers the Create audience button; ThoughtSpot draws it on every Spotter answer.', docs: TS_DOCS + 'code-based-custom-action#_code_based_custom_action_for_spotter' },
+  customAction: { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.on(EmbedEvent.CustomAction)', desc: 'The button on the answer was clicked. payload.answerService is bound to that answer’s session.', docs: TS_DOCS + 'Enumeration_EmbedEvent#_customaction' },
+  queryTriggered: { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.on(EmbedEvent.SpotterQueryTriggered)', desc: 'A question was sent ({ prompt, convId, worksheetId }). The host button waits for the answer.', docs: TS_DOCS + 'Enumeration_EmbedEvent#_spotterquerytriggered' },
+  data: { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.on(EmbedEvent.Data)', desc: 'The answer finished. Its data.vizId is kept for the host button.', docs: TS_DOCS + 'Enumeration_EmbedEvent#_data' },
+  spotterData: { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.on(EmbedEvent.SpotterData)', desc: 'Spotter replied with text only, so there is no answer to build an audience from.', docs: TS_DOCS + 'Enumeration_EmbedEvent#_spotterdata' },
+  getAnswerService: { method: 'SDK', scope: 'visual-embed-sdk', path: 'embed.getAnswerService(vizId) → HostEvent.GetAnswerSession', desc: 'Host button: gets the session of the latest answer. Without the vizId, Spotter returns the conversation’s first answer.', docs: TS_DOCS + 'Class_SpotterEmbed#_getanswerservice' },
+  getTML: { method: 'POST', scope: 'TS GraphQL', path: '/prism/?op=GetUnsavedAnswerTML', desc: 'svc.getTML(): the answer TML. answer.search_query is the search tokens; tables[0].name is the model.', docs: TS_DOCS + 'Class_AnswerService#_gettml' },
+  getSQL: { method: 'POST', scope: 'TS GraphQL', path: '/prism/?op=GetSQLQuery', desc: 'svc.getSQLQuery(): the SQL ThoughtSpot generated for this answer. No Save needed.', docs: TS_DOCS + 'Class_AnswerService#_getsqlquery' },
+  fetchData: { method: 'POST', scope: 'TS GraphQL', path: '/prism/?op=GetTableWithHeadlineData', desc: 'svc.fetchData(offset, 1000), paged up to 50,000 rows: the rows behind the ID list.', docs: TS_DOCS + 'Class_AnswerService#_fetchdata' },
+  searchdata: { method: 'POST', scope: 'server→TS', path: '/api/rest/2.0/searchdata', desc: 'Re-run tokens now: runs the stored tokens on the model with the user’s token, so RLS applies. Public REST API.', docs: TS_DOCS + 'restV2-playground?apiResourceId=http%2Fapi-endpoints%2Fdata%2Fsearch-data' },
+  csv: { method: 'BROWSER', scope: 'no API', path: 'Blob → audience.csv', desc: 'Download CSV is built in the browser from the ID list. No request is made.' },
+};
+const AUD_BLOCK_APIS = { dynamic: ['getTML', 'searchdata'], sql: ['getSQL'], static: ['fetchData', 'csv'] };
+
 // [selector, (element) => catalog items]. First match wins (most specific selectors first).
 const API_HINT_RULES = [
+  ['#aud-create', () => [AUD_API.getAnswerService, AUD_API.getTML, AUD_API.getSQL, AUD_API.fetchData]],
+  ['.aud-rerun', () => [AUD_API.searchdata]],
+  ['[data-aud="csv"]', () => [AUD_API.csv]],
+  ['[data-aud]', (e) => (AUD_BLOCK_APIS[e.dataset.aud] || []).map(k => AUD_API[k])],
+  ['#aud-bar', () => [AUD_API.register, AUD_API.customAction, AUD_API.queryTriggered, AUD_API.data]],
   ['#cfb-hh-title', () => [{ method: 'POST', scope: 'TS REST', path: '/api/rest/2.0/metadata/search', desc: 'The Liveboard name comes from metadata discovery (the same call that fills the pickers).' }]],
   ['#cfb-hh-ai', () => hhEvent('AIHighlights', 'Opens the AI Highlights insights panel inside the Liveboard.')],
   ['#cfb-hh-share', () => hhEvent('Share', 'Opens ThoughtSpot’s share dialog for the Liveboard.')],
@@ -3434,7 +3464,7 @@ function sectionDisplay(s) {
   });
   // Spotter: the chat-interface / history / stop-generation / limitations flags only surface a
   // feature the CLUSTER already allows — the Spotter experience (2 / 3) must be enabled instance-side.
-  if (s.section === 'spotter') {
+  if (s.section === 'spotter' || s.section === 'spotter-audience') {
     c.appendChild(el('div', 'sec-note', 'The Spotter 3 chat interface, chat-history sidebar, stop-generation and limitations options only take effect when the matching Spotter experience is enabled on your ThoughtSpot cluster — the SDK flag surfaces the feature, the instance must already allow it.'));
   }
   // "Show shared-with users" — the strip of viewer avatars in the Liveboard header: the people the
@@ -3568,6 +3598,9 @@ function hiddenActionKeys(s) {
 // (id '__export') when enabled, which the EmbedEvent.CustomAction dispatcher routes to runExport().
 function buildEmbedCustomActions(s) {
   if (s.section === 'personal-copy') return [];
+  // Audience builder carries exactly one action: a PRIMARY button on every Spotter answer (verified
+  // live: it renders in the answer header, next to the table/chart toggle).
+  if (s.section === 'spotter-audience') return [{ id: AUD_ACTION_ID, name: 'Create audience', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.ANSWER }];
   // Edit Columns carries exactly one action: an ANSWER button on the Table view.
   if (s.section === 'custom-columns') return [{ id: COLS_ACTION_ID, name: 'Edit Columns', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.ANSWER }];
   const actions = s.customActions.map(a => ({
@@ -6379,6 +6412,8 @@ window.__onCustomAction = async (payload) => {
   if (id === DT_ACTION_ID) { await openDetailPanel(payload); return; }
   // Its "View payload" companion → show the full payload ThoughtSpot passed.
   if (id === PAYLOAD_ACTION_ID) { openPayloadPanel(payload); return; }
+  // Audience builder: the TS-native button carries the clicked answer's session.
+  if (id === AUD_ACTION_ID) { audRec('customAction'); await runAudience(payload?.answerService, 'the button on the answer'); return; }
   const reg = customActionRegistry[id];
   if (!reg) return;
   const row = extractRow(payload);
@@ -6449,6 +6484,215 @@ function openPayloadPanel(payload) {
   panel.append(head, body, foot);
   modal.append(scrim, panel);
   document.body.appendChild(modal);
+}
+
+// ── Audience builder (Spotter → audience) ─────────────────────────────────────
+// A Spotter answer becomes an "audience" two ways: DYNAMIC (its search tokens + model id, re-run on
+// demand so RLS and fresh data apply) and STATIC (the unique ID list right now). Both come from the
+// answer's AnswerService — the native button's payload carries the clicked answer's session; the host
+// button asks the embed for the latest one (embed.getAnswerService()). Neither needs the answer saved.
+let audHasAnswer = false;   // an answer has rendered in this embed → the host button is usable
+let audLastPrompt = '';     // the last question asked (SpotterQueryTriggered), for the panel header
+let audBusy = false;
+// Light the Audience rows in APIs Used as each call fires (same key shape as recordApi).
+const audRec = (k, status) => { const a = AUD_API[k]; if (a) recordApi({ scope: a.scope, method: a.method, path: a.path, status }); };
+const AUD_MAX_IDS = 50_000; // fetchAllRows' own ceiling; reported as truncated past it
+
+let audAnswerPrompt = ''; // the question behind the LATEST finished answer (what the host button reads)
+
+function audSetBar(ready, hintText) {
+  const b = document.getElementById('aud-create');
+  if (b) { b.disabled = !ready; b.title = ready ? 'Create an audience from the latest Spotter answer' : 'Waiting for a Spotter answer'; }
+  const hint = document.getElementById('aud-hint');
+  if (hint) hint.textContent = hintText;
+}
+// EmbedEvent.Data fires when an answer's data lands → the latest answer is complete.
+// Its top-level `vizId` is the ONLY id getAnswerService() honours in Spotter (verified live: with no
+// vizId, or a visualizations[].id, it returns the conversation's FIRST answer).
+let audLatestVizId = '';
+window.__onData = (payload, section) => {
+  if (section !== 'spotter-audience') return;
+  audRec('data');
+  audLatestVizId = String((payload?.data ?? payload)?.vizId || '');
+  audHasAnswer = true;
+  audAnswerPrompt = audLastPrompt;
+  audSetBar(true, 'Answer ready. Click Create audience here, or on the answer itself.');
+};
+// A new question was sent: until its answer lands, "latest answer" would still be the PREVIOUS one,
+// so the host button is disabled (it would otherwise hand over the old audience under the new prompt).
+window.__onSpotterQuery = (p) => {
+  audRec('queryTriggered');
+  audLastPrompt = String(p?.prompt ?? '').slice(0, 500);
+  audHasAnswer = false;
+  audSetBar(false, 'Spotter is answering…');
+};
+// Text-only reply: only the hint changes (never disables) — if a data answer also lands, Data wins.
+window.__onSpotterText = () => {
+  audRec('spotterData');
+  if (audHasAnswer) return;
+  const hint = document.getElementById('aud-hint');
+  if (hint) hint.textContent = 'Spotter replied in text, with no table to build an audience from. Ask for a list.';
+};
+
+function audienceBarSync() {
+  const on = getState().section === 'spotter-audience';
+  let bar = document.getElementById('aud-bar');
+  if (!on) { bar?.remove(); return; }
+  audHasAnswer = false; audLastPrompt = ''; audAnswerPrompt = ''; audLatestVizId = '';
+  bar?.remove();
+  bar = el('div', 'cfb aud-bar'); bar.id = 'aud-bar';
+  const head = el('span', 'cfb-heading'); head.textContent = 'Audience builder';
+  const hint = el('span', 'aud-hint'); hint.id = 'aud-hint';
+  hint.textContent = 'Ask Spotter for a list, e.g. “unique list of products sold in Michigan”.';
+  const btn = el('button', 'cfb-export aud-create'); btn.id = 'aud-create'; btn.type = 'button';
+  btn.textContent = 'Create audience'; btn.disabled = true; btn.title = 'Ask Spotter a question first';
+  btn.addEventListener('click', () => runAudience(null, 'the host button'));
+  bar.append(head, hint, btn);
+  const area = document.getElementById('embed-area');
+  area?.parentNode?.insertBefore(bar, area);
+}
+
+async function runAudience(svcIn, via) {
+  if (audBusy) return;
+  const s = getState();
+  audBusy = true;
+  const done = showBusy('Building the audience…');
+  try {
+    logEvent('Audience', `Create audience clicked (${via})`);
+    let svc = svcIn;
+    // The native button belongs to the answer that was clicked (maybe an older one), so only the host
+    // path — which always reads the latest finished answer — can name the question behind it.
+    const prompt = svc?.getSQLQuery ? '' : audAnswerPrompt;
+    if (!svc?.getSQLQuery) {
+      if (!audHasAnswer) throw new Error('Spotter is still answering — wait for the answer');
+      if (!currentEmbed?.getAnswerService) throw new Error('no Spotter embed is rendered');
+      if (!audLatestVizId) throw new Error('the latest answer carried no vizId');
+      svc = await currentEmbed.getAnswerService(audLatestVizId);
+      audRec('getAnswerService');
+      logEvent('Audience', `embed.getAnswerService('${audLatestVizId}') → session for the latest answer`);
+    }
+    const tml = await svc.getTML(); audRec('getTML');
+    const ans = tml?.answer || {};
+    const tokens = String(ans.search_query || '');
+    const modelName = String(ans.tables?.[0]?.name || '');
+    const modelId = (discovered.worksheets || []).find(w => w.name === modelName)?.id || s.worksheetId || '';
+    logEvent('Audience', `Search tokens: ${tokens || '(none)'}`);
+    let sql = '';
+    try { sql = String(await svc.getSQLQuery() || ''); audRec('getSQL'); logEvent('Audience', `SQL: ${sql.length} chars`); }
+    catch (e) { sql = ''; logEvent('Audience', `✗ getSQLQuery: ${e.message}`); }
+    let rows, schema, truncated;
+    ({ rows, schema, truncated } = await fetchAllRows(svc)); audRec('fetchData');
+    // An audience is a list of IDs, so use the first ATTRIBUTE column. An answer with none (e.g. a
+    // "unique count" headline) is flagged rather than handed over as if its number were an ID.
+    const attr = schema.find(c => /ATTRIBUTE/i.test(String(c.type || '')));
+    const column = attr?.name || schema[0]?.name || Object.keys(rows[0] || {})[0] || '';
+    const noAttr = !attr && schema.some(c => /MEASURE/i.test(String(c.type || '')));
+    const ids = [...new Set(rows.map(r => r[column]).filter(v => v != null && v !== '').map(String))];
+    logEvent('Audience', `${truncated || noAttr ? '⚠' : '✓'} ${ids.length} unique ${column || 'value'}(s) from ${rows.length} row(s)${truncated ? ' (truncated)' : ''}${noAttr ? ' — the answer has no ID (attribute) column' : schema.length > 1 ? ` — answer has ${schema.length} columns, using “${column}”` : ''}`);
+    done(noAttr ? '⚠ No ID column in this answer' : '✓ Audience ready', noAttr ? 'warn' : 'success');
+    openAudiencePanel({ prompt, tokens, modelName, modelId, sql, column, ids, truncated, noAttr, colCount: schema.length, host: s.host });
+  } catch (e) {
+    console.error('Audience failed', e);
+    logEvent('Audience', `✗ ${e.message}`);
+    done();
+    toast(`Create audience failed: ${e.message}`);
+  } finally { audBusy = false; }
+}
+
+// One titled block with a <pre> and a Copy button. All text is TS-derived → textContent only.
+function audBlock(title, sub, text, copyLabel) {
+  const wrap = el('section', 'aud-sec');
+  const h = el('div', 'aud-sec-head');
+  const t = el('div'); t.appendChild(el('div', 'aud-sec-title')).textContent = title;
+  if (sub) t.appendChild(el('div', 'modal-sub')).textContent = sub;
+  const copy = el('button', 'sec-apply ghost aud-copy'); copy.type = 'button'; copy.textContent = copyLabel || 'Copy';
+  copy.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(text); toast('Copied.', 'success'); }
+    catch (_) { toast('Copy failed — select the text and copy it manually.'); }
+  });
+  h.append(t, copy);
+  const pre = el('pre', 'payload-json aud-pre'); pre.textContent = text;
+  wrap.append(h, pre);
+  return { wrap, pre };
+}
+
+function openAudiencePanel(a) {
+  document.getElementById('payload-modal')?.remove();
+  const modal = el('div', 'modal'); modal.id = 'payload-modal'; modal.classList.add('aud-modal');
+  const scrim = el('div', 'modal-scrim');
+  const panel = el('div', 'modal-panel modal-panel--wide');
+  const close = () => { modal.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+  scrim.addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+
+  const head = el('div', 'modal-head');
+  const htxt = el('div');
+  htxt.appendChild(el('div', 'modal-title')).textContent = 'Audience';
+  htxt.appendChild(el('div', 'modal-sub')).textContent = a.prompt ? `From the latest answer, to “${a.prompt}”` : 'From the answer you clicked';
+  const xbtn = el('button', 'modal-close'); xbtn.textContent = '✕'; xbtn.type = 'button'; xbtn.addEventListener('click', close);
+  head.append(htxt, xbtn);
+
+  const body = el('div', 'modal-body aud-body');
+  // 1. Dynamic: the query, re-runnable later (fresh data, the viewer's RLS).
+  const restCall = `POST /api/rest/2.0/searchdata\n${JSON.stringify({ logical_table_identifier: a.modelId, query_string: a.tokens, record_size: 100000 }, null, 2)}`;
+  const dyn = audBlock('Dynamic audience: search tokens + model',
+    `Store this and re-run it whenever the audience is used. Model: ${a.modelName || '(unknown)'}`,
+    `Tokens:   ${a.tokens}\nModel ID: ${a.modelId}\n\n${restCall}`, 'Copy query');
+  const rerun = el('button', 'sec-apply aud-rerun'); rerun.type = 'button'; rerun.textContent = 'Re-run tokens now';
+  const rerunOut = el('div', 'modal-sub aud-rerun-out');
+  rerun.addEventListener('click', async () => {
+    rerun.disabled = true; rerunOut.textContent = 'Running searchdata…';
+    const r = await Discovery.searchDataPage(a.host, { queryString: a.tokens, modelId: a.modelId, size: 100000 });
+    rerun.disabled = false;
+    if (!r.ok) { rerunOut.textContent = `searchdata failed: ${r.error}`; logEvent('Audience', `✗ re-run: ${r.error}`); return; }
+    rerunOut.textContent = `searchdata returned ${r.returned} of ${r.totalRows} row(s) just now (columns: ${r.columns.join(', ')}).`;
+    logEvent('Audience', `✓ re-run via searchdata: ${r.returned}/${r.totalRows} row(s)`);
+  });
+  const rr = el('div', 'aud-rerun-row'); rr.append(rerun, rerunOut);
+  dyn.wrap.appendChild(rr);
+  // 2. SQL — what ThoughtSpot generated for the warehouse.
+  const sqlB = audBlock('Generated SQL', 'What ThoughtSpot sent to the warehouse for this answer.', a.sql || '(SQL unavailable for this answer)', 'Copy SQL');
+  // 3. Static: the ID list as of now.
+  const idSub = a.noAttr
+    ? `⚠ This answer has no ID column (“${a.column}” is a measure). Ask Spotter for a list, e.g. “unique list of …”.`
+    : `${a.ids.length.toLocaleString()} unique value(s) of “${a.column}”, as of now${a.truncated ? ' — TRUNCATED at the fetch ceiling' : ''}${a.colCount > 1 ? ` · the answer has ${a.colCount} columns; using “${a.column}”` : ''}`;
+  const stat = audBlock(a.noAttr ? 'Static audience: no IDs' : `Static audience: ${a.ids.length.toLocaleString()} ID${a.ids.length === 1 ? '' : 's'}`, idSub, a.ids.join('\n'), 'Copy IDs');
+  stat.pre.classList.add('aud-ids');
+  dyn.wrap.dataset.aud = 'dynamic'; sqlB.wrap.dataset.aud = 'sql'; stat.wrap.dataset.aud = 'static'; // API hints
+  body.append(dyn.wrap, sqlB.wrap, stat.wrap);
+
+  const foot = el('div', 'modal-foot');
+  const csv = el('button', 'sec-apply ghost'); csv.type = 'button'; csv.textContent = 'Download CSV'; csv.dataset.aud = 'csv';
+  csv.addEventListener('click', () => {
+    const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const blob = new Blob([[q(a.column), ...a.ids.map(q)].join('\n')], { type: 'text/csv' });
+    const u = URL.createObjectURL(blob); const link = document.createElement('a');
+    link.href = u; link.download = 'audience.csv'; link.click(); setTimeout(() => URL.revokeObjectURL(u), 1000);
+  });
+  const doneB = el('button', 'sec-apply'); doneB.type = 'button'; doneB.textContent = 'Done'; doneB.addEventListener('click', close);
+  foot.append(csv, doneB);
+  panel.append(head, body, foot);
+  modal.append(scrim, panel);
+  document.body.appendChild(modal);
+}
+
+// The snippet the code view appends for the Audience builder (after `const embed = …`).
+function audienceCodeLines() {
+  return [
+    '',
+    '// Audience builder: the "Create audience" button on each Spotter answer hands your app its query + data.',
+    '// payload.answerService is the CLICKED answer\'s session — the answer does not need to be saved.',
+    'embed.on(EmbedEvent.CustomAction, async (payload) => {',
+    "  if (payload.data?.id !== 'create-audience') return;",
+    '  const svc = payload.answerService;',
+    '  const { answer } = await svc.getTML();',
+    '  const tokens = answer.search_query;          // DYNAMIC audience: re-run later via POST /api/rest/2.0/searchdata',
+    '  const sql = await svc.getSQLQuery();         // the SQL ThoughtSpot generated',
+    '  const { columns, data } = await svc.fetchData(0, 10000); // STATIC audience: the ID list right now',
+    '  // createAudience({ tokens, sql, columns, data }) — your own API',
+    '});',
+  ];
 }
 
 // Invoice "Download PDF" — paginate the viz behind the action, group rows into invoices, and
@@ -8022,6 +8266,7 @@ function generateCode() {
   if (!lockOn && (s.activeFilters.length || cfbActiveFilters.length || drillAction || dateBtn || dtPointDrill)) importNames.push('HostEvent', 'RuntimeFilterOp');
   if (!lockOn && (hiddenActionKeys(s).length || s.disabledActions.length)) importNames.push('Action');
   if (s.section === 'fullapp') importNames.push('Page');
+  if (s.section === 'spotter-audience') importNames.push('CustomActionsPosition', 'CustomActionTarget');
   if (s.section === 'ai-highlights') importNames.push('HostEvent');
   if (plbOn) importNames.push('HostEvent');
   if (dispBy) importNames.push('HostEvent');
@@ -8072,7 +8317,8 @@ function generateCode() {
   const opt = [];
   opt.push('  frameParams: {},');
   if (s.section === 'search') { opt.push(`  dataSources: ['${esc(s.worksheetId)}'],`); if (s.searchTokenString) opt.push(`  searchOptions: { searchTokenString: '${esc(s.searchTokenString)}', executeSearch: ${s.executeSearch} },`); }
-  if (s.section === 'spotter') opt.push(`  worksheetId: '${esc(s.worksheetId)}',`);
+  if (s.section === 'spotter' || s.section === 'spotter-audience') opt.push(`  worksheetId: '${esc(s.worksheetId)}',`);
+  if (s.section === 'spotter-audience') opt.push('  customActions: [', "    { id: 'create-audience', name: 'Create audience', position: CustomActionsPosition.PRIMARY, target: CustomActionTarget.ANSWER },", '  ],');
   // Masterpieces is on by default; the flags loop below emits the explicit `false` when it's toggled off.
   const masterpiecesOn = (s.flags[s.section] || {}).isLiveboardMasterpiecesEnabled !== false;
   if (s.section === 'liveboard' || s.section === 'liveboard-custom' || s.section === 'ai-highlights' || s.section === 'drillthrough') {
@@ -8424,6 +8670,7 @@ function generateCode() {
     L.push('// Needs AI Highlights + KPI anomaly detection enabled on the instance; SDK 1.44+ / TS 10.15+.');
     L.push('embed.on(EmbedEvent.LiveboardRendered, () => {\n  embed.trigger(HostEvent.AIHighlights);\n});');
   }
+  if (s.section === 'spotter-audience') L.push(...audienceCodeLines());
   L.push('embed.render();');
   if (['liveboard', 'liveboard-custom', 'viz', 'ai-highlights'].includes(s.section)) {
     const eo = s.exportOpts || {};
@@ -9293,6 +9540,7 @@ function apiCatalog(s) {
   if (s.section === 'ai-highlights')
     sdk.push({ method: 'SDK', path: 'embed.trigger(HostEvent.AIHighlights)', scope: 'visual-embed-sdk', desc: 'Open the AI Highlights insights panel once the Liveboard renders.' });
   groups.push({ group: 'SDK (Visual Embed)', items: sdk });
+  if (s.section === 'spotter-audience') groups.push({ group: 'Audience builder', items: Object.values(AUD_API) });
 
   const ex = [];
   if (['liveboard', 'liveboard-custom', 'viz', 'ai-highlights'].includes(s.section))
@@ -9327,6 +9575,11 @@ function apiRow(it) {
   const path = el('div', 'api-path'); path.textContent = it.path;       // textContent: never parse as HTML
   const desc = el('div', 'api-desc'); desc.textContent = it.desc;
   main.append(path, desc);
+  // Docs links are constants in this file; still only ever link to the ThoughtSpot developer docs.
+  if (it.docs && /^https:\/\/developers\.thoughtspot\.com\//.test(it.docs)) {
+    const a = el('a', 'api-docs'); a.href = it.docs; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Docs ↗';
+    main.appendChild(a);
+  }
   const scope = el('span', 'api-scope'); scope.textContent = it.scope;
   row.append(m, main, scope);
   const rec = apiUsage.get(`${it.method} ${it.path}`);

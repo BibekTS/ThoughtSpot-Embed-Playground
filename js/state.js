@@ -19,7 +19,7 @@
 
 const STORAGE_KEY = 'tsp_state_v1';
 
-const SECTIONS = new Set(['search', 'spotter', 'liveboard', 'liveboard-custom', 'ai-highlights', 'viz', 'fullapp', 'ai-insights', 'spotter-chat', 'drillthrough', 'custom-columns', 'personal-copy']);
+const SECTIONS = new Set(['search', 'spotter', 'liveboard', 'liveboard-custom', 'ai-highlights', 'viz', 'fullapp', 'ai-insights', 'spotter-chat', 'drillthrough', 'custom-columns', 'personal-copy', 'spotter-audience']);
 const AUTH_TYPES = new Set(['None', 'TrustedAuthTokenCookieless', 'TrustedAuthToken']);
 const MAX_STR = 4000;
 const MAX_ARR = 500;
@@ -56,6 +56,7 @@ const FLAG_KEYS = {
   fullapp: new Set(['showPrimaryNavbar', 'hideHamburger', 'disableProfileAndHelp',
     'hideObjectSearch', 'pageId']),
 };
+FLAG_KEYS['spotter-audience'] = FLAG_KEYS.spotter; // Audience builder is a SpotterEmbed — same flags
 
 /** The canonical default shape. Anything not here is not shareable. */
 export function defaultState() {
