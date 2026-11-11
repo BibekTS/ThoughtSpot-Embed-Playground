@@ -499,6 +499,7 @@ function renderConfirmExtras() {
   if (s.auth?.username) rows.push(`Mint tokens for user: ${s.auth.username}`);
   if (s.auth?.orgId) rows.push(`Org: ${s.auth.orgId}`);
   if (s.styles?.cssUrl) rows.push(`Loads a remote stylesheet: ${s.styles.cssUrl}`);
+  if (s.styles?.iconSpriteUrl) rows.push(`Loads a remote icon sprite: ${s.styles.iconSpriteUrl}`);
   ul.textContent = '';
   rows.forEach(t => { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
   ul.hidden = false; // rows always carries at least the auth-mode line
@@ -627,6 +628,21 @@ const hostHeaderOn = (s) => s.section === 'liveboard-custom' && (s.cfbLayout ===
 const hostActionsOn = (s) => hostHeaderOn(s) && s.cfbLayout === 'host-header-actions';
 const HOST_ACTIONS_RULE = { '[class*="pinboard-header-module__headerContainer"]': { display: 'none !important' } };
 const hostFlags = (s) => ({ showLiveboardTitle: false, hideTabPanel: false, ...(hostActionsOn(s) && { isLiveboardHeaderSticky: false }) });
+// S73 Spotter-icon presets. The sprite is ThoughtSpot's documented sample (symbol id rd-icon-spotter);
+// the image is a generic MIT icon (Bootstrap Icons "stars"). Both on jsDelivr, verified live.
+const SPOTTER_SAMPLE_SPRITE = 'https://cdn.jsdelivr.net/gh/thoughtspot/custom-css-demo/alternate-spotter-icon.svg';
+const SPOTTER_SAMPLE_IMAGE = 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/stars.svg';
+// CSS fallback for a standalone image (a sprite file does not draw as a CSS background): hide the tile
+// hover button's own icon, paint the image in ::before. Liveboard tile only; selectors are unstable.
+function spotterIconCssRules(imageUrl) {
+  return {
+    '[data-testid="ask-ai"] svg': { display: 'none !important' },
+    '[data-testid="ask-ai"]::before': {
+      content: '""', display: 'inline-block !important', width: '16px !important', height: '16px !important',
+      'margin-right': '6px !important', background: `url(${imageUrl}) center/contain no-repeat !important`,
+    },
+  };
+}
 const HOST_HEADER_TAB_RULE = { '[class*="pinboard-tab-panel-module__tabPanel"]': { display: 'none !important' } };
 function effectiveCssRules(s) {
   return { ...(s.styles.rules || {}), ...drillPerVizCssRules(s), ...(hostHeaderOn(s) ? HOST_HEADER_TAB_RULE : {}), ...(hostActionsOn(s) ? HOST_ACTIONS_RULE : {}) };
@@ -671,6 +687,9 @@ function buildConfig() {
   // exposeTranslationIDs is a per-embed ViewConfig flag (not customizations.content) — carried on the
   // config and applied per embed in doRender. On: every label renders as <string[stringID]> for ID discovery.
   if (s.styles.exposeIds) cfg._exposeTranslationIDs = true;
+  // customizations.iconSpriteUrl — a SIBLING of customizations.style (not inside it). init-level; the SDK
+  // falls back to it per field, so a per-embed customizations object without one does not drop it.
+  if (s.styles.iconSpriteUrl) cfg._iconSpriteUrl = s.styles.iconSpriteUrl;
   // Opt IN to EmbedEvent.VizPointClick. Subscribing it suppresses ThoughtSpot's own left-click
   // behaviour inside the iframe, so only the drill-through demo (with drill on) asks for it.
   if (s.section === 'drillthrough' && s.drill?.enabled) cfg._vizPointClick = true;
@@ -4962,6 +4981,39 @@ function sectionStyles(s) {
     Object.keys(s.styles.strings).length + Object.keys(s.styles.stringIDs).length + (s.styles.exposeIds ? 1 : 0),
     txtBody));
 
+  // ── Spotter icon — customizations.iconSpriteUrl (a sibling of style), or a CSS-image fallback ──
+  const iconBody = el('div', 'sec-body');
+  iconBody.appendChild(textField('Icon sprite URL (iconSpriteUrl)', s.styles.iconSpriteUrl, v => {
+    // https only — the SDK strips just "https://", so an http:// sprite 403s the whole iframe.
+    if (v && !v.startsWith('https://')) { toast('The sprite URL must start with https://', 'error'); renderInspector(); return; }
+    setState({ styles: { ...getState().styles, iconSpriteUrl: v } });
+  }, 'https://cdn.example.com/icons.svg'));
+  iconBody.appendChild(infoHint(
+    'An SVG sprite whose &lt;symbol id="rd-icon-spotter"&gt; replaces the Spotter icon (tile + chat).',
+    'An SVG sprite file of &lt;symbol&gt; elements; each symbol id replaces the ThoughtSpot icon with that id — rd-icon-spotter is the Spotter icon on the Liveboard tile hover button and in Spotter chat. Prerequisites: an absolute https URL, served with a CORS header, and its host allowlisted under Develop → Security settings in both CSP connect-src and img-src. Every failure (wrong id, http, no CORS, not allowlisted) is silent — the default icon just stays.'));
+  const iconBtns = el('div', 'chips');
+  const applyIcon = (patch, msg) => {
+    setState({ styles: { ...getState().styles, ...patch } });
+    applyConfig(); render(); renderInspector();
+    toast(msg, 'success');
+  };
+  const sampleBtn = el('button', 'sec-add', 'Sample sprite (docs)'); sampleBtn.type = 'button';
+  sampleBtn.title = 'ThoughtSpot docs sample sprite on jsDelivr (allowlisted on most clusters)';
+  sampleBtn.addEventListener('click', () => applyIcon({ iconSpriteUrl: SPOTTER_SAMPLE_SPRITE }, 'Sample sprite set — embed reloaded.'));
+  const cssBtn = el('button', 'sec-add', 'CSS fallback (image URL)'); cssBtn.type = 'button';
+  cssBtn.title = 'For a plain image (not a sprite): hides the tile Spotter icon and draws the image via rules_UNSTABLE. Tile only; selectors are unstable across releases.';
+  cssBtn.addEventListener('click', () => applyIcon({ rules: { ...getState().styles.rules, ...spotterIconCssRules(SPOTTER_SAMPLE_IMAGE) } },
+    'CSS fallback added to CSS rules — swap the url(…) for your image.'));
+  const clearBtn = el('button', 'sec-add', 'Clear'); clearBtn.type = 'button';
+  clearBtn.addEventListener('click', () => {
+    const rules = { ...getState().styles.rules };
+    Object.keys(spotterIconCssRules('')).forEach(sel => delete rules[sel]);
+    applyIcon({ iconSpriteUrl: '', rules }, 'Spotter icon override cleared.');
+  });
+  iconBtns.append(sampleBtn, cssBtn, clearBtn);
+  iconBody.appendChild(iconBtns);
+  c.appendChild(accordion('Spotter icon', s.styles.iconSpriteUrl ? 1 : 0, iconBody));
+
   // ── Advanced — hosted stylesheet + share/import ───────────────────────
   const advBody = el('div', 'sec-body');
   advBody.appendChild(textField('Stylesheet URL (customCSSUrl)', s.styles.cssUrl, v => {
@@ -4983,7 +5035,7 @@ function sectionStyles(s) {
   const apply = el('button', 'sec-apply', 'Apply — reload embed');
   apply.addEventListener('click', () => { applyConfig(); render(); });
   c.appendChild(apply);
-  const count = Object.keys(s.styles.variables).length + Object.keys(s.styles.rules).length + (s.styles.cssUrl ? 1 : 0)
+  const count = Object.keys(s.styles.variables).length + Object.keys(s.styles.rules).length + (s.styles.cssUrl ? 1 : 0) + (s.styles.iconSpriteUrl ? 1 : 0)
     + Object.keys(s.styles.strings).length + Object.keys(s.styles.stringIDs).length + (s.styles.exposeIds ? 1 : 0);
   return accordion('Custom styles', count, c);
 }
@@ -8277,8 +8329,15 @@ function generateCode() {
   L.push('');
   // init()
   const initLines = sdkInitAuthLines(s, esc);
-  if (hasStyles(s) || hasContent(s)) {
+  if (hasStyles(s) || hasContent(s) || s.styles.iconSpriteUrl) {
     initLines.push('  customizations: {');
+    if (s.styles.iconSpriteUrl) {
+      // A sibling of style: — a short sprite example rides along as comments in the generated code.
+      initLines.push('    // Sprite file: <svg xmlns="http://www.w3.org/2000/svg" style="display:none">');
+      initLines.push('    //   <symbol id="rd-icon-spotter" viewBox="0 0 24 24"><path d="…"/></symbol>');
+      initLines.push('    // </svg>   — each <symbol> id replaces the ThoughtSpot icon with that id. Failures are silent.');
+      initLines.push(`    iconSpriteUrl: '${esc(s.styles.iconSpriteUrl)}', // https + CORS + CSP connect-src & img-src allowlist; symbol id rd-icon-spotter (tile + chat)`);
+    }
     if (hasStyles(s)) {
       initLines.push('    style: {');
       // customCSSUrl loads first; inline customCSS overrides it. The URL host must be allowed
