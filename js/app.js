@@ -3434,11 +3434,18 @@ function truncateToggle(value, scoped, onChange) {
   const t = toggleField('Truncate tables', value && scoped, onChange,
     'OFF (default) = all rows. ON is accepted only when exporting specific visualizations — a whole-Liveboard export rejects it with HTTP 400.');
   t.querySelector('input').disabled = !scoped;
+  if (!scoped) { // the slider is the only visible part, so say why it's off in text, not just a tooltip
+    const w = el('div', 'tgl-wrap');
+    const h = el('div', 'fld-hint'); h.textContent = 'Pick specific visualizations to enable';
+    w.append(t, h);
+    return w;
+  }
   return t;
 }
 // Viz ids a REST export is scoped to: the dialog's picks, else the Single-Viz section's selected viz.
 function exportVizIds(s, eo) {
-  if (eo.vizIds?.length) return eo.vizIds;
+  if (eo.scope === 'all') return [];                 // dialog: explicit whole-Liveboard
+  if (eo.scope === 'specific') return eo.vizIds || []; // dialog: explicit picks (may be empty → Export disabled)
   return s.section === 'viz' && s.vizId ? [s.vizId] : [];
 }
 
@@ -3737,6 +3744,7 @@ function sectionExport(s) {
     c.appendChild(enumSelect('Orientation', eo.orientation, [
       { value: 'LANDSCAPE', label: 'Landscape' }, { value: 'PORTRAIT', label: 'Portrait' },
     ], v => setExportOpt('orientation', v)));
+    if (exportVizIds(s, eo).length) c.appendChild(el('div', 'fld-hint', 'Scoped to the selected visualization'));
     c.appendChild(truncateToggle(eo.truncateTable, exportVizIds(s, eo).length > 0, v => setExportOpt('truncateTable', v)));
     c.appendChild(toggleField('Include cover page', eo.includeCoverPage, v => setExportOpt('includeCoverPage', v)));
     c.appendChild(toggleField('Include filter page', eo.includeFilterPage, v => setExportOpt('includeFilterPage', v)));
@@ -3895,8 +3903,12 @@ function openExportPicker() {
   // Don't stack dialogs if the action is clicked twice.
   document.getElementById('export-modal')?.remove();
 
-  const opts = { ...(s.exportOpts || {}), vizIds: [] }; // vizIds: dialog-only scope, never persisted
-  loadViz(s.liveboardId).then(() => renderBody());
+  // scope/vizIds: dialog-only, never persisted. Opened from the Single-Viz section → preselect its viz.
+  const inViz = s.section === 'viz' && !!s.vizId;
+  const opts = { ...(s.exportOpts || {}), scope: inViz ? 'specific' : 'all', vizIds: inViz ? [s.vizId] : [] };
+  // Same S10 fence as the other loadViz sites: no credentialed call until the host is confirmed.
+  if (connected) loadViz(s.liveboardId).then(() => renderBody());
+  let go; // Export button, assigned below; renderBody keeps its disabled state in sync
 
   const modal = el('div', 'modal'); modal.id = 'export-modal';
   const scrim = el('div', 'modal-scrim');
@@ -3921,27 +3933,40 @@ function openExportPicker() {
     ], v => { opts.format = v; renderBody(); }, 'XLSX keeps full pivot/cross-tab formatting; CSV & XLSX never truncate.'));
 
     // Scope: whole Liveboard (default) or specific visualizations from the Liveboard's viz list.
-    const specific = Array.isArray(opts.vizIds) && opts.vizIds.length > 0 || opts.scopeSpecific;
-    body.appendChild(enumSelect('Scope', specific ? 'viz' : 'all', [
-      { value: 'all', label: 'Whole Liveboard' }, { value: 'viz', label: 'Specific visualization(s)' },
-    ], v => { opts.scopeSpecific = v === 'viz'; if (v === 'all') opts.vizIds = []; renderBody(); }));
+    const specific = opts.scope === 'specific';
+    body.appendChild(enumSelect('Scope', specific ? 'specific' : 'all', [
+      { value: 'all', label: 'Whole Liveboard' }, { value: 'specific', label: 'Specific visualization(s)' },
+    ], v => { opts.scope = v; if (v === 'all') opts.vizIds = []; renderBody(); }));
     if (specific) {
       const vizzes = vizCache[s.liveboardId];
-      const list = el('div', 'fld');
-      if (!vizzes?.length) list.textContent = vizzes === undefined ? 'Loading visualizations…' : 'Visualization list unavailable.';
-      else for (const v of vizzes) {
-        const row = el('label', 'tgl'); // viz names are TS-derived → textContent only
-        const nm = el('span'); nm.textContent = v.name;
-        const cb = el('input'); cb.type = 'checkbox'; cb.checked = opts.vizIds.includes(v.id);
-        cb.addEventListener('change', () => {
-          opts.vizIds = cb.checked ? [...opts.vizIds, v.id] : opts.vizIds.filter(x => x !== v.id);
-          renderBody();
-        });
-        row.append(nm, cb, el('span', 'tgl-slider'));
-        list.appendChild(row);
+      const grp = el('div', 'viz-pick'); grp.setAttribute('role', 'group'); grp.setAttribute('aria-label', 'Visualizations to export');
+      const hd = el('div', 'fld-lbl'); hd.textContent = 'Visualizations to export'; body.appendChild(hd);
+      const msg = (txt, retry) => {
+        const m = el('div', 'sec-note'); m.setAttribute('aria-live', 'polite'); m.textContent = txt;
+        if (retry) { const b = el('button', 'sec-apply ghost'); b.type = 'button'; b.textContent = 'Retry'; b.addEventListener('click', () => { delete vizCache[s.liveboardId]; loadViz(s.liveboardId).then(() => renderBody()); renderBody(); }); m.append(' ', b); }
+        return m;
+      };
+      if (vizzes === undefined) body.appendChild(msg('Loading visualizations…'));
+      else if (vizzes === null) body.appendChild(msg('Could not load the visualization list.', true));
+      else if (!vizzes.length) body.appendChild(msg('This Liveboard has no visualizations to export.'));
+      else {
+        for (const v of vizzes) {
+          const row = el('label', 'viz-pick-row'); // viz names are TS-derived → textContent only
+          const cb = el('input'); cb.type = 'checkbox'; cb.checked = opts.vizIds.includes(v.id); cb.dataset.vizId = v.id;
+          const nm = el('span'); nm.textContent = v.name;
+          cb.addEventListener('change', () => {
+            opts.vizIds = cb.checked ? [...opts.vizIds, v.id] : opts.vizIds.filter(x => x !== v.id);
+            renderBody();
+            [...body.querySelectorAll('input[data-viz-id]')].find(i => i.dataset.vizId === v.id)?.focus(); // keep keyboard place
+          });
+          row.append(cb, nm);
+          grp.appendChild(row);
+        }
+        body.appendChild(grp);
       }
-      body.appendChild(list);
+      if (!opts.vizIds.length) { const n = el('div', 'sec-note sec-note--warn'); n.setAttribute('role', 'status'); n.textContent = 'Pick at least one visualization'; body.appendChild(n); }
     }
+    if (go) go.disabled = specific && !opts.vizIds.length;
 
     if (opts.format === 'PDF') {
       body.appendChild(enumSelect('Page layout', opts.pageSize, [
@@ -3963,7 +3988,7 @@ function openExportPicker() {
 
   const foot = el('div', 'modal-foot');
   const cancel = el('button', 'sec-apply ghost', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', close);
-  const go = el('button', 'sec-apply', '⬇ Export'); go.type = 'button';
+  go = el('button', 'sec-apply', '⬇ Export'); go.type = 'button'; go.disabled = opts.scope === 'specific' && !opts.vizIds.length;
   go.addEventListener('click', async () => { const ok = await performReportExport(opts, go); if (ok) close(); });
   foot.append(cancel, go);
 
