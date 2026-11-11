@@ -166,6 +166,9 @@ export function defaultState() {
                                        // (hiddenActions is embed-wide — there is no per-viz scoping for it)
     },
     styles: { variables: {}, rules: {}, cssUrl: '', strings: {}, stringIDs: {}, exposeIds: false }, // cssUrl → customizations.style.customCSSUrl; strings/stringIDs/exposeIds → customizations.content (Beta)
+    // S74: SDK error-message controls. suppressErrorAlerts / loginFailedMessage are init() options;
+    // showAlerts is per-embed ViewConfig (only sent when false). Kept apart from `styles`.
+    errorOpts: { suppressErrorAlerts: false, showAlerts: true, loginFailedMessage: '' },
     // trusted-auth claims (NON-secret) — the token-claims playground
     auth: {
       username: '',
@@ -509,6 +512,17 @@ function sanitize(raw) {
     exposeIds: !!raw.styles?.exposeIds,                           // customizations.content.exposeTranslationIDs (ID discovery)
   };
 
+  if (has('errorOpts')) {
+    // Named fields only — no key of raw.errorOpts is ever copied across, so __proto__ & co. can't land.
+    const eo = raw.errorOpts && typeof raw.errorOpts === 'object' && !Array.isArray(raw.errorOpts) ? raw.errorOpts : {};
+    out.errorOpts = {
+      suppressErrorAlerts: bool(eo.suppressErrorAlerts),
+      showAlerts: eo.showAlerts === undefined ? true : bool(eo.showAlerts),
+      // The SDK renders this via innerHTML: strip angle brackets here too (app.js also escapes it).
+      loginFailedMessage: str(eo.loginFailedMessage, 200).replace(/[<>]/g, ''),
+    };
+  }
+
   if (has('auth')) out.auth = sanitizeAuth(raw.auth);
   return out;
 }
@@ -551,6 +565,7 @@ function mergeKnown(base, loaded) {
   out.displayBy = { ...base.displayBy, ...(loaded.displayBy || {}) };
   out.personalLb = { ...base.personalLb, ...(loaded.personalLb || {}) };
   out.drill = { ...base.drill, ...(loaded.drill || {}) };
+  out.errorOpts = { ...base.errorOpts, ...(loaded.errorOpts || {}) };
   return out;
 }
 

@@ -638,6 +638,8 @@ function hasStyles(s) {
 function hasContent(s) {
   return Object.keys(s.styles.strings || {}).length || Object.keys(s.styles.stringIDs || {}).length;
 }
+// S74: text -> HTML-inert text, for SDK options the SDK writes with innerHTML (loginFailedMessage).
+const escHtml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 function buildConfig() {
   const s = getState();
   const cfg = {
@@ -671,6 +673,12 @@ function buildConfig() {
   // exposeTranslationIDs is a per-embed ViewConfig flag (not customizations.content) — carried on the
   // config and applied per embed in doRender. On: every label renders as <string[stringID]> for ID discovery.
   if (s.styles.exposeIds) cfg._exposeTranslationIDs = true;
+  // S74: error-message controls (init-level suppress/loginFailed; per-embed showAlerts:false).
+  if (s.errorOpts?.suppressErrorAlerts) cfg._suppressErrorAlerts = true;
+  // The SDK writes loginFailedMessage with containerEl.innerHTML (1.49 processAuthFailure), so a
+  // shared-link value would be live HTML — escape it here, the single path to init().
+  if (s.errorOpts?.loginFailedMessage) cfg._loginFailedMessage = escHtml(s.errorOpts.loginFailedMessage);
+  if (s.errorOpts?.showAlerts === false) cfg._hideAlerts = true;
   // Opt IN to EmbedEvent.VizPointClick. Subscribing it suppresses ThoughtSpot's own left-click
   // behaviour inside the iframe, so only the drill-through demo (with drill on) asks for it.
   if (s.section === 'drillthrough' && s.drill?.enabled) cfg._vizPointClick = true;
@@ -4962,6 +4970,8 @@ function sectionStyles(s) {
     Object.keys(s.styles.strings).length + Object.keys(s.styles.stringIDs).length + (s.styles.exposeIds ? 1 : 0),
     txtBody));
 
+  c.appendChild(errorMessagesAccordion(s));
+
   // ── Advanced — hosted stylesheet + share/import ───────────────────────
   const advBody = el('div', 'sec-body');
   advBody.appendChild(textField('Stylesheet URL (customCSSUrl)', s.styles.cssUrl, v => {
@@ -4985,7 +4995,34 @@ function sectionStyles(s) {
   c.appendChild(apply);
   const count = Object.keys(s.styles.variables).length + Object.keys(s.styles.rules).length + (s.styles.cssUrl ? 1 : 0)
     + Object.keys(s.styles.strings).length + Object.keys(s.styles.stringIDs).length + (s.styles.exposeIds ? 1 : 0);
-  return accordion('Custom styles', count, c);
+  return accordion('Custom styles', count + errorOptsCount(s), c);
+}
+
+// S74 — "Error messages": the SDK's own error UI. suppressErrorAlerts + loginFailedMessage are
+// init() options (re-run via applyConfig); showAlerts is per-embed. All copy is static text.
+function errorOptsCount(s) {
+  const eo = s.errorOpts || {};
+  return (eo.suppressErrorAlerts ? 1 : 0) + (eo.showAlerts === false ? 1 : 0) + (eo.loginFailedMessage ? 1 : 0);
+}
+function errorMessagesAccordion(s) {
+  const eo = s.errorOpts;
+  const set = (patch) => { setState({ errorOpts: { ...getState().errorOpts, ...patch } }); applyConfig(); render(); renderInspector(); };
+  const body = el('div', 'sec-body');
+  body.appendChild(infoHint(
+    'Control the error pop-ups and messages ThoughtSpot shows inside the embed.',
+    'Suppress error alerts and Login-failed message are init() options: they apply to every embed on the page. Show alerts is per embed. To catch errors yourself, listen for EmbedEvent.Error — the SDK Code tab includes a handler that shows a banner in your app.'));
+  body.appendChild(toggleField('Suppress error alerts', eo.suppressErrorAlerts, on => set({ suppressErrorAlerts: on }),
+    'init({ suppressErrorAlerts: true }) — stops the SDK\'s browser alert() pop-ups (e.g. duplicate token, blocked cookies).'));
+  body.appendChild(toggleField('Show alerts', eo.showAlerts, on => set({ showAlerts: on }),
+    'Per-embed showAlerts. Off sends showAlerts: false so ThoughtSpot hides its in-embed alert banners.'));
+  body.appendChild(textField('Login-failed message', eo.loginFailedMessage, v => set({ loginFailedMessage: v }), 'Not logged in'));
+  body.appendChild(el('div', 'fld-hint',
+    'Shown in place of the embed when sign-in fails, including when the token endpoint is rate limited. Plain text, up to 200 characters.'));
+  body.appendChild(el('div', 'fld-hint',
+    'To replace a specific ThoughtSpot message, add a swap under Text overrides above.'));
+  body.appendChild(el('div', 'fld-hint',
+    'Seeing "too many requests" when switching tabs? Call init() once, not per tab. Keep tab embeds alive, or debounce tab switches.'));
+  return accordion('Error messages', errorOptsCount(s), body);
 }
 
 // Ranked selector candidates extracted from pasted DevTools HTML (root + all descendants).
@@ -8213,6 +8250,33 @@ async function refreshPersonalCopies() {
 }
 
 // ═══ SDK CODE VIEW — full, runnable snippet ═══════════════════════════════════
+// S74: EmbedEvent.Error → a host-side banner. Live, or commented out when no error option is set.
+// Live payloads arrive as { type, data: { errorType, message: [{ message }], code?, severity? } };
+// the typings say flat { errorType, message, code, severity } — the handler normalises both.
+function errorHandlerLines(live) {
+  const lines = [
+    '// Show ThoughtSpot errors in YOUR UI. The payload arrives wrapped ({ type, data: { message: [{ message }] } })',
+    '// or flat ({ errorType, message, code, severity }) depending on version — normalise both.',
+    'embed.on(EmbedEvent.Error, (e) => {',
+    '  const err = e?.data ?? e;',
+    '  const msg = [].concat(err?.message ?? []).map(m => m?.message ?? m).join(\' \');',
+    '  if (String(err?.code) === \'429\' || /too many requests|\\b429\\b/i.test(msg)) {',
+    '    showTsBanner(\'Analytics is busy. Retrying in a moment.\', \'warn\'); // rate limited: back off, do not re-init',
+    '  } else if (/^SEV ?1$/i.test(String(err?.severity ?? \'\'))) {',
+    '    showTsBanner(msg || \'Analytics failed to load.\', \'error\');',
+    '  } else {',
+    '    showTsBanner(msg || \'Something went wrong in analytics.\', \'warn\');',
+    '  }',
+    '});',
+    'function showTsBanner(text, level) {',
+    '  let b = document.getElementById(\'ts-error-banner\');',
+    '  if (!b) { b = document.createElement(\'div\'); b.id = \'ts-error-banner\'; b.setAttribute(\'role\', \'alert\'); document.body.prepend(b); }',
+    '  b.dataset.level = level;',
+    '  b.textContent = text; // textContent, never innerHTML: the message is ThoughtSpot-supplied',
+    '}',
+  ];
+  return live ? lines : ['// Optional (turn on under Custom styles → Error messages):', ...lines.map(l => `// ${l}`)];
+}
 // The host + auth half of every generated init() block. Shared by generateCode() and
 // spotterMcpCode() so a copied snippet always targets the user's live host and auth mode.
 function sdkInitAuthLines(s, esc) {
@@ -8310,7 +8374,12 @@ function generateCode() {
     }
     initLines.push('  },');
   }
+  const errO = s.errorOpts || {};
+  if (errO.suppressErrorAlerts) initLines.push('  suppressErrorAlerts: true, // no SDK alert() pop-ups — handle EmbedEvent.Error yourself (below)');
+  if (errO.loginFailedMessage) initLines.push(`  loginFailedMessage: '${esc(escHtml(errO.loginFailedMessage))}', // the SDK inserts this as HTML — keep it plain text, escaped`);
   L.push(`init({\n${initLines.join('\n')}\n});`);
+  L.push('// Call init() ONCE per page, not per tab: each call re-authenticates. For host-app tabs, keep');
+  L.push('// each tab\'s embed alive (hide/show) or debounce tab switches instead of re-initialising.');
   L.push('');
   if (lockOn) { L.push(...(ccOn ? customColumnsLines(s, esc) : personalCopyLines(s, esc))); return L.join('\n'); }
   // embed
@@ -8376,6 +8445,7 @@ function generateCode() {
     opt.push('  ],');
   }
   if (s.runtimeParameters.length) { opt.push('  runtimeParameters: ['); s.runtimeParameters.forEach(p => opt.push(`    { name: '${esc(p.name)}', value: '${esc(p.value)}' },`)); opt.push('  ],'); }
+  if (errO.showAlerts === false) opt.push('  showAlerts: false, // hide ThoughtSpot\'s in-embed alert banners');
   if (s.styles.exposeIds) opt.push('  exposeTranslationIDs: true, // debug: renders every label as <string[stringID]> to discover IDs — remove in production');
 
   // `let` when Personal liveboards is on so switchBoard() can reassign `embed` on a tab click.
@@ -8671,6 +8741,7 @@ function generateCode() {
     L.push('embed.on(EmbedEvent.LiveboardRendered, () => {\n  embed.trigger(HostEvent.AIHighlights);\n});');
   }
   if (s.section === 'spotter-audience') L.push(...audienceCodeLines());
+  L.push(...errorHandlerLines(errorOptsCount(s) > 0));
   L.push('embed.render();');
   if (['liveboard', 'liveboard-custom', 'viz', 'ai-highlights'].includes(s.section)) {
     const eo = s.exportOpts || {};
