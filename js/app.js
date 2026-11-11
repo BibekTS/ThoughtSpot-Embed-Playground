@@ -3428,6 +3428,20 @@ function toggleField(label, value, onChange, hint) {
   return f;
 }
 
+// "Truncate tables" toggle shared by the inspector and the Customize Export dialog. REST accepts
+// truncate_table:true only for a viz-scoped export, so it is disabled (and never sent) otherwise.
+function truncateToggle(value, scoped, onChange) {
+  const t = toggleField('Truncate tables', value && scoped, onChange,
+    'OFF (default) = all rows. ON is accepted only when exporting specific visualizations — a whole-Liveboard export rejects it with HTTP 400.');
+  t.querySelector('input').disabled = !scoped;
+  return t;
+}
+// Viz ids a REST export is scoped to: the dialog's picks, else the Single-Viz section's selected viz.
+function exportVizIds(s, eo) {
+  if (eo.vizIds?.length) return eo.vizIds;
+  return s.section === 'viz' && s.vizId ? [s.vizId] : [];
+}
+
 // Compact guide: a short always-visible line + an ⓘ toggle that reveals the full help text.
 // Keeps dense sections (e.g. Custom styles) scannable while every guide stays one click away.
 // Native <details> — accessible, keyboard-friendly, no JS wiring. Both args are static,
@@ -3723,8 +3737,7 @@ function sectionExport(s) {
     c.appendChild(enumSelect('Orientation', eo.orientation, [
       { value: 'LANDSCAPE', label: 'Landscape' }, { value: 'PORTRAIT', label: 'Portrait' },
     ], v => setExportOpt('orientation', v)));
-    c.appendChild(toggleField('Truncate wide tables', eo.truncateTable, v => setExportOpt('truncateTable', v),
-      'OFF = show ALL columns/rows (fixes cross-tab / form-report cutoff). ON = first page only.'));
+    c.appendChild(truncateToggle(eo.truncateTable, exportVizIds(s, eo).length > 0, v => setExportOpt('truncateTable', v)));
     c.appendChild(toggleField('Include cover page', eo.includeCoverPage, v => setExportOpt('includeCoverPage', v)));
     c.appendChild(toggleField('Include filter page', eo.includeFilterPage, v => setExportOpt('includeFilterPage', v)));
     c.appendChild(toggleField('Include page numbers', eo.includePageNumber, v => setExportOpt('includePageNumber', v)));
@@ -3751,7 +3764,7 @@ function sectionExport(s) {
 
   let active = 0;
   if (eo.format !== 'PDF') active++;
-  if (eo.truncateTable) active++;
+  if (eo.truncateTable && exportVizIds(s, eo).length) active++;
   if (eo.hideNativeDownload) active++;
   return accordion('Export options', active, c);
 }
@@ -3839,21 +3852,22 @@ async function performReportExport(eo, btn) {
     ...s.activeFilters.filter(f => f.values && f.values.length).map(f => ({ column_name: f.columnName, values: f.values })),
     ...Object.entries(cfbSelected).filter(([, v]) => v && v.length).map(([col, v]) => ({ column_name: col, values: v })),
   ];
+  const vizIds = exportVizIds(s, eo);
   const old = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '⬇ …'; }
   const done = showBusy(`Preparing ${format} download…`);
-  logEvent('Export', `report/liveboard ${format} → ${s.liveboardId}${overrideFilters.length ? ` (${overrideFilters.length} filter(s))` : ''}`);
+  logEvent('Export', `report/liveboard ${format} → ${s.liveboardId}${vizIds.length ? ` [${vizIds.length} viz]` : ''}${overrideFilters.length ? ` (${overrideFilters.length} filter(s))` : ''}`);
   try {
-    const res = await Discovery.downloadLiveboardReport(s.host, s.liveboardId, format, overrideFilters, eo);
+    const res = await Discovery.downloadLiveboardReport(s.host, s.liveboardId, format, overrideFilters, eo, vizIds);
     if (!res.ok) {
-      logEvent('Export', `✗ ${res.error}`);
+      logEvent('Export', `✗ HTTP ${res.status ?? '?'} — ${res.error}`); // REST message/debug text, verbatim
       done();
       if (res.status === 401 || res.status === 403) {
         toast('Not authorized — log in at the host or use a token.');
       } else if (res.status === 400 && format === 'PDF' && eo.pageSize === 'CONTINUOUS') {
         toast('400 — Continuous PDF is beta and likely not enabled on this instance. Switch Page layout to A4.');
       } else {
-        toast(`${format} export failed: ${res.error}`);
+        toast(`${format} export failed: ${res.error}`.slice(0, 300));
       }
       return false;
     }
@@ -3881,7 +3895,8 @@ function openExportPicker() {
   // Don't stack dialogs if the action is clicked twice.
   document.getElementById('export-modal')?.remove();
 
-  const opts = { ...(s.exportOpts || {}) };
+  const opts = { ...(s.exportOpts || {}), vizIds: [] }; // vizIds: dialog-only scope, never persisted
+  loadViz(s.liveboardId).then(() => renderBody());
 
   const modal = el('div', 'modal'); modal.id = 'export-modal';
   const scrim = el('div', 'modal-scrim');
@@ -3905,6 +3920,29 @@ function openExportPicker() {
       { value: 'CSV', label: 'CSV (zip if multi-viz)' }, { value: 'PNG', label: 'PNG' },
     ], v => { opts.format = v; renderBody(); }, 'XLSX keeps full pivot/cross-tab formatting; CSV & XLSX never truncate.'));
 
+    // Scope: whole Liveboard (default) or specific visualizations from the Liveboard's viz list.
+    const specific = Array.isArray(opts.vizIds) && opts.vizIds.length > 0 || opts.scopeSpecific;
+    body.appendChild(enumSelect('Scope', specific ? 'viz' : 'all', [
+      { value: 'all', label: 'Whole Liveboard' }, { value: 'viz', label: 'Specific visualization(s)' },
+    ], v => { opts.scopeSpecific = v === 'viz'; if (v === 'all') opts.vizIds = []; renderBody(); }));
+    if (specific) {
+      const vizzes = vizCache[s.liveboardId];
+      const list = el('div', 'fld');
+      if (!vizzes?.length) list.textContent = vizzes === undefined ? 'Loading visualizations…' : 'Visualization list unavailable.';
+      else for (const v of vizzes) {
+        const row = el('label', 'tgl'); // viz names are TS-derived → textContent only
+        const nm = el('span'); nm.textContent = v.name;
+        const cb = el('input'); cb.type = 'checkbox'; cb.checked = opts.vizIds.includes(v.id);
+        cb.addEventListener('change', () => {
+          opts.vizIds = cb.checked ? [...opts.vizIds, v.id] : opts.vizIds.filter(x => x !== v.id);
+          renderBody();
+        });
+        row.append(nm, cb, el('span', 'tgl-slider'));
+        list.appendChild(row);
+      }
+      body.appendChild(list);
+    }
+
     if (opts.format === 'PDF') {
       body.appendChild(enumSelect('Page layout', opts.pageSize, [
         { value: 'A4', label: 'A4 pages (page breaks)' },
@@ -3913,8 +3951,7 @@ function openExportPicker() {
       body.appendChild(enumSelect('Orientation', opts.orientation, [
         { value: 'LANDSCAPE', label: 'Landscape' }, { value: 'PORTRAIT', label: 'Portrait' },
       ], v => { opts.orientation = v; }));
-      body.appendChild(toggleField('Truncate wide tables', opts.truncateTable, v => { opts.truncateTable = v; },
-        'OFF = show ALL columns/rows. ON = first page only.'));
+      body.appendChild(truncateToggle(opts.truncateTable, exportVizIds(s, opts).length > 0, v => { opts.truncateTable = v; }));
       body.appendChild(toggleField('Include cover page', opts.includeCoverPage, v => { opts.includeCoverPage = v; }));
       body.appendChild(toggleField('Include filter page', opts.includeFilterPage, v => { opts.includeFilterPage = v; }));
       body.appendChild(toggleField('Include page numbers', opts.includePageNumber, v => { opts.includePageNumber = v; }));
@@ -8679,12 +8716,15 @@ function generateCode() {
     if (eo.hideNativeDownload) L.push('// Native Download is hidden above; this is the only export path — full control of the output.');
     L.push('// Server-side this gives you every PDF knob the native modal does not expose individually');
     L.push('// (truncate_table:false = no column cutoff; page_size = page-break behaviour; orientation; etc.).');
+    L.push('// truncate_table:true is only valid with visualization_identifiers — a whole-Liveboard export rejects it (HTTP 400).');
     const body = { metadata_identifier: s.liveboardId || '<liveboard-guid>', file_format: eo.format || 'PDF' };
+    const scopedViz = exportVizIds(s, eo);
+    if (scopedViz.length) body.visualization_identifiers = scopedViz;
     if ((eo.format || 'PDF') === 'PDF') {
       body.pdf_options = {
         page_size: eo.pageSize || 'CONTINUOUS',
         page_orientation: eo.orientation || 'LANDSCAPE',
-        truncate_table: !!eo.truncateTable,
+        truncate_table: !!eo.truncateTable && scopedViz.length > 0,
         include_cover_page: eo.includeCoverPage !== false,
         include_filter_page: eo.includeFilterPage !== false,
         include_page_number: eo.includePageNumber !== false,
@@ -8780,6 +8820,7 @@ function generateCode() {
       L.push("shareButton.onclick = () => embed.trigger(HostEvent.Share);");
       L.push("// \"...\" menu items, one trigger each: Edit, MakeACopy, DownloadAsPdf, Present, Schedule,");
       L.push("// SchedulesList, LiveboardInfo, ExportTML — e.g.");
+      L.push("// The native PDF dialog takes no options from the SDK; its Liveboard layout always sends truncateTables:true — use the REST export above for control.");
       L.push("downloadPdfItem.onclick = () => embed.trigger(HostEvent.DownloadAsPdf);");
     }
   }
