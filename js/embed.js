@@ -116,6 +116,9 @@ export function initSDK(config) {
         ...(config._customContent && { content: config._customContent }), // Beta: UI-text relabels
       }
     }),
+    // S74: init-level error-message controls — sent only when set, so the SDK defaults stay untouched.
+    ...(config._suppressErrorAlerts && { suppressErrorAlerts: true }),
+    ...(config._loginFailedMessage && { loginFailedMessage: config._loginFailedMessage }),
   };
 
   let authEE;
@@ -242,6 +245,7 @@ export function doRender(section, config, callbacks, options = {}) {
   // can still override them exactly as when each constructor listed them inline.
   const common = {
     frameParams: {},
+    ...(config._hideAlerts && { showAlerts: false }), // S74: per-embed ViewConfig; true is the SDK default
     hiddenActions,
     disabledActions,
     ...(rtParams && { runtimeParameters: rtParams }),
