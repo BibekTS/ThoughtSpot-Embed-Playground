@@ -109,8 +109,9 @@ export function initSDK(config) {
   if (!config.thoughtSpotHost) return;
   const base = {
     thoughtSpotHost: config.thoughtSpotHost,
-    ...((config._customStyles || config._customContent) && {
+    ...((config._customStyles || config._customContent || config._iconSpriteUrl) && {
       customizations: {
+        ...(config._iconSpriteUrl && { iconSpriteUrl: config._iconSpriteUrl }), // sibling of style; https + CORS + CSP
         ...(config._customStyles && { style: config._customStyles }),
         ...(config._customContent && { content: config._customContent }), // Beta: UI-text relabels
       }

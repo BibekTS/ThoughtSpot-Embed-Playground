@@ -877,6 +877,9 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.5; }
   font-size: 12.5px; color: var(--text-primary); cursor: pointer;
 }
 .tgl input { display: none; }
+.tgl:has(input:disabled) { opacity: .5; cursor: not-allowed; }
+.viz-pick { max-height: 200px; overflow: auto; display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+.viz-pick-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-primary); cursor: pointer; }
 .tgl-slider {
   width: 36px; height: 20px; background: var(--border-light); border-radius: 20px;
   position: relative; transition: background .2s; flex: 0 0 auto;

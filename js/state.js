@@ -165,7 +165,7 @@ export function defaultState() {
       hideUnderlyingData: false,      // adds Action.ShowUnderlyingData to hiddenActions while this action is on
                                        // (hiddenActions is embed-wide — there is no per-viz scoping for it)
     },
-    styles: { variables: {}, rules: {}, cssUrl: '', strings: {}, stringIDs: {}, exposeIds: false }, // cssUrl → customizations.style.customCSSUrl; strings/stringIDs/exposeIds → customizations.content (Beta)
+    styles: { variables: {}, rules: {}, cssUrl: '', iconSpriteUrl: '', strings: {}, stringIDs: {}, exposeIds: false }, // cssUrl → customizations.style.customCSSUrl; iconSpriteUrl → customizations.iconSpriteUrl; strings/stringIDs/exposeIds → customizations.content (Beta)
     // S74: SDK error-message controls. suppressErrorAlerts / loginFailedMessage are init() options;
     // showAlerts is per-embed ViewConfig (only sent when false). Kept apart from `styles`.
     errorOpts: { suppressErrorAlerts: false, showAlerts: true, loginFailedMessage: '' },
@@ -507,6 +507,9 @@ function sanitize(raw) {
     variables: cleanMap(raw.styles?.variables, v => str(v, 512)),
     rules: cleanMap(raw.styles?.rules, decls => cleanMap(decls, v => str(v, 512))),
     cssUrl: validHost(raw.styles?.cssUrl), // http(s) only — blocks javascript:/data: from shared links
+    // https ONLY: the SDK strips just the literal "https://" off this URL, so an http:// sprite
+    // makes the whole embed iframe 403. Anything else (http:, data:, javascript:, relative) → ''.
+    iconSpriteUrl: (u => (u.startsWith('https://') ? u : ''))(validHost(str(raw.styles?.iconSpriteUrl, 2048))),
     strings: cleanMap(raw.styles?.strings, v => str(v, 512)),     // customizations.content.strings (literal UI-text swaps)
     stringIDs: cleanMap(raw.styles?.stringIDs, v => str(v, 512)), // customizations.content.stringIDs (ID-based swaps)
     exposeIds: !!raw.styles?.exposeIds,                           // customizations.content.exposeTranslationIDs (ID discovery)
@@ -558,7 +561,7 @@ export function loadState(seed = {}) {
 function mergeKnown(base, loaded) {
   const out = { ...base, ...loaded };
   out.auth = { ...base.auth, ...(loaded.auth || {}) };
-  out.styles = { variables: {}, rules: {}, cssUrl: '', strings: {}, stringIDs: {}, exposeIds: false, ...(loaded.styles || {}) };
+  out.styles = { variables: {}, rules: {}, cssUrl: '', iconSpriteUrl: '', strings: {}, stringIDs: {}, exposeIds: false, ...(loaded.styles || {}) };
   out.flags = { ...(loaded.flags || {}) };
   out.exportOpts = { ...base.exportOpts, ...(loaded.exportOpts || {}) };
   out.dateBtn = { ...base.dateBtn, ...(loaded.dateBtn || {}) };

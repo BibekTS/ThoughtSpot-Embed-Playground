@@ -446,11 +446,13 @@ const REPORT_FORMATS = {
  * Map the playground's friendly export options onto the REST API's pdf_options shape.
  * Only keys with a meaningful value are emitted, so an empty exportOpts yields {} (API defaults).
  */
-function buildPdfOptions(o = {}) {
+function buildPdfOptions(o = {}, scoped = false) {
   const p = {};
   if (o.pageSize) p.page_size = o.pageSize;                 // 'A4' | 'CONTINUOUS'
   if (o.orientation) p.page_orientation = o.orientation;    // 'PORTRAIT' | 'LANDSCAPE'
-  if (typeof o.truncateTable === 'boolean') p.truncate_table = o.truncateTable;
+  // truncate_table:true is only valid when exporting specific visualizations — a whole-Liveboard
+  // export rejects it with HTTP 400 ("TruncateTables cannot be true when layout type set to PINBOARD").
+  if (typeof o.truncateTable === 'boolean') p.truncate_table = scoped && o.truncateTable;
   if (typeof o.includeCoverPage === 'boolean') p.include_cover_page = o.includeCoverPage;
   if (typeof o.includeFilterPage === 'boolean') p.include_filter_page = o.includeFilterPage;
   if (typeof o.includePageNumber === 'boolean') p.include_page_number = o.includePageNumber;
@@ -472,9 +474,10 @@ function buildPdfOptions(o = {}) {
  * @param {string} [format]      'PDF' | 'XLSX' | 'CSV' | 'PNG'  (defaults to PDF)
  * @param {Array<{column_name: string, values: string[]}>} [overrideFilters]  active filters to bake in
  * @param {object} [exportOpts]  friendly export options; mapped to pdf_options when format === 'PDF'
+ * @param {string[]} [vizIds]    export only these visualizations (body.visualization_identifiers); empty = whole Liveboard
  * @returns {Promise<{ok:true, blob:Blob, ext:string} | {ok:false, error:string, status?:number}>}
  */
-export async function downloadLiveboardReport(host, liveboardId, format = 'PDF', overrideFilters = [], exportOpts = {}) {
+export async function downloadLiveboardReport(host, liveboardId, format = 'PDF', overrideFilters = [], exportOpts = {}, vizIds = []) {
   const fmt = REPORT_FORMATS[format] ? format : 'PDF';
   const meta = REPORT_FORMATS[fmt];
   try {
@@ -486,11 +489,12 @@ export async function downloadLiveboardReport(host, liveboardId, format = 'PDF',
         negate: false,
       }));
     }
+    if (vizIds.length) body.visualization_identifiers = vizIds;
     // PDF gets the full pdf_options surface — page size (= page-break behaviour), orientation,
     // and crucially truncate_table:false so wide/form/cross-tab tables aren't cut off. These
     // knobs are the host app's to set, which is the whole point of exporting via REST instead
     // of the native modal. (Some pdf_options are Early Access — enable on the instance if rejected.)
-    if (fmt === 'PDF') body.pdf_options = buildPdfOptions(exportOpts);
+    if (fmt === 'PDF') body.pdf_options = buildPdfOptions(exportOpts, vizIds.length > 0);
     const resp = await api(host, '/api/rest/2.0/report/liveboard', {
       method: 'POST',
       headers: { Accept: 'application/octet-stream' },
