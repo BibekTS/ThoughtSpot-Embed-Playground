@@ -240,7 +240,7 @@ function openExportDialog() {
               <option value="PORTRAIT" ${opts.orientation === "PORTRAIT" ? "selected" : ""}>Portrait</option>
             </select>
           </label>
-          <label><input type="checkbox" name="truncateTable" ${opts.truncateTable ? "checked" : ""}> Truncate wide tables</label>
+          <label><input type="checkbox" name="truncateTable" ${opts.truncateTable ? "checked" : ""}> Truncate tables</label>
           <label><input type="checkbox" name="includeCoverPage" ${opts.includeCoverPage ? "checked" : ""}> Include cover page</label>
           <label><input type="checkbox" name="includeFilterPage" ${opts.includeFilterPage ? "checked" : ""}> Include filter page</label>
           <label><input type="checkbox" name="includePageNumber" ${opts.includePageNumber ? "checked" : ""}> Include page numbers</label>
@@ -414,7 +414,11 @@ the active filters baked in and every option under your control.
 
 5. **`truncate_table: false` fixes wide-table cutoff.** This is the main reason to export via
    REST: the native modal will clip wide / cross-tab / form-report tables; `false` keeps every
-   column and row.
+   column and row. `truncate_table: true` is only accepted together with
+   `visualization_identifiers` (a single-viz export); on a whole-Liveboard export the API
+   answers HTTP 400 (`TruncateTables cannot be true when layout type set to PINBOARD`). The
+   native `HostEvent.DownloadAsPdf` dialog takes no options from the SDK and always sends
+   `truncateTables:true` in its Liveboard layout.
 
 6. **Auth & CORS.** The call uses the same credentials as the rest of your app. Same-origin with a
    cookie session "just works" (`credentials: "include"`). From a **different origin**, browsers
