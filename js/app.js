@@ -3063,6 +3063,8 @@ async function loadViz(liveboardId) {
   try {
     const r = await Discovery.discoverViz(getState().host, liveboardId);
     vizCache[liveboardId] = r.ok ? (r.visualizations || []) : null;
+  } catch (_) {
+    vizCache[liveboardId] = null; // a throw is a failed load (→ Retry), not an endless "Loading…"
   } finally {
     _vizLoading.delete(liveboardId);
   }
@@ -3861,6 +3863,7 @@ async function performReportExport(eo, btn) {
     ...Object.entries(cfbSelected).filter(([, v]) => v && v.length).map(([col, v]) => ({ column_name: col, values: v })),
   ];
   const vizIds = exportVizIds(s, eo);
+  if (eo.scope === 'specific' && !vizIds.length) { toast('Pick at least one visualization.'); return false; } // never fall back to a whole-Liveboard export
   const old = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '⬇ …'; }
   const done = showBusy(`Preparing ${format} download…`);
@@ -3908,7 +3911,8 @@ function openExportPicker() {
   const opts = { ...(s.exportOpts || {}), scope: inViz ? 'specific' : 'all', vizIds: inViz ? [s.vizId] : [] };
   // Same S10 fence as the other loadViz sites: no credentialed call until the host is confirmed.
   if (connected) loadViz(s.liveboardId).then(() => renderBody());
-  let go; // Export button, assigned below; renderBody keeps its disabled state in sync
+  let go, busy = false; // Export button (assigned below) + in-flight flag; syncGo() is the one place its disabled state is derived
+  const syncGo = () => { if (go) go.disabled = busy || (opts.scope === 'specific' && !opts.vizIds.length); };
 
   const modal = el('div', 'modal'); modal.id = 'export-modal';
   const scrim = el('div', 'modal-scrim');
@@ -3966,7 +3970,7 @@ function openExportPicker() {
       }
       if (!opts.vizIds.length) { const n = el('div', 'sec-note sec-note--warn'); n.setAttribute('role', 'status'); n.textContent = 'Pick at least one visualization'; body.appendChild(n); }
     }
-    if (go) go.disabled = specific && !opts.vizIds.length;
+    syncGo();
 
     if (opts.format === 'PDF') {
       body.appendChild(enumSelect('Page layout', opts.pageSize, [
@@ -3988,8 +3992,14 @@ function openExportPicker() {
 
   const foot = el('div', 'modal-foot');
   const cancel = el('button', 'sec-apply ghost', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', close);
-  go = el('button', 'sec-apply', '⬇ Export'); go.type = 'button'; go.disabled = opts.scope === 'specific' && !opts.vizIds.length;
-  go.addEventListener('click', async () => { const ok = await performReportExport(opts, go); if (ok) close(); });
+  go = el('button', 'sec-apply', '⬇ Export'); go.type = 'button';
+  syncGo();
+  go.addEventListener('click', async () => {
+    busy = true; syncGo();
+    const ok = await performReportExport(opts, go);
+    busy = false; syncGo(); // re-derive (the runner's finally just set disabled=false)
+    if (ok) close();
+  });
   foot.append(cancel, go);
 
   panel.append(head, body, foot);
