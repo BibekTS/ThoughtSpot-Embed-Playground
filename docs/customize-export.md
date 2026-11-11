@@ -432,6 +432,8 @@ the active filters baked in and every option under your control.
    | Whole Liveboard | ON | no ids, no `truncate_table` | Liveboard grid layout, long tables may be cut |
    | Specific viz(s) | OFF / ON | those ids + `truncate_table` | OFF = all rows; ON = may be cut |
 
+   The default (Truncate off) therefore exports a whole Liveboard as one visualization per page with every row; turn Truncate on to keep the Liveboard layout.
+
    The caption "All rows and columns may not be shown" is printed under tables regardless — it
    does not mean anything was truncated.
 

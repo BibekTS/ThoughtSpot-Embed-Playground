@@ -227,7 +227,7 @@ let connected = false;
 let connectSeq = 0;
 let discovered = { worksheets: [], liveboards: [] };
 let vizCache = Object.create(null); // null-proto: keys are user-typed ids, so 'constructor' must not hit Object.prototype. liveboardId -> [{id,name}] | null (failed) | undefined (not loaded)
-const _vizLoading = new Set(); // liveboardIds with a fetch in flight
+const _vizLoading = new Map(); // liveboardId -> in-flight loadViz promise (callers only use .has(); export awaits the promise)
 let answersLoading = false; // a standalone-answer discovery fetch is in flight
 let answerList;         // [{id,name}] | null (failed) | undefined (not loaded) — all saved Answers on the instance
 let logCount = 0;
@@ -3084,17 +3084,21 @@ function sectionObject(s) {
   return accordion('Data object', '', c, true);
 }
 
-async function loadViz(liveboardId) {
-  if (!liveboardId || vizCache[liveboardId] !== undefined || _vizLoading.has(liveboardId)) return;
-  _vizLoading.add(liveboardId);
-  try {
-    const r = await Discovery.discoverViz(getState().host, liveboardId);
-    vizCache[liveboardId] = r.ok ? (r.visualizations || []) : null;
-  } catch (_) {
-    vizCache[liveboardId] = null; // a throw is a failed load (→ Retry), not an endless "Loading…"
-  } finally {
-    _vizLoading.delete(liveboardId);
-  }
+function loadViz(liveboardId) {
+  if (!liveboardId || vizCache[liveboardId] !== undefined) return Promise.resolve();
+  if (_vizLoading.has(liveboardId)) return _vizLoading.get(liveboardId); // join the in-flight load
+  const p = (async () => {
+    try {
+      const r = await Discovery.discoverViz(getState().host, liveboardId);
+      vizCache[liveboardId] = r.ok ? (r.visualizations || []) : null;
+    } catch (_) {
+      vizCache[liveboardId] = null; // a throw is a failed load (→ Retry), not an endless "Loading…"
+    } finally {
+      _vizLoading.delete(liveboardId);
+    }
+  })();
+  _vizLoading.set(liveboardId, p);
+  return p;
 }
 
 /** Clear a poisoned (null) cache entry and try again — loadViz() only ever fetches once per id. */
@@ -3459,9 +3463,13 @@ function toggleField(label, value, onChange, hint) {
 
 // "Truncate tables" toggle shared by the inspector and the Customize Export dialog. Meaningful for
 // every PDF scope: whole-Liveboard + OFF is sent as every viz id (see performReportExport).
-function truncateToggle(value, onChange) {
-  return toggleField('Truncate tables', value, onChange,
-    'OFF = all rows, one visualization per page. ON = Liveboard layout, long tables may be cut.');
+function truncateToggle(value, onChange, specific) {
+  const w = el('div', 'tgl-wrap');
+  const h = el('div', 'fld-hint');
+  h.textContent = specific ? 'Off: every row and column of the selected visualization(s).'
+    : 'Off: every row, each visualization on its own page. On: Liveboard layout; long tables may be cut.';
+  w.append(toggleField('Truncate tables', value, onChange), h);
+  return w;
 }
 // Whole-Liveboard PDF with Truncate tables OFF: REST needs every viz id listed to honour it.
 function wholePdfAllRows(s, eo) {
@@ -3770,7 +3778,7 @@ function sectionExport(s) {
       { value: 'LANDSCAPE', label: 'Landscape' }, { value: 'PORTRAIT', label: 'Portrait' },
     ], v => setExportOpt('orientation', v)));
     if (exportVizIds(s, eo).length) c.appendChild(el('div', 'fld-hint', 'Scoped to the selected visualization'));
-    c.appendChild(truncateToggle(eo.truncateTable, v => setExportOpt('truncateTable', v)));
+    c.appendChild(truncateToggle(eo.truncateTable, v => setExportOpt('truncateTable', v), exportVizIds(s, eo).length > 0));
     c.appendChild(toggleField('Include cover page', eo.includeCoverPage, v => setExportOpt('includeCoverPage', v)));
     c.appendChild(toggleField('Include filter page', eo.includeFilterPage, v => setExportOpt('includeFilterPage', v)));
     c.appendChild(toggleField('Include page numbers', eo.includePageNumber, v => setExportOpt('includePageNumber', v)));
@@ -3893,10 +3901,12 @@ async function performReportExport(eo, btn) {
   if (wholePdfAllRows(s, eo)) {
     // A whole-Liveboard PDF ignores truncate_table:false (long tables get cut) — listing every viz id fixes it.
     await loadViz(s.liveboardId);
-    vizIds = (vizCache[s.liveboardId] || []).map(v => v.id);
+    if (vizCache[s.liveboardId] === null) { delete vizCache[s.liveboardId]; await loadViz(s.liveboardId); } // retry a past failure once
+    const list = vizCache[s.liveboardId];
+    vizIds = (list || []).map(v => v.id);
     if (!vizIds.length) {
-      logEvent('Export', "Couldn't list visualizations — whole-Liveboard export, long tables may be cut off");
-      toast("Couldn't list visualizations — long tables may be cut off");
+      logEvent('Export', `${list ? 'No visualizations listed' : "Couldn't list visualizations"} — whole-Liveboard export, long tables may be cut off`);
+      if (!list) toast("Couldn't list visualizations — long tables may be cut off");
     }
   }
   logEvent('Export', `report/liveboard ${format} → ${s.liveboardId}${vizIds.length ? ` [${vizIds.length} viz]` : ''}${overrideFilters.length ? ` (${overrideFilters.length} filter(s))` : ''}`);
@@ -4012,7 +4022,7 @@ function openExportPicker() {
       body.appendChild(enumSelect('Orientation', opts.orientation, [
         { value: 'LANDSCAPE', label: 'Landscape' }, { value: 'PORTRAIT', label: 'Portrait' },
       ], v => { opts.orientation = v; }));
-      body.appendChild(truncateToggle(opts.truncateTable, v => { opts.truncateTable = v; }));
+      body.appendChild(truncateToggle(opts.truncateTable, v => { opts.truncateTable = v; }, exportVizIds(s, opts).length > 0));
       body.appendChild(toggleField('Include cover page', opts.includeCoverPage, v => { opts.includeCoverPage = v; }));
       body.appendChild(toggleField('Include filter page', opts.includeFilterPage, v => { opts.includeFilterPage = v; }));
       body.appendChild(toggleField('Include page numbers', opts.includePageNumber, v => { opts.includePageNumber = v; }));
@@ -8900,7 +8910,7 @@ function generateCode() {
       body.pdf_options = {
         page_size: eo.pageSize || 'CONTINUOUS',
         page_orientation: eo.orientation || 'LANDSCAPE',
-        truncate_table: !!eo.truncateTable && scopedViz.length > 0,
+        ...((scopedViz.length || allViz) ? { truncate_table: !!eo.truncateTable && scopedViz.length > 0 } : {}),  // false is honoured only with visualization_identifiers; true is a 400 without them
         include_cover_page: eo.includeCoverPage !== false,
         include_filter_page: eo.includeFilterPage !== false,
         include_page_number: eo.includePageNumber !== false,
