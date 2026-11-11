@@ -420,6 +420,21 @@ the active filters baked in and every option under your control.
    native `HostEvent.DownloadAsPdf` dialog takes no options from the SDK and always sends
    `truncateTables:true` in its Liveboard layout.
 
+   **Whole-Liveboard caveat (measured):** with *no* `visualization_identifiers`, ThoughtSpot
+   **ignores `truncate_table:false`** and long tables are cut (e.g. 14 of 17 rows). To get every
+   row for the whole Liveboard, list every viz id (`POST /metadata/search` with
+   `include_visualization_headers:true` — cheap, runs no queries) and send them all as
+   `visualization_identifiers` with `truncate_table:false`. The playground does this automatically.
+
+   | Scope | Truncate | Request | Result |
+   | --- | --- | --- | --- |
+   | Whole Liveboard | OFF | all viz ids + `truncate_table:false` | every row, **one visualization per page** |
+   | Whole Liveboard | ON | no ids, no `truncate_table` | Liveboard grid layout, long tables may be cut |
+   | Specific viz(s) | OFF / ON | those ids + `truncate_table` | OFF = all rows; ON = may be cut |
+
+   The caption "All rows and columns may not be shown" is printed under tables regardless — it
+   does not mean anything was truncated.
+
 6. **Auth & CORS.** The call uses the same credentials as the rest of your app. Same-origin with a
    cookie session "just works" (`credentials: "include"`). From a **different origin**, browsers
    block the cross-site request — front it with a first-party reverse proxy (or your own backend)
