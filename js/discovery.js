@@ -451,8 +451,9 @@ function buildPdfOptions(o = {}, scoped = false) {
   if (o.pageSize) p.page_size = o.pageSize;                 // 'A4' | 'CONTINUOUS'
   if (o.orientation) p.page_orientation = o.orientation;    // 'PORTRAIT' | 'LANDSCAPE'
   // truncate_table:true is only valid when exporting specific visualizations — a whole-Liveboard
-  // export rejects it with HTTP 400 ("TruncateTables cannot be true when layout type set to PINBOARD").
-  if (typeof o.truncateTable === 'boolean') p.truncate_table = scoped && o.truncateTable;
+  // export rejects it with HTTP 400 ("TruncateTables cannot be true when layout type set to PINBOARD"),
+  // so it is omitted there. (false is honoured only with visualization_identifiers — the caller lists every viz.)
+  if (typeof o.truncateTable === 'boolean' && (scoped || !o.truncateTable)) p.truncate_table = o.truncateTable;
   if (typeof o.includeCoverPage === 'boolean') p.include_cover_page = o.includeCoverPage;
   if (typeof o.includeFilterPage === 'boolean') p.include_filter_page = o.includeFilterPage;
   if (typeof o.includePageNumber === 'boolean') p.include_page_number = o.includePageNumber;

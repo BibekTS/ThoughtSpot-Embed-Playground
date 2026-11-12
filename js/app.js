@@ -227,7 +227,7 @@ let connected = false;
 let connectSeq = 0;
 let discovered = { worksheets: [], liveboards: [] };
 let vizCache = Object.create(null); // null-proto: keys are user-typed ids, so 'constructor' must not hit Object.prototype. liveboardId -> [{id,name}] | null (failed) | undefined (not loaded)
-const _vizLoading = new Set(); // liveboardIds with a fetch in flight
+const _vizLoading = new Map(); // liveboardId -> in-flight loadViz promise (callers only use .has(); export awaits the promise)
 let answersLoading = false; // a standalone-answer discovery fetch is in flight
 let answerList;         // [{id,name}] | null (failed) | undefined (not loaded) — all saved Answers on the instance
 let logCount = 0;
@@ -629,9 +629,9 @@ const hostActionsOn = (s) => hostHeaderOn(s) && s.cfbLayout === 'host-header-act
 const HOST_ACTIONS_RULE = { '[class*="pinboard-header-module__headerContainer"]': { display: 'none !important' } };
 const hostFlags = (s) => ({ showLiveboardTitle: false, hideTabPanel: false, ...(hostActionsOn(s) && { isLiveboardHeaderSticky: false }) });
 // S73 Spotter-icon presets. The sprite is ThoughtSpot's documented sample (symbol id rd-icon-spotter);
-// the image is a generic MIT icon (Bootstrap Icons "stars"). Both on jsDelivr, verified live.
+// the image is a generic MIT icon (Bootstrap Icons "robot" — deliberately not a sparkle, so the swap is visible). Both on jsDelivr, verified live.
 const SPOTTER_SAMPLE_SPRITE = 'https://cdn.jsdelivr.net/gh/thoughtspot/custom-css-demo/alternate-spotter-icon.svg';
-const SPOTTER_SAMPLE_IMAGE = 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/stars.svg';
+const SPOTTER_SAMPLE_IMAGE = 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/robot.svg';
 // CSS fallback for a standalone image (a sprite file does not draw as a CSS background): hide the tile
 // hover button's own icon, paint the image in ::before. Liveboard tile only; selectors are unstable.
 function spotterIconCssRules(imageUrl) {
@@ -3084,17 +3084,21 @@ function sectionObject(s) {
   return accordion('Data object', '', c, true);
 }
 
-async function loadViz(liveboardId) {
-  if (!liveboardId || vizCache[liveboardId] !== undefined || _vizLoading.has(liveboardId)) return;
-  _vizLoading.add(liveboardId);
-  try {
-    const r = await Discovery.discoverViz(getState().host, liveboardId);
-    vizCache[liveboardId] = r.ok ? (r.visualizations || []) : null;
-  } catch (_) {
-    vizCache[liveboardId] = null; // a throw is a failed load (→ Retry), not an endless "Loading…"
-  } finally {
-    _vizLoading.delete(liveboardId);
-  }
+function loadViz(liveboardId) {
+  if (!liveboardId || vizCache[liveboardId] !== undefined) return Promise.resolve();
+  if (_vizLoading.has(liveboardId)) return _vizLoading.get(liveboardId); // join the in-flight load
+  const p = (async () => {
+    try {
+      const r = await Discovery.discoverViz(getState().host, liveboardId);
+      vizCache[liveboardId] = r.ok ? (r.visualizations || []) : null;
+    } catch (_) {
+      vizCache[liveboardId] = null; // a throw is a failed load (→ Retry), not an endless "Loading…"
+    } finally {
+      _vizLoading.delete(liveboardId);
+    }
+  })();
+  _vizLoading.set(liveboardId, p);
+  return p;
 }
 
 /** Clear a poisoned (null) cache entry and try again — loadViz() only ever fetches once per id. */
@@ -3457,19 +3461,19 @@ function toggleField(label, value, onChange, hint) {
   return f;
 }
 
-// "Truncate tables" toggle shared by the inspector and the Customize Export dialog. REST accepts
-// truncate_table:true only for a viz-scoped export, so it is disabled (and never sent) otherwise.
-function truncateToggle(value, scoped, onChange) {
-  const t = toggleField('Truncate tables', value && scoped, onChange,
-    'OFF (default) = all rows. ON is accepted only when exporting specific visualizations — a whole-Liveboard export rejects it with HTTP 400.');
-  t.querySelector('input').disabled = !scoped;
-  if (!scoped) { // the slider is the only visible part, so say why it's off in text, not just a tooltip
-    const w = el('div', 'tgl-wrap');
-    const h = el('div', 'fld-hint'); h.textContent = 'Pick specific visualizations to enable';
-    w.append(t, h);
-    return w;
-  }
-  return t;
+// "Truncate tables" toggle shared by the inspector and the Customize Export dialog. Meaningful for
+// every PDF scope: whole-Liveboard + OFF is sent as every viz id (see performReportExport).
+function truncateToggle(value, onChange, specific) {
+  const w = el('div', 'tgl-wrap');
+  const h = el('div', 'fld-hint');
+  h.textContent = specific ? 'Off: every row and column of the selected visualization(s).'
+    : 'Off: every row, each visualization on its own page. On: Liveboard layout; long tables may be cut.';
+  w.append(toggleField('Truncate tables', value, onChange), h);
+  return w;
+}
+// Whole-Liveboard PDF with Truncate tables OFF: REST needs every viz id listed to honour it.
+function wholePdfAllRows(s, eo) {
+  return (eo.format || 'PDF').toUpperCase() === 'PDF' && !eo.truncateTable && eo.scope !== 'specific' && !exportVizIds(s, eo).length;
 }
 // Viz ids a REST export is scoped to: the dialog's picks, else the Single-Viz section's selected viz.
 function exportVizIds(s, eo) {
@@ -3774,7 +3778,7 @@ function sectionExport(s) {
       { value: 'LANDSCAPE', label: 'Landscape' }, { value: 'PORTRAIT', label: 'Portrait' },
     ], v => setExportOpt('orientation', v)));
     if (exportVizIds(s, eo).length) c.appendChild(el('div', 'fld-hint', 'Scoped to the selected visualization'));
-    c.appendChild(truncateToggle(eo.truncateTable, exportVizIds(s, eo).length > 0, v => setExportOpt('truncateTable', v)));
+    c.appendChild(truncateToggle(eo.truncateTable, v => setExportOpt('truncateTable', v), exportVizIds(s, eo).length > 0));
     c.appendChild(toggleField('Include cover page', eo.includeCoverPage, v => setExportOpt('includeCoverPage', v)));
     c.appendChild(toggleField('Include filter page', eo.includeFilterPage, v => setExportOpt('includeFilterPage', v)));
     c.appendChild(toggleField('Include page numbers', eo.includePageNumber, v => setExportOpt('includePageNumber', v)));
@@ -3801,7 +3805,7 @@ function sectionExport(s) {
 
   let active = 0;
   if (eo.format !== 'PDF') active++;
-  if (eo.truncateTable && exportVizIds(s, eo).length) active++;
+  if (eo.truncateTable) active++;
   if (eo.hideNativeDownload) active++;
   return accordion('Export options', active, c);
 }
@@ -3889,11 +3893,22 @@ async function performReportExport(eo, btn) {
     ...s.activeFilters.filter(f => f.values && f.values.length).map(f => ({ column_name: f.columnName, values: f.values })),
     ...Object.entries(cfbSelected).filter(([, v]) => v && v.length).map(([col, v]) => ({ column_name: col, values: v })),
   ];
-  const vizIds = exportVizIds(s, eo);
+  let vizIds = exportVizIds(s, eo);
   if (eo.scope === 'specific' && !vizIds.length) { toast('Pick at least one visualization.'); return false; } // never fall back to a whole-Liveboard export
   const old = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '⬇ …'; }
   const done = showBusy(`Preparing ${format} download…`);
+  if (wholePdfAllRows(s, eo)) {
+    // A whole-Liveboard PDF ignores truncate_table:false (long tables get cut) — listing every viz id fixes it.
+    await loadViz(s.liveboardId);
+    if (vizCache[s.liveboardId] === null) { delete vizCache[s.liveboardId]; await loadViz(s.liveboardId); } // retry a past failure once
+    const list = vizCache[s.liveboardId];
+    vizIds = (list || []).map(v => v.id);
+    if (!vizIds.length) {
+      logEvent('Export', `${list ? 'No visualizations listed' : "Couldn't list visualizations"} — whole-Liveboard export, long tables may be cut off`);
+      if (!list) toast("Couldn't list visualizations — long tables may be cut off");
+    }
+  }
   logEvent('Export', `report/liveboard ${format} → ${s.liveboardId}${vizIds.length ? ` [${vizIds.length} viz]` : ''}${overrideFilters.length ? ` (${overrideFilters.length} filter(s))` : ''}`);
   try {
     const res = await Discovery.downloadLiveboardReport(s.host, s.liveboardId, format, overrideFilters, eo, vizIds);
@@ -4007,7 +4022,7 @@ function openExportPicker() {
       body.appendChild(enumSelect('Orientation', opts.orientation, [
         { value: 'LANDSCAPE', label: 'Landscape' }, { value: 'PORTRAIT', label: 'Portrait' },
       ], v => { opts.orientation = v; }));
-      body.appendChild(truncateToggle(opts.truncateTable, exportVizIds(s, opts).length > 0, v => { opts.truncateTable = v; }));
+      body.appendChild(truncateToggle(opts.truncateTable, v => { opts.truncateTable = v; }, exportVizIds(s, opts).length > 0));
       body.appendChild(toggleField('Include cover page', opts.includeCoverPage, v => { opts.includeCoverPage = v; }));
       body.appendChild(toggleField('Include filter page', opts.includeFilterPage, v => { opts.includeFilterPage = v; }));
       body.appendChild(toggleField('Include page numbers', opts.includePageNumber, v => { opts.includePageNumber = v; }));
@@ -5069,7 +5084,7 @@ function sectionStyles(s) {
     setState({ styles: { ...getState().styles, iconSpriteUrl: v } });
   }, 'https://cdn.example.com/icons.svg'));
   iconBody.appendChild(infoHint(
-    'An SVG sprite whose &lt;symbol id="rd-icon-spotter"&gt; replaces the Spotter icon (tile + chat).',
+    'An SVG sprite whose &lt;symbol id="rd-icon-spotter"&gt; replaces the Spotter icon everywhere (tile + panel + chat) — the complete option.',
     'An SVG sprite file of &lt;symbol&gt; elements; each symbol id replaces the ThoughtSpot icon with that id — rd-icon-spotter is the Spotter icon on the Liveboard tile hover button and in Spotter chat. Prerequisites: an absolute https URL, served with a CORS header, and its host allowlisted under Develop → Security settings in both CSP connect-src and img-src. Every failure (wrong id, http, no CORS, not allowlisted) is silent — the default icon just stays.'));
   const iconBtns = el('div', 'chips');
   const applyIcon = (patch, msg) => {
@@ -5079,10 +5094,14 @@ function sectionStyles(s) {
   };
   const sampleBtn = el('button', 'sec-add', 'Sample sprite (docs)'); sampleBtn.type = 'button';
   sampleBtn.title = 'ThoughtSpot docs sample sprite on jsDelivr (allowlisted on most clusters)';
-  sampleBtn.addEventListener('click', () => applyIcon({ iconSpriteUrl: SPOTTER_SAMPLE_SPRITE }, 'Sample sprite set — embed reloaded.'));
-  const cssBtn = el('button', 'sec-add', 'CSS fallback (image URL)'); cssBtn.type = 'button';
-  cssBtn.title = 'For a plain image (not a sprite): hides the tile Spotter icon and draws the image via rules_UNSTABLE. Tile only; selectors are unstable across releases.';
-  cssBtn.addEventListener('click', () => applyIcon({ rules: { ...getState().styles.rules, ...spotterIconCssRules(SPOTTER_SAMPLE_IMAGE) } },
+  sampleBtn.addEventListener('click', () => { // exclusive with the CSS fallback: mixing them looks like a half-done swap
+    const rules = { ...getState().styles.rules };
+    Object.keys(spotterIconCssRules('')).forEach(sel => delete rules[sel]);
+    applyIcon({ iconSpriteUrl: SPOTTER_SAMPLE_SPRITE, rules }, 'Sample sprite set — embed reloaded.');
+  });
+  const cssBtn = el('button', 'sec-add', 'CSS fallback (tile only)'); cssBtn.type = 'button';
+  cssBtn.title = 'For a plain image (not a sprite): hides the tile Spotter icon and draws the image via rules_UNSTABLE. Tile only — does not reach the Spotter panel header or chat avatar (use a sprite for those); selectors are unstable across releases.';
+  cssBtn.addEventListener('click', () => applyIcon({ iconSpriteUrl: '', rules: { ...getState().styles.rules, ...spotterIconCssRules(SPOTTER_SAMPLE_IMAGE) } },
     'CSS fallback added to CSS rules — swap the url(…) for your image.'));
   const clearBtn = el('button', 'sec-add', 'Clear'); clearBtn.type = 'button';
   clearBtn.addEventListener('click', () => {
@@ -8881,14 +8900,17 @@ function generateCode() {
     L.push('// Server-side this gives you every PDF knob the native modal does not expose individually');
     L.push('// (truncate_table:false = no column cutoff; page_size = page-break behaviour; orientation; etc.).');
     L.push('// truncate_table:true is only valid with visualization_identifiers — a whole-Liveboard export rejects it (HTTP 400).');
+    L.push('// A whole-Liveboard export (no visualization_identifiers) also IGNORES truncate_table:false and may cut long tables.');
     const body = { metadata_identifier: s.liveboardId || '<liveboard-guid>', file_format: eo.format || 'PDF' };
     const scopedViz = exportVizIds(s, eo);
+    const allViz = wholePdfAllRows(s, eo);
     if (scopedViz.length) body.visualization_identifiers = scopedViz;
+    else if (allViz) body.visualization_identifiers = '__VIZ_IDS__';
     if ((eo.format || 'PDF') === 'PDF') {
       body.pdf_options = {
         page_size: eo.pageSize || 'CONTINUOUS',
         page_orientation: eo.orientation || 'LANDSCAPE',
-        truncate_table: !!eo.truncateTable && scopedViz.length > 0,
+        ...((scopedViz.length || allViz) ? { truncate_table: !!eo.truncateTable && scopedViz.length > 0 } : {}),  // false is honoured only with visualization_identifiers; true is a 400 without them
         include_cover_page: eo.includeCoverPage !== false,
         include_filter_page: eo.includeFilterPage !== false,
         include_page_number: eo.includePageNumber !== false,
@@ -8896,11 +8918,24 @@ function generateCode() {
         ...(eo.footerText ? { page_footer_text: eo.footerText } : {}),
       };
     }
+    if (allViz) {
+      L.push('// Whole-Liveboard exports ignore truncate_table:false, so list every viz id (cheap metadata call, no queries run)');
+      L.push('// and pass them as visualization_identifiers. Trade-off: one visualization per page.');
+      L.push('async function listVizIds() {');
+      L.push(`  const r = await fetch('${esc(s.host) || 'https://your-instance.thoughtspot.cloud'}/api/rest/2.0/metadata/search', {`);
+      L.push("    method: 'POST',");
+      L.push("    headers: { 'Content-Type': 'application/json' /*, Authorization: `Bearer ${token}` */ },");
+      L.push(`    body: JSON.stringify({ metadata: [{ type: 'LIVEBOARD', identifier: '${esc(s.liveboardId || '<liveboard-guid>')}' }], include_visualization_headers: true, record_size: 1 }),`);
+      L.push('  });');
+      L.push("  return ((await r.json())[0]?.visualization_headers || []).filter(v => v.id && (v.name || '').trim()).map(v => v.id);");
+      L.push('}');
+    }
     L.push('async function exportLiveboard() {');
+    if (allViz) L.push('  const vizIds = await listVizIds();');
     L.push(`  const res = await fetch('${esc(s.host) || 'https://your-instance.thoughtspot.cloud'}/api/rest/2.0/report/liveboard', {`);
     L.push("    method: 'POST',");
     L.push("    headers: { 'Content-Type': 'application/json', Accept: 'application/octet-stream' /*, Authorization: `Bearer ${token}` */ },");
-    L.push(`    body: JSON.stringify(${JSON.stringify(body, null, 2).split('\n').map((ln, i) => i === 0 ? ln : '    ' + ln).join('\n')}),`);
+    L.push(`    body: JSON.stringify(${JSON.stringify(body, null, 2).replace('"__VIZ_IDS__"', 'vizIds').split('\n').map((ln, i) => i === 0 ? ln : '    ' + ln).join('\n')}),`);
     L.push('  });');
     L.push('  const blob = await res.blob();');
     L.push('  const url = URL.createObjectURL(blob);');
