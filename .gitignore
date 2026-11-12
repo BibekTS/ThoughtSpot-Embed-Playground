@@ -18,6 +18,7 @@
 !/lib/
 !/scripts/
 !/docs/
+!/icons/
 
 # .claude/: only the ts-css-finder skill (headless rules_UNSTABLE selector finder); the rest of the
 # agent org stays local.
