@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" style="width:0;height:0;visibility:hidden;">
+  <symbol id="rd-icon-spotter" viewBox="0 0 48 48">
+    <path fill="#0d9488" d="M8 6h32a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H22l-10 8v-8H8a6 6 0 0 1-6-6V12a6 6 0 0 1 6-6z"/>
+    <circle fill="#fff" cx="15" cy="21" r="3.2"/><circle fill="#fff" cx="24" cy="21" r="3.2"/><circle fill="#fff" cx="33" cy="21" r="3.2"/>
+  </symbol>
+</svg>
