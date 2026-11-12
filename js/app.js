@@ -631,6 +631,15 @@ const hostFlags = (s) => ({ showLiveboardTitle: false, hideTabPanel: false, ...(
 // S73 Spotter-icon presets. The sprite is ThoughtSpot's documented sample (symbol id rd-icon-spotter);
 // the image is a generic MIT icon (Bootstrap Icons "robot" — deliberately not a sparkle, so the swap is visible). Both on jsDelivr, verified live.
 const SPOTTER_SAMPLE_SPRITE = 'https://cdn.jsdelivr.net/gh/thoughtspot/custom-css-demo/alternate-spotter-icon.svg';
+// S82: our own sprites (icons/ in this repo, served by jsDelivr's GitHub proxy). One per format: pure
+// vector, and a PNG / JPEG raster wrapped in <symbol id="rd-icon-spotter"><image href="data:…"/> —
+// iconSpriteUrl only accepts an SVG sprite, so a raster must be embedded in one.
+const SPOTTER_OWN_BASE = 'https://cdn.jsdelivr.net/gh/BibekTS/ThoughtSpot-Embed-Playground@main/icons/';
+const SPOTTER_OWN_SPRITES = [
+  ['Our SVG sprite', 'spotter-sprite.svg', 'Pure-vector sprite (teal chat bubble) from this repo\'s icons/ folder'],
+  ['Our PNG sprite', 'spotter-sprite-png.svg', 'A PNG (purple bolt, transparent) embedded as a data: image inside the sprite'],
+  ['Our JPEG sprite', 'spotter-sprite-jpeg.svg', 'A JPEG (amber bulb, solid square) embedded as a data: image inside the sprite'],
+];
 const SPOTTER_SAMPLE_IMAGE = 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/robot.svg';
 // CSS fallback for a standalone image (a sprite file does not draw as a CSS background): hide the tile
 // hover button's own icon, paint the image in ::before. Liveboard tile only; selectors are unstable.
@@ -5092,13 +5101,17 @@ function sectionStyles(s) {
     applyConfig(); render(); renderInspector();
     toast(msg, 'success');
   };
-  const sampleBtn = el('button', 'sec-add', 'Sample sprite (docs)'); sampleBtn.type = 'button';
-  sampleBtn.title = 'ThoughtSpot docs sample sprite on jsDelivr (allowlisted on most clusters)';
-  sampleBtn.addEventListener('click', () => { // exclusive with the CSS fallback: mixing them looks like a half-done swap
-    const rules = { ...getState().styles.rules };
-    Object.keys(spotterIconCssRules('')).forEach(sel => delete rules[sel]);
-    applyIcon({ iconSpriteUrl: SPOTTER_SAMPLE_SPRITE, rules }, 'Sample sprite set — embed reloaded.');
-  });
+  const spriteBtn = (label, title, url) => {
+    const b = el('button', 'sec-add', label); b.type = 'button'; b.title = title;
+    b.addEventListener('click', () => { // exclusive with the CSS fallback: mixing them looks like a half-done swap
+      const rules = { ...getState().styles.rules };
+      Object.keys(spotterIconCssRules('')).forEach(sel => delete rules[sel]);
+      applyIcon({ iconSpriteUrl: url, rules }, `${label} set — embed reloaded.`);
+    });
+    return b;
+  };
+  const sampleBtn = spriteBtn('Sample sprite (docs)', 'ThoughtSpot docs sample sprite on jsDelivr (allowlisted on most clusters)', SPOTTER_SAMPLE_SPRITE);
+  const ownBtns = SPOTTER_OWN_SPRITES.map(([label, file, title]) => spriteBtn(label, title, SPOTTER_OWN_BASE + file));
   const cssBtn = el('button', 'sec-add', 'CSS fallback (tile only)'); cssBtn.type = 'button';
   cssBtn.title = 'For a plain image (not a sprite): hides the tile Spotter icon and draws the image via rules_UNSTABLE. Tile only — does not reach the Spotter panel header or chat avatar (use a sprite for those); selectors are unstable across releases.';
   cssBtn.addEventListener('click', () => applyIcon({ iconSpriteUrl: '', rules: { ...getState().styles.rules, ...spotterIconCssRules(SPOTTER_SAMPLE_IMAGE) } },
@@ -5109,7 +5122,7 @@ function sectionStyles(s) {
     Object.keys(spotterIconCssRules('')).forEach(sel => delete rules[sel]);
     applyIcon({ iconSpriteUrl: '', rules }, 'Spotter icon override cleared.');
   });
-  iconBtns.append(sampleBtn, cssBtn, clearBtn);
+  iconBtns.append(sampleBtn, ...ownBtns, cssBtn, clearBtn);
   iconBody.appendChild(iconBtns);
   c.appendChild(accordion('Spotter icon', s.styles.iconSpriteUrl ? 1 : 0, iconBody));
   c.appendChild(errorMessagesAccordion(s));
