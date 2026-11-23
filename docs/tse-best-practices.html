@@ -30,8 +30,8 @@
 </script>
 <script type="application/json" id="guide-meta">
 {
-  "version": "3.7.2",
-  "lastUpdated": "2026-10-26",
+  "version": "3.8.0",
+  "lastUpdated": "2026-11-23",
   "verifiedAgainst": {
     "sdk": "1.53.0",
     "thoughtspot": "26.10.0.cl"
@@ -40,6 +40,11 @@
   "staleAfterDays": 90,
   "sourceOfTruth": "https://developers.thoughtspot.com/docs/",
   "changelog": [
+    {
+      "version": "3.8.0",
+      "date": "2026-11-23",
+      "summary": "ABAC via RLS variables: added a fourth lifecycle call for changing or revoking a user's stored values with template/variables/{identifier}/update-values (ADD, REPLACE, REMOVE, RESET; revoke is REPLACE with [] scoped to a user and Org; RESET wipes every user), flagged the docs disagreement on the request body shape, and marked the batch update-values endpoint Deprecated. Corrected the legacy cutover advice: an empty array in a token request does not reset values. Noted that formula variables cannot be assigned to user groups. Added a revocation item to the go-live checklist. Re-verified against the live Variables and ABAC pages; only the touched claims were re-checked, so section dates are unchanged."
+    },
     {
       "version": "3.7.2",
       "date": "2026-10-26",
@@ -1947,7 +1952,7 @@ authEE.on(AuthStatus.LOGOUT, () =&gt; goToAppSignIn());</code></pre>
       <tr><td>One tenant key per customer, entitlements rarely change</td><td>Group-based (<code>ts_groups</code>)</td><td>ABAC variables, if you later need several attributes per user</td></tr>
       <tr><td>Entitlements are multi-valued or change per login, you run a token service</td><td>ABAC variables</td><td>ACL table, if the entitlements already live in the warehouse and you prefer one source of truth there</td></tr>
       <tr><td>Entitlements already live in a warehouse table</td><td>ACL-table join</td><td>ABAC variables, if you would rather push the values from your app than maintain a pipeline</td></tr>
-      <tr><td>You use EmbeddedSSO and need attributes beyond group claims</td><td>Group claims or ACL table</td><td>Variables can be pre-persisted with an admin token mint, but expect sync lag</td></tr>
+      <tr><td>You use EmbeddedSSO and need attributes beyond group claims</td><td>Group claims or ACL table</td><td>Variables can be pre-persisted with an admin token mint, or set directly with the <code>update-values</code> API (per user and Org, optionally per Model; not per group). Expect sync lag</td></tr>
       <tr><td>Per-session entitlements</td><td>Dedicated one-time users with persisted rules (docs)</td><td>Variables are persisted, not session-scoped, so they do not fit directly</td></tr>
       <tr><td>Users already have individual warehouse accounts and rules</td><td>Warehouse OAuth</td><td>ThoughtSpot-side RLS, if sign-in friction or account provisioning is the blocker</td></tr>
     </tbody>
@@ -1969,10 +1974,10 @@ authEE.on(AuthStatus.LOGOUT, () =&gt; goToAppSignIn());</code></pre>
   <p>Include Spotter in the test matrix: the docs state it runs through the instance, which enforces RLS and CLS. Exports and schedules are our addition to the matrix, because the docs we checked do not test them for you.</p>
   </div></details>
   <details class="deeper"><summary>Go deeper: the ABAC lifecycle, rules and version <small>about 4 min</small></summary><div class="deeper-body">
-<h4 id="data-security-lifecycle">The lifecycle in three calls</h4>
+<h4 id="data-security-lifecycle">The lifecycle in four calls</h4>
   <pre class="code" data-lang="json" data-title="1. Create the variable (once, admin)"><code>// POST /api/rest/2.0/template/variables/create
 { "type": "FORMULA_VARIABLE", "name": "region_var", "is_sensitive": false, "data_type": "VARCHAR" }</code></pre>
-  <p>Types are <code>VARCHAR</code>, <code>INT32</code>, <code>INT64</code>, <code>DOUBLE</code>, <code>DATE</code> and <code>DATE_TIME</code>. <code>BOOLEAN</code> and <code>TIME</code> are not supported. Creating variables needs a cluster or Org admin, or the <code>CAN_MANAGE_VARIABLES</code> privilege. <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_create_formula_variables">docs</a> The 10.9.0.cl REST changelog tagged the <code>template/variables</code> endpoints Beta; the ABAC guide does not restate that, so check current status for your release. <a class="src" href="https://developers.thoughtspot.com/docs/rest-v2-changelog#_metadata_parameterization_and_content_publishing_across_orgs">docs</a></p>
+  <p>Types are <code>VARCHAR</code>, <code>INT32</code>, <code>INT64</code>, <code>DOUBLE</code>, <code>DATE</code> and <code>DATE_TIME</code>. <code>BOOLEAN</code> and <code>TIME</code> are not supported. Creating variables needs a cluster or Org admin, or the <code>CAN_MANAGE_VARIABLES</code> privilege. <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_create_formula_variables">docs</a> The 10.9.0.cl REST changelog tagged the <code>template/variables</code> endpoints Beta; the ABAC and Variables pages do not restate that, and the REST reference tags <code>{identifier}/update-values</code> with 26.4.0.cl only (no Beta label), so check current status for your release. <a class="src" href="https://developers.thoughtspot.com/docs/rest-v2-changelog#_metadata_parameterization_and_content_publishing_across_orgs">docs</a></p>
   <pre class="code" data-lang="text" data-title="2. RLS rule on the Table (Row security editor)"><code>region = ts_var(region_var)</code></pre>
   <p>No quotes around the variable name. Add rules for each variable the table needs. <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables">docs</a></p>
   <pre class="code" data-lang="json" data-title="3. Mint per login (server side only)"><code>// POST /api/rest/2.0/auth/token/custom
@@ -1984,12 +1989,30 @@ authEE.on(AuthStatus.LOGOUT, () =&gt; goToAppSignIn());</code></pre>
     { "name": "region_var", "values": ["NA", "EMEA"] }
   ],
   "objects": [ { "type": "LOGICAL_TABLE", "identifier": "&lt;model-guid&gt;" } ] }</code></pre>
+  <div class="strip">
+    <div class="strip-step d"><span class="n">A</span><b>Change one user</b><span><code>REPLACE</code> with new values, scoped to the user and Org</span></div><div class="strip-arrow">→</div>
+    <div class="strip-step b"><span class="n">B</span><b>Revoke one user</b><span><code>REPLACE</code> with <code>[]</code>: the user sees no data</span></div><div class="strip-arrow">→</div>
+    <div class="strip-step c"><span class="n">C</span><b>Wipe a variable</b><span><code>RESET</code> clears every user, ignoring scope</span></div>
+  </div>
+  <pre class="code" data-lang="json" data-title="4. Change or revoke one user's values (admin or CAN_MANAGE_VARIABLES)"><code>// POST /api/rest/2.0/template/variables/region_var/update-values
+// Revoke: REPLACE with an empty list, scoped to one user in one Org. Returns 204.
+{ "operation": "REPLACE",
+  "variable_assignment": [
+    { "assigned_values": [],
+      "org_identifier": "Prod",
+      "principal_type": "USER",
+      "principal_identifier": "UserA" }
+  ] }</code></pre>
+  <p>Operations: <code>ADD</code> adds values to a list variable (otherwise it behaves like replace), <code>REPLACE</code> replaces the values for that scope, <code>REMOVE</code> removes matching values, and <code>RESET</code> removes all constraints for the variable and ignores scope. <span class="badge ga" data-feature="template/variables/{identifier}/update-values" data-ver="TS 26.4.0.cl+" data-src="https://developers.thoughtspot.com/docs/variables#_assign_or_update_variable_values">GA</span> <a class="src" href="https://developers.thoughtspot.com/docs/variables#_assign_or_update_variable_values">docs</a> Resending values that already match is a no-op, except for <code>RESET</code> and sensitive variables, which are always written (REST reference). The batch endpoint <code>POST /api/rest/2.0/template/variables/update-values</code> (10.14.0.cl) is <span class="badge deprecated" data-feature="template/variables/update-values (batch)" data-ver="Deprecated in favour of the {identifier} endpoint (26.4.0.cl)" data-src="https://developers.thoughtspot.com/docs/variables#_assign_or_update_variable_values">Deprecated</span> and takes a different body. <a class="src" href="https://developers.thoughtspot.com/docs/variables#_assign_or_update_variable_values">docs</a></p>
+  <p>Values are recorded per Org and per user, although the variable itself exists across Orgs. Formula variables cannot be assigned to a user group: <code>USER_GROUP</code> results in an error. <code>/api/rest/2.0/users/{user_identifier}/update</code> does not update variable values. <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_resetting_a_user_or_a_variable">docs</a></p>
+  <div class="callout bad"><div><strong><code>RESET</code> is a wipe</strong><p>The docs warn that <code>RESET</code> erases the values for all users of that variable, regardless of any scope you send. To revoke one person, use <code>REPLACE</code> with <code>[]</code> and a user scope. <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_resetting_a_user_or_a_variable">docs</a></p></div></div>
+  <div class="callout warn"><div><strong>Docs disagree on the body shape</strong><p>The ABAC page's reset example posts the older batch body (<code>variable_identifier</code>, <code>variable_values</code>, <code>operation</code> inside each assignment, plus a separate <code>variable_value_scope</code>) to the new <code>{identifier}</code> path. The REST reference and the Variables page show the new shape used above (top-level <code>operation</code>, and <code>assigned_values</code> with scope fields in each assignment). We recommend the REST reference shape, and testing a revoke on your own cluster before relying on it. <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_resetting_a_user_or_a_variable">docs</a> <a class="src" href="https://developers.thoughtspot.com/docs/variables#_assign_or_update_variable_values">docs</a></p></div></div>
 
   <h4 id="data-security-rules">Rules that matter</h4>
   <div class="table-wrap"><table>
     <thead><tr><th>Topic</th><th>Behavior</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td><code>persist_option</code></td><td>With <code>variable_values</code> only <code>APPEND</code> and <code>REPLACE</code> are accepted. <code>NONE</code> and <code>RESET</code> are not supported. <code>REPLACE</code> makes the token request the source of truth, so every mint must carry the full variable set. <code>APPEND</code> keeps earlier values and adds yours, which is less to send and easier to leave stale. Choose on whether you want the token request or the stored state to be authoritative.</td><td><a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_persist_options_and_session_based_rules">docs</a></td></tr>
+      <tr><td><code>persist_option</code></td><td>With <code>variable_values</code> only <code>APPEND</code> and <code>REPLACE</code> are accepted. <code>NONE</code> and <code>RESET</code> are not supported. <code>REPLACE</code> makes the token request the source of truth, so every mint must carry the full variable set. <code>APPEND</code> keeps earlier values and adds yours, which is less to send and easier to leave stale. Choose on whether you want the token request or the stored state to be authoritative. Not to be confused with the <code>operation</code> field of <code>update-values</code> (<code>ADD</code>, <code>REPLACE</code>, <code>REMOVE</code>, <code>RESET</code>): a different API with similar names. An empty array in a token request does not clear a user's values; use <code>update-values</code> (step 4).</td><td><a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_persist_options_and_session_based_rules">docs</a></td></tr>
       <tr><td>Deny by default</td><td>Every variable referenced in an RLS rule is required. A variable with no value, or <code>TS_WILDCARD_NONE</code>, returns no data (the query fails with "No values are assigned to some or all Formula Variables").</td><td><a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_denying_all_by_default">docs</a></td></tr>
       <tr><td>Wildcards</td><td><code>TS_WILDCARD_ALL</code> allows every value, <code>TS_WILDCARD_NONE</code> makes the rule false. Our guidance: reserve ALL for a deliberate, reviewed case such as internal staff.</td><td><a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_using_wildcard_values">docs</a></td></tr>
       <tr><td>Object scoping</td><td>If you omit <code>objects</code>, the values apply to every rule using that variable across the Org for that user. Only <code>LOGICAL_TABLE</code> is supported.</td><td><a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_apply_to_specific_objects">docs</a></td></tr>
@@ -2011,7 +2034,7 @@ authEE.on(AuthStatus.LOGOUT, () =&gt; goToAppSignIn());</code></pre>
     <li><strong>Create variables</strong> for each attribute (<code>variables/create</code>, then reference them in rules).</li>
     <li><strong>Add RLS rules</strong> with <code>ts_var()</code> on the Tables. Legacy filters and RLS both apply, so the result is the intersection and can only be stricter. <span class="badge field">Field-observed</span></li>
     <li><strong>Send both</strong> for a coexistence window: legacy fields plus <code>variable_values</code>. Verify with a non-admin user and <code>POST /api/rest/2.0/template/variables/search</code> using <code>response_content: METADATA_AND_VALUES</code>, and inspect the generated SQL. <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_verify_the_entitlements">docs</a></li>
-    <li><strong>Remove the legacy keys</strong> from the mint request. Avoid sending an empty <code>values: []</code> to clear things unless you intend a wipe. Standardize on one mint endpoint. <span class="badge field">Field-observed</span></li>
+    <li><strong>Remove the legacy keys</strong> from the mint request. Dropping a key from the mint does not revoke anything already stored, and an empty <code>values: []</code> in a token request does not reset that user's values either; the docs say to use <code>update-values</code> for that (step 4 above). Standardize on one mint endpoint. <a class="src" href="https://developers.thoughtspot.com/docs/abac-via-rls-variables#_resetting_a_user_or_a_variable">docs</a></li>
   </ol>
   <details class="acc"><summary>Legacy persistence side effects (reference)</summary><div class="acc-body">
     <ul>
@@ -4318,7 +4341,7 @@ await embed.render();</code></pre>
       <li data-id="org-scope"><label><input type="checkbox"><span><b>If you use Orgs:</b> Tokens are scoped to the right Org (<code>org_id</code> on full/object, <code>org_identifier</code> on custom). <a href="#identity">Why</a></span></label></li>
       <li class="grp">Data security</li>
       <li data-id="rls"><label><input type="checkbox"><span><b>Required:</b> Tenant and user isolation is enforced by RLS or ABAC via RLS variables, not by runtime filters. <a href="#data-security">Why</a></span></label></li>
-      <li data-id="deny-default"><label><input type="checkbox"><span><b>If you use RLS variables:</b> Every variable used in an RLS rule has a value, and a user with no entitlements sees no data. <a href="#data-security">Why</a></span></label></li>
+      <li data-id="deny-default"><label><input type="checkbox"><span><b>If you use RLS variables:</b> Every variable used in an RLS rule has a value, and a user with no entitlements sees no data. Revoking was tested with <code>update-values</code> (<code>REPLACE</code> with <code>[]</code>), not an empty array in the token. <a href="#data-security">Why</a></span></label></li>
       <li data-id="non-admin-test"><label><input type="checkbox"><span><b>Required:</b> Row and column security was tested as a non-admin user (admins bypass RLS). <a href="#data-security">Why</a></span></label></li>
       <li data-id="legacy-abac"><label><input type="checkbox"><span><b>If you use JWT ABAC:</b> No new work uses JWT <code>filter_rules</code> or <code>parameter_values</code>. <a href="#data-security">Why</a></span></label></li>
       <li data-id="cls"><label><input type="checkbox"><span><b>If you hold sensitive columns:</b> Sensitive columns have column-level security and, where needed, indexing disabled. <a href="#data-security">Why</a></span></label></li>
